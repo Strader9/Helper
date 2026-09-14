@@ -1,0 +1,83 @@
+[package]
+name = "pc-guardian"
+version = "0.1.0"
+description = "PC Guardian AI - Local-first Windows Desktop AI Agent"
+authors = ["PC Guardian Team"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "pc_guardian_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# === Tauri 2 核心 ===
+# 只启用必需 feature，避免编译不需要的模块
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"  # 文件选择/消息框，体积小且必需
+tauri-plugin-global-shortcut = "2"  # 全局快捷键
+tauri-plugin-notification = "2"  # 系统通知（托盘气泡）
+
+# === 数据库 ===
+# bundled: 编译时自带 SQLite，避免系统依赖
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# === 序列化 ===
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# === 异步运行时 ===
+# 最小 feature 集：多线程运行时、宏、同步原语、时间
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+# === 工具库 ===
+thiserror = "1"       # 错误类型定义（零运行时开销，仅编译期宏）
+async-trait = "0.1"   # trait 中 async fn 支持（轻量 proc macro）
+uuid = { version = "1", features = ["v4", "serde"] }  # 会话ID生成
+sha2 = "0.10"        # 用户输入哈希（审计日志用）
+dirs = "5"           # 获取系统目录（APPDATA 等）
+chrono = { version = "0.4", features = ["clock", "serde"] }  # 时间处理
+dunce = "1"           # Windows 路径规范化（去除 UNC 前缀）
+
+# === HTTP 客户端 ===
+# 与 Ollama 本地服务通信，流式 SSE 解析
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# === 流处理 ===
+# tokio::sync::mpsc 的 Stream 包装
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# === V19 Browser: WebSocket CDP 通信 ===
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+base64 = "0.22"
+
+# === V20 Skills: URL 编码 ===
+urlencoding = "2"
+
+# === Windows API: 浮窗拖动（WM_NCHITTEST 返回 HTCAPTION）===
+windows = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+raw-window-handle = "0.6"
+
+[package.metadata.tauri]
+# Tauri 构建元数据（桌面应用最小配置）
+
+[package.metadata.tauri-winres]
+# Windows 资源文件元数据（最小配置，防止构建失败）
+
+[features]
+# 默认不开启任何额外 feature
+default = []
+
+# 开发模式：启用日志和调试断言
+dev = []
+
+[profile.release]
+opt-level = "z"      # 优化体积优先（极致最小体积）
+lto = true           # 链接时优化
+codegen-units = 1    # 单代码生成单元（更慢但更小）
+panic = "abort"      # 去掉 panic 展开代码
+strip = true         # 剥离调试符号
