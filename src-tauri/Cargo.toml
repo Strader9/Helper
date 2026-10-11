@@ -38,12 +38,15 @@ thiserror = "1"       # 错误类型定义（零运行时开销，仅编译期�
 async-trait = "0.1"   # trait 中 async fn 支持（轻量 proc macro）
 uuid = { version = "1", features = ["v4", "serde"] }  # 会话ID生成
 sha2 = "0.10"        # 用户输入哈希（审计日志用）
+sha1 = "0.10"        # 网页发布时给 Netlify 报文件摘要（它的 digest 接口要 SHA-1）
 dirs = "5"           # 获取系统目录（APPDATA 等）
 chrono = { version = "0.4", features = ["clock", "serde"] }  # 时间处理
 dunce = "1"           # Windows 路径规范化（去除 UNC 前缀）
 
 # === HTTP 客户端 ===
 # 与 Ollama 本地服务通信，流式 SSE 解析
+# 注意：reqwest 默认会读取 HTTP_PROXY / HTTPS_PROXY 环境变量。发布通道那边已显式
+#       no_proxy()，否则一旦进程继承了别处注入的代理变量，就会连到不存在的代理上。
 reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # === 流处理 ===

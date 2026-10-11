@@ -56,10 +56,7 @@ impl<'a> ConversationManager<'a> {
     }
 
     /// 创建新对话
-    pub fn create(
-        &self,
-        title: Option<String>,
-    ) -> AppResult<Conversation> {
+    pub fn create(&self, title: Option<String>) -> AppResult<Conversation> {
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Local::now().to_rfc3339();
         let title = title.unwrap_or_else(|| "新对话".to_string());
@@ -150,8 +147,8 @@ impl<'a> ConversationManager<'a> {
         )?;
 
         // 更新会话的 message_count 和 last_message
-        let truncated = if content.len() > 100 {
-            format!("{}...", &content[..100])
+        let truncated = if content.chars().count() > 100 {
+            format!("{}...", content.chars().take(100).collect::<String>())
         } else {
             content.to_string()
         };
@@ -174,7 +171,7 @@ impl<'a> ConversationManager<'a> {
             "SELECT id, session_id, role, content, tool_calls, tool_call_id, timestamp, tokens_used
              FROM chat_messages
              WHERE session_id = ?1
-             ORDER BY timestamp ASC"
+             ORDER BY timestamp ASC",
         )?;
 
         let messages = stmt.query_map(params![session_id], |row| {
@@ -195,10 +192,8 @@ impl<'a> ConversationManager<'a> {
 
     /// 删除对话（级联删除消息）
     pub fn delete(&self, id: &str) -> AppResult<()> {
-        self.conn.execute(
-            "DELETE FROM chat_sessions WHERE id = ?1",
-            params![id],
-        )?;
+        self.conn
+            .execute("DELETE FROM chat_sessions WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -213,13 +208,11 @@ impl<'a> ConversationManager<'a> {
 
     /// 置顶/取消置顶对话
     pub fn toggle_pin(&self, id: &str) -> AppResult<bool> {
-        let current: i64 = self
-            .conn
-            .query_row(
-                "SELECT is_pinned FROM chat_sessions WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )?;
+        let current: i64 = self.conn.query_row(
+            "SELECT is_pinned FROM chat_sessions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
 
         let new_value = if current == 1 { 0 } else { 1 };
 

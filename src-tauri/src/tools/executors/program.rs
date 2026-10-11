@@ -3,8 +3,11 @@
 //! 提供程序启动和搜索能力。
 
 use std::fs;
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
+use std::sync::{OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 #[cfg(windows)]
@@ -12,6 +15,24 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+const PROGRAM_SEARCH_BUDGET: Duration = Duration::from_millis(1_200);
+const PROGRAM_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
+const PROGRAM_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(30);
+const PROGRAM_SEARCH_MAX_ENTRIES: usize = 30_000;
+
+#[derive(Clone)]
+struct CachedProgramSearch {
+    paths: Vec<String>,
+    expires_at: Instant,
+}
+
+static PROGRAM_SEARCH_CACHE: OnceLock<RwLock<HashMap<String, CachedProgramSearch>>> =
+    OnceLock::new();
+
+fn program_search_cache() -> &'static RwLock<HashMap<String, CachedProgramSearch>> {
+    PROGRAM_SEARCH_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
 
 use crate::error::{AppError, AppResult};
 use crate::tools::{AgentTool, RiskLevel, ToolResult};
@@ -84,7 +105,11 @@ impl AgentTool for LaunchProgramTool {
         let program_path = if Path::new(name_or_path).exists() {
             name_or_path.to_string()
         } else {
-            match find_program_path(name_or_path) {
+            let lookup_name = name_or_path.to_string();
+            let lookup = tokio::task::spawn_blocking(move || find_program_path(&lookup_name))
+                .await
+                .map_err(|e| AppError::Internal(format!("程序查找任务失败: {}", e)))?;
+            match lookup {
                 Ok(Some(path)) => path,
                 Ok(None) => name_or_path.to_string(),
                 Err(e) => return Ok(ToolResult::err("SEARCH_FAILED", &e.to_string())),
@@ -252,7 +277,10 @@ impl AgentTool for FindProgramTool {
         let name = args["name"].as_str()
             .ok_or_else(|| AppError::InvalidArgument("name is required".to_string()))?;
 
-        let paths = find_all_program_paths(name)?;
+        let lookup_name = name.to_string();
+        let paths = tokio::task::spawn_blocking(move || find_all_program_paths(&lookup_name))
+            .await
+            .map_err(|e| AppError::Internal(format!("程序查找任务失败: {}", e)))??;
 
         Ok(ToolResult::ok(serde_json::json!({
             "name": name,
@@ -519,8 +547,25 @@ fn get_program_aliases(name: &str) -> Vec<String> {
 
 /// 查找所有匹配的程序路径
 fn find_all_program_paths(name: &str) -> AppResult<Vec<String>> {
+    let cache_key = name.trim().to_lowercase();
+    if let Some(paths) = get_cached_program_paths(&cache_key) {
+        return Ok(paths);
+    }
+
     let mut results = Vec::new();
     let aliases = get_program_aliases(name);
+
+    // 高频应用走确定性候选路径，通常只需要几次 metadata 查询。
+    // 这条路径必须在递归扫描之前，保证“打开 QQ/微信/浏览器”近乎即时。
+    for candidate in known_program_candidates(&cache_key) {
+        if Path::new(&candidate).is_file() && !results.contains(&candidate) {
+            results.push(candidate);
+        }
+    }
+    if !results.is_empty() {
+        cache_program_paths(cache_key, &results);
+        return Ok(results);
+    }
 
     // 1. 使用 where 命令搜索 PATH
     #[cfg(target_os = "windows")]
@@ -548,13 +593,136 @@ fn find_all_program_paths(name: &str) -> AppResult<Vec<String>> {
         }
     }
 
-    // 2. 在常见安装目录中搜索（递归深度3）
-    let search_dirs = get_common_program_dirs();
-    for dir in search_dirs {
-        search_directory_recursive(&dir, &aliases, &mut results, 0, 3);
+    // 精确候选或 PATH 已经命中时直接返回；launch_program 只需要最佳结果，
+    // 没必要继续遍历整个磁盘。
+    if results.is_empty() {
+        // 2. 有界搜索常见安装目录。时间和条目均设硬上限，避免慢磁盘让
+        // 单条“打开应用”命令阻塞几十秒。
+        let mut budget = ProgramSearchBudget::new();
+        for dir in get_common_program_dirs() {
+            search_directory_recursive(&dir, &aliases, &mut results, 0, 4, &mut budget);
+            if budget.exhausted() {
+                break;
+            }
+        }
     }
 
+    results.sort();
+    results.dedup();
+    cache_program_paths(cache_key, &results);
     Ok(results)
+}
+
+fn get_cached_program_paths(key: &str) -> Option<Vec<String>> {
+    let cached = program_search_cache().read().ok()?.get(key).cloned()?;
+    if cached.expires_at <= Instant::now() {
+        if let Ok(mut cache) = program_search_cache().write() {
+            cache.remove(key);
+        }
+        return None;
+    }
+
+    // 安装/卸载后缓存能够自动失效；空结果使用短 TTL，不会长期遮蔽新安装应用。
+    if !cached.paths.is_empty() && cached.paths.iter().any(|path| !Path::new(path).exists()) {
+        if let Ok(mut cache) = program_search_cache().write() {
+            cache.remove(key);
+        }
+        return None;
+    }
+    Some(cached.paths)
+}
+
+fn cache_program_paths(key: String, paths: &[String]) {
+    let ttl = if paths.is_empty() {
+        PROGRAM_NEGATIVE_CACHE_TTL
+    } else {
+        PROGRAM_CACHE_TTL
+    };
+    if let Ok(mut cache) = program_search_cache().write() {
+        cache.insert(
+            key,
+            CachedProgramSearch {
+                paths: paths.to_vec(),
+                expires_at: Instant::now() + ttl,
+            },
+        );
+    }
+}
+
+fn known_program_candidates(name: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let mut add = |env_name: &str, relative: &str| {
+        if let Ok(base) = std::env::var(env_name) {
+            candidates.push(Path::new(&base).join(relative).to_string_lossy().to_string());
+        }
+    };
+
+    match name {
+        "qq" | "腾讯qq" => {
+            add("ProgramFiles", r"Tencent\QQNT\QQ.exe");
+            add("ProgramFiles(x86)", r"Tencent\QQNT\QQ.exe");
+            add("LOCALAPPDATA", r"Programs\Tencent\QQ\QQ.exe");
+        }
+        "wechat" | "微信" => {
+            add("ProgramFiles", r"Tencent\WeChat\WeChat.exe");
+            add("ProgramFiles(x86)", r"Tencent\WeChat\WeChat.exe");
+            add("ProgramFiles", r"Tencent\Weixin\Weixin.exe");
+        }
+        "chrome" | "google chrome" | "谷歌浏览器" => {
+            add("ProgramFiles", r"Google\Chrome\Application\chrome.exe");
+            add("ProgramFiles(x86)", r"Google\Chrome\Application\chrome.exe");
+            add("LOCALAPPDATA", r"Google\Chrome\Application\chrome.exe");
+        }
+        "edge" | "microsoft edge" => {
+            add("ProgramFiles", r"Microsoft\Edge\Application\msedge.exe");
+            add("ProgramFiles(x86)", r"Microsoft\Edge\Application\msedge.exe");
+        }
+        "vscode" | "vs code" | "visual studio code" => {
+            add("LOCALAPPDATA", r"Programs\Microsoft VS Code\Code.exe");
+            add("ProgramFiles", r"Microsoft VS Code\Code.exe");
+        }
+        "docker" | "docker desktop" => {
+            add("ProgramFiles", r"Docker\Docker\Docker Desktop.exe");
+        }
+        "steam" => {
+            add("ProgramFiles(x86)", r"Steam\steam.exe");
+            add("ProgramFiles", r"Steam\steam.exe");
+        }
+        "firefox" => {
+            add("ProgramFiles", r"Mozilla Firefox\firefox.exe");
+            add("ProgramFiles(x86)", r"Mozilla Firefox\firefox.exe");
+        }
+        "notepad" | "记事本" => add("SystemRoot", r"System32\notepad.exe"),
+        _ => {}
+    }
+
+    candidates
+}
+
+struct ProgramSearchBudget {
+    deadline: Instant,
+    remaining_entries: usize,
+}
+
+impl ProgramSearchBudget {
+    fn new() -> Self {
+        Self {
+            deadline: Instant::now() + PROGRAM_SEARCH_BUDGET,
+            remaining_entries: PROGRAM_SEARCH_MAX_ENTRIES,
+        }
+    }
+
+    fn consume_entry(&mut self) -> bool {
+        if self.exhausted() {
+            return false;
+        }
+        self.remaining_entries -= 1;
+        true
+    }
+
+    fn exhausted(&self) -> bool {
+        self.remaining_entries == 0 || Instant::now() >= self.deadline
+    }
 }
 
 /// 获取常见程序安装目录
@@ -577,8 +745,10 @@ fn get_common_program_dirs() -> Vec<String> {
         if let Ok(appdata) = std::env::var("APPDATA") {
             dirs.push(format!("{}\\Microsoft\\Windows\\Start Menu\\Programs", appdata));
         }
+        if let Ok(program_data) = std::env::var("ProgramData") {
+            dirs.push(format!("{}\\Microsoft\\Windows\\Start Menu\\Programs", program_data));
+        }
         if let Ok(user_profile) = std::env::var("USERPROFILE") {
-            dirs.push(user_profile.clone());
             dirs.push(format!("{}\\Desktop", user_profile));
         }
     }
@@ -605,8 +775,9 @@ fn search_directory_recursive(
     results: &mut Vec<String>,
     current_depth: usize,
     max_depth: usize,
+    budget: &mut ProgramSearchBudget,
 ) {
-    if current_depth > max_depth {
+    if current_depth > max_depth || budget.exhausted() {
         return;
     }
 
@@ -621,6 +792,9 @@ fn search_directory_recursive(
     };
 
     for entry in entries.filter_map(|e| e.ok()) {
+        if !budget.consume_entry() {
+            return;
+        }
         let entry_path = entry.path();
         let file_name = entry.file_name().to_string_lossy().to_lowercase();
 
@@ -665,6 +839,7 @@ fn search_directory_recursive(
                 results,
                 current_depth + 1,
                 max_depth,
+                budget,
             );
         }
     }
@@ -675,4 +850,53 @@ fn contains_shell_metachars(s: &str) -> bool {
     s.contains('&') || s.contains('|') || s.contains('>') ||
     s.contains('<') || s.contains('^') || s.contains(';') ||
     s.contains('"') || s.contains('`')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qq_main_process_scores_above_extension_process() {
+        let main = score_program_path(r"C:\Program Files\Tencent\QQNT\QQ.exe", "qq");
+        let extension = score_program_path(r"C:\Program Files\Tencent\QQNT\QQEX.exe", "qq");
+        assert!(main > extension);
+    }
+
+    #[test]
+    fn negative_search_cache_round_trips_without_disk_scan() {
+        let key = format!("missing-program-{}", uuid::Uuid::new_v4());
+        cache_program_paths(key.clone(), &[]);
+        assert_eq!(get_cached_program_paths(&key), Some(Vec::new()));
+    }
+
+    #[test]
+    fn search_budget_has_a_hard_entry_limit() {
+        let mut budget = ProgramSearchBudget {
+            deadline: Instant::now() + Duration::from_secs(1),
+            remaining_entries: 1,
+        };
+        assert!(budget.consume_entry());
+        assert!(budget.exhausted());
+        assert!(!budget.consume_entry());
+    }
+
+    #[test]
+    fn installed_qq_uses_the_constant_time_candidate_path() {
+        let Some(expected) = known_program_candidates("qq")
+            .into_iter()
+            .find(|path| Path::new(path).is_file())
+        else {
+            return;
+        };
+
+        let cache_key = "qq".to_string();
+        if let Ok(mut cache) = program_search_cache().write() {
+            cache.remove(&cache_key);
+        }
+        let started = Instant::now();
+        let resolved = find_program_path("qq").expect("QQ 查找不应失败");
+        assert_eq!(resolved.as_deref(), Some(expected.as_str()));
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
 }

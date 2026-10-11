@@ -24,6 +24,8 @@ pub struct ToolCallRequest {
     pub arguments: serde_json::Value,
     /// 会话 ID（用于审计日志）
     pub session_id: Option<String>,
+    /// 本次用户指令的运行 ID（用于取消与前端事件隔离）
+    pub run_id: Option<String>,
 }
 
 /// 工具执行器
@@ -52,6 +54,8 @@ pub struct PendingPermission {
     pub tool_name: String,
     pub path: Option<String>,
     pub risk_level: String,
+    pub session_id: String,
+    pub run_id: Option<String>,
 }
 
 impl ToolExecutor {
@@ -82,6 +86,15 @@ impl ToolExecutor {
         *guard = Some(pending);
     }
 
+    /// 取消某个会话仍在等待的权限请求。移除 sender 会立即唤醒对应执行流并安全拒绝。
+    pub async fn cancel_pending_for_session(&self, session_id: &str) {
+        let pending = self.pending_permissions.lock().unwrap().clone();
+        if let Some(pending) = pending {
+            let mut map = pending.lock().await;
+            map.retain(|_, request| request.session_id != session_id);
+        }
+    }
+
     /// 获取权限管理器引用
     pub fn permission_manager(&self) -> &Arc<Mutex<PermissionManager>> {
         &self.permission_manager
@@ -107,6 +120,7 @@ impl ToolExecutor {
         request: ToolCallRequest,
     ) -> AppResult<ToolExecutionResult> {
         let session_id = request.session_id.clone().unwrap_or_else(|| "unknown".to_string());
+        let run_id = request.run_id.clone();
 
         // 1. 查找工具
         let tool = self
@@ -160,6 +174,8 @@ impl ToolExecutor {
                     &request.arguments,
                     risk_level,
                     path_arg.as_deref(),
+                    &session_id,
+                    run_id.as_deref(),
                 ).await {
                     Ok(d) => d,
                     Err(e) => {
@@ -226,7 +242,11 @@ impl ToolExecutor {
                 .map(|d| {
                     // 截取前 200 字符作为摘要
                     let s = d.to_string();
-                    if s.len() > 200 { format!("{}...", &s[..200]) } else { s }
+                    if s.chars().count() > 200 {
+                        format!("{}...", s.chars().take(200).collect::<String>())
+                    } else {
+                        s
+                    }
                 })
                 .or(Some("执行成功".to_string()))
         } else {
@@ -305,6 +325,8 @@ impl ToolExecutor {
         arguments: &serde_json::Value,
         risk_level: RiskLevel,
         path: Option<&str>,
+        session_id: &str,
+        run_id: Option<&str>,
     ) -> AppResult<PermissionDecision> {
         // 缩小锁作用域：clone 所需值后立即释放 MutexGuard，避免跨越 await
         let (app_handle_opt, pending_opt) = {
@@ -326,6 +348,8 @@ impl ToolExecutor {
                     tool_name: tool_name.to_string(),
                     path: path.map(|s| s.to_string()),
                     risk_level: risk_level.as_str().to_string(),
+                    session_id: session_id.to_string(),
+                    run_id: run_id.map(str::to_owned),
                 };
 
                 // 注册 pending permission
@@ -336,6 +360,8 @@ impl ToolExecutor {
 
                 let payload = PermissionRequestPayload {
                     request_id: request_id.clone(),
+                    session_id: session_id.to_string(),
+                    run_id: run_id.map(str::to_owned),
                     tool_name: tool_name.to_string(),
                     description,
                     risk_level: risk_level.as_str().to_string(),
@@ -391,15 +417,28 @@ fn extract_path_from_args(args: &serde_json::Value, tool_name: &str) -> Option<S
             args.get("src").and_then(|v| v.as_str()).map(|s| s.to_string())
                 .or_else(|| args.get("destination").and_then(|v| v.as_str()).map(|s| s.to_string()))
         }
-        "launch_program" => {
-            args.get("name_or_path").and_then(|v| v.as_str()).map(|s| s.to_string())
-        }
+        // 普通应用名（如 `qq`、`notepad`）不是文件路径，应先交给程序解析器。
+        // 只有用户明确提供路径时，才进入路径策略并使用 Execute 权限校验。
+        "launch_program" => args
+            .get("name_or_path")
+            .and_then(|v| v.as_str())
+            .filter(|value| is_explicit_program_path(value))
+            .map(|s| s.to_string()),
         "execute_command" => {
             args.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string())
         }
         _ => None,
     };
     raw.map(|p| expand_windows_env_vars(&p))
+}
+
+fn is_explicit_program_path(value: &str) -> bool {
+    let path = std::path::Path::new(value);
+    path.is_absolute()
+        || value.contains('\\')
+        || value.contains('/')
+        || value.starts_with('.')
+        || value.contains('%')
 }
 
 /// 解析 Windows 环境变量（如 %USERPROFILE% → C:\Users\xxx）
@@ -514,5 +553,28 @@ impl ToolExecutionResult {
                 self.result.error_code.as_deref().unwrap_or("UNKNOWN")
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_path_from_args, is_explicit_program_path};
+
+    #[test]
+    fn application_name_is_not_misclassified_as_a_file_path() {
+        let args = serde_json::json!({"name_or_path": "qq"});
+        assert_eq!(extract_path_from_args(&args, "launch_program"), None);
+        assert!(!is_explicit_program_path("notepad.exe"));
+    }
+
+    #[test]
+    fn explicit_program_path_is_validated() {
+        let args = serde_json::json!({
+            "name_or_path": r"C:\Program Files\Tencent\QQNT\QQ.exe"
+        });
+        assert_eq!(
+            extract_path_from_args(&args, "launch_program"),
+            Some(r"C:\Program Files\Tencent\QQNT\QQ.exe".to_string())
+        );
     }
 }

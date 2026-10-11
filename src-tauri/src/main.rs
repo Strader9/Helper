@@ -3,9 +3,9 @@
 
 use pc_guardian_lib::AppState;
 use std::sync::atomic::Ordering;
-use tauri::{Manager, Emitter, WindowEvent};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::{TrayIconBuilder, TrayIconEvent, MouseButton};
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 fn main() {
@@ -29,7 +29,17 @@ fn main() {
         .setup(|app| {
             // 初始化应用状态（数据库连接等）
             let state = AppState::new(app)?;
+            let warmup_client = state.ollama.clone();
+            let warmup_model = state.ollama_model.clone();
             app.manage(state);
+
+            // 应用启动后在后台加载默认模型。不会阻塞窗口出现，后续首条指令可直接推理。
+            tauri::async_runtime::spawn(async move {
+                match warmup_client.warm_up(&warmup_model).await {
+                    Ok(()) => eprintln!("[Ollama] 模型预热完成: {}", warmup_model),
+                    Err(e) => eprintln!("[Ollama] 模型预热跳过: {}", e),
+                }
+            });
 
             // V18: 启动 Proactive Engine（后台监控）
             {
@@ -74,26 +84,24 @@ fn main() {
             }
         })
         // V21: 托盘菜单事件处理
-        .on_menu_event(|app, event| {
-            match event.id().as_ref() {
-                "tray_show_main" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray_show_main" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
                 }
-                "tray_show_mini" => {
-                    let _ = pc_guardian_lib::commands::toggle_mini_window_inner(app);
-                }
-                "tray_settings" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                        let _ = app.emit("navigate:settings", ());
-                    }
-                }
-                _ => {}
             }
+            "tray_show_mini" => {
+                let _ = pc_guardian_lib::commands::toggle_mini_window_inner(app);
+            }
+            "tray_settings" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    let _ = app.emit("navigate:settings", ());
+                }
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             // 对话命令
@@ -117,6 +125,9 @@ fn main() {
             // Ollama 命令
             pc_guardian_lib::commands::check_ollama,
             pc_guardian_lib::commands::get_ollama_models,
+            pc_guardian_lib::commands::start_webpage_generation,
+            pc_guardian_lib::commands::publish_webpage,
+            pc_guardian_lib::commands::open_external,
             // 窗口管理命令
             pc_guardian_lib::commands::show_main_window,
             pc_guardian_lib::commands::close_mini_window,
@@ -217,7 +228,9 @@ fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
 }
 
 /// 注册全局快捷键 Ctrl+Shift+Space
-fn register_global_shortcut(app_handle: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+fn register_global_shortcut(
+    app_handle: &tauri::AppHandle,
+) -> Result<(), Box<dyn std::error::Error>> {
     let shortcut_str = {
         let state = app_handle.state::<AppState>();
         state.global_shortcut.clone()

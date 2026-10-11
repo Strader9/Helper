@@ -285,6 +285,7 @@ impl ToolRegistry {
                 result.push(name.clone());
             }
         }
+        result.sort();
         result
     }
 

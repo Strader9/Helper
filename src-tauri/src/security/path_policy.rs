@@ -24,6 +24,8 @@ pub enum PathSecurityLevel {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessType {
     Read,
+    /// 启动一个可执行目标。执行权限不等同于读取文件内容，更不授予写入/删除权限。
+    Execute,
     Write,
     Delete,
 }
@@ -143,10 +145,7 @@ impl PathPolicy {
                 PathBuf::from("/usr/share"),
             ];
 
-            self.restricted_dirs = vec![
-                PathBuf::from("/tmp"),
-                PathBuf::from("/var/tmp"),
-            ];
+            self.restricted_dirs = vec![PathBuf::from("/tmp"), PathBuf::from("/var/tmp")];
 
             if let Ok(home) = std::env::var("HOME") {
                 let home = PathBuf::from(&home);
@@ -182,11 +181,7 @@ impl PathPolicy {
     /// 5. 检查环境变量注入
     /// 6. 匹配安全等级
     /// 7. 根据访问类型决定允许/确认/拒绝
-    pub fn validate_path(
-        &self,
-        path: &str,
-        access_type: AccessType,
-    ) -> PathPolicyResult {
+    pub fn validate_path(&self, path: &str, access_type: AccessType) -> PathPolicyResult {
         // 1. 基础检查：空路径、环境变量注入
         if path.trim().is_empty() {
             return PathPolicyResult::Deny {
@@ -248,15 +243,23 @@ impl PathPolicy {
 
         // 7. 根据安全等级和访问类型决定结果
         match level {
-            PathSecurityLevel::Protected => PathPolicyResult::Deny {
-                reason: format!(
-                    "路径 '{}' 属于系统保护目录，禁止访问",
-                    normalized.display()
-                ),
-                code: PATH_DENY_PROTECTED.to_string(),
+            PathSecurityLevel::Protected => match access_type {
+                // Program Files/Windows 下的文件仍禁止读取、改写和删除，但允许作为
+                // 已安装程序的入口启动。这里只授予 CreateProcess 所需的“执行”语义。
+                AccessType::Execute => validate_executable_target(&normalized),
+                AccessType::Read | AccessType::Write | AccessType::Delete => {
+                    PathPolicyResult::Deny {
+                        reason: format!(
+                            "路径 '{}' 属于系统保护目录，禁止访问",
+                            normalized.display()
+                        ),
+                        code: PATH_DENY_PROTECTED.to_string(),
+                    }
+                }
             },
             PathSecurityLevel::Restricted => match access_type {
                 AccessType::Read => PathPolicyResult::Allow,
+                AccessType::Execute => validate_executable_target(&normalized),
                 AccessType::Write | AccessType::Delete => PathPolicyResult::Deny {
                     reason: format!(
                         "路径 '{}' 属于受限目录，禁止写入/删除",
@@ -267,6 +270,7 @@ impl PathPolicy {
             },
             PathSecurityLevel::User => match access_type {
                 AccessType::Read => PathPolicyResult::Allow,
+                AccessType::Execute => validate_executable_target(&normalized),
                 AccessType::Write | AccessType::Delete => PathPolicyResult::ConfirmationRequired,
             },
             PathSecurityLevel::Trusted => PathPolicyResult::Allow,
@@ -275,36 +279,30 @@ impl PathPolicy {
 
     /// 分类路径的安全等级
     fn classify_path(&self, path: &Path) -> PathSecurityLevel {
-        let path_str = path.to_string_lossy().to_lowercase();
-
         // 检查是否在 PROTECTED 目录中
         for protected in &self.protected_dirs {
-            let protected_lower = protected.to_string_lossy().to_lowercase();
-            if path_str.starts_with(&protected_lower) {
+            if path_is_within(path, protected) {
                 return PathSecurityLevel::Protected;
             }
         }
 
         // 检查是否在 RESTRICTED 目录中
         for restricted in &self.restricted_dirs {
-            let restricted_lower = restricted.to_string_lossy().to_lowercase();
-            if path_str.starts_with(&restricted_lower) {
+            if path_is_within(path, restricted) {
                 return PathSecurityLevel::Restricted;
             }
         }
 
         // 检查是否在 TRUSTED 目录中
         for trusted in &self.trusted_dirs {
-            let trusted_lower = trusted.to_string_lossy().to_lowercase();
-            if path_str.starts_with(&trusted_lower) {
+            if path_is_within(path, trusted) {
                 return PathSecurityLevel::Trusted;
             }
         }
 
         // 检查是否在 USER 目录中
         for user in &self.user_dirs {
-            let user_lower = user.to_string_lossy().to_lowercase();
-            if path_str.starts_with(&user_lower) {
+            if path_is_within(path, user) {
                 return PathSecurityLevel::User;
             }
         }
@@ -313,8 +311,7 @@ impl PathPolicy {
         #[cfg(target_os = "windows")]
         {
             if let Ok(user_profile) = std::env::var("USERPROFILE") {
-                let profile_lower = user_profile.to_lowercase();
-                if path_str.starts_with(&profile_lower) {
+                if path_is_within(path, Path::new(&user_profile)) {
                     return PathSecurityLevel::User;
                 }
             }
@@ -322,8 +319,7 @@ impl PathPolicy {
         #[cfg(not(target_os = "windows"))]
         {
             if let Ok(home) = std::env::var("HOME") {
-                let home_lower = home.to_lowercase();
-                if path_str.starts_with(&home_lower) {
+                if path_is_within(path, Path::new(&home)) {
                     return PathSecurityLevel::User;
                 }
             }
@@ -344,12 +340,10 @@ impl PathPolicy {
             {
                 // Windows: 检查 junction / reparse point
                 match is_reparse_point(&current) {
-                    Ok(true) => {
-                        match resolve_reparse_point(&current) {
-                            Ok(target) => current = target,
-                            Err(e) => return Err(format!("无法解析符号链接: {}", e)),
-                        }
-                    }
+                    Ok(true) => match resolve_reparse_point(&current) {
+                        Ok(target) => current = target,
+                        Err(e) => return Err(format!("无法解析符号链接: {}", e)),
+                    },
                     Ok(false) => break,
                     Err(e) => return Err(format!("检查符号链接失败: {}", e)),
                 }
@@ -391,6 +385,59 @@ impl PathPolicy {
 impl Default for PathPolicy {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// 判断 `path` 是否真正位于 `root` 目录中。
+///
+/// 不能使用字符串前缀：`C:\\Program Files-Evil` 不是
+/// `C:\\Program Files` 的子目录。Windows 路径按组件做大小写不敏感比较。
+fn path_is_within(path: &Path, root: &Path) -> bool {
+    let mut path_components = path.components();
+    for root_component in root.components() {
+        let Some(path_component) = path_components.next() else {
+            return false;
+        };
+
+        #[cfg(target_os = "windows")]
+        if !path_component
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&root_component.as_os_str().to_string_lossy())
+        {
+            return false;
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        if path_component != root_component {
+            return false;
+        }
+    }
+    true
+}
+
+/// 执行权限只接受可启动入口，不允许借 Execute 权限读取任意受保护文件。
+fn validate_executable_target(path: &Path) -> PathPolicyResult {
+    #[cfg(target_os = "windows")]
+    const EXECUTABLE_EXTENSIONS: &[&str] = &["exe", "lnk"];
+    #[cfg(not(target_os = "windows"))]
+    const EXECUTABLE_EXTENSIONS: &[&str] = &["appimage", "desktop", "sh"];
+
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
+
+    if EXECUTABLE_EXTENSIONS
+        .iter()
+        .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+    {
+        PathPolicyResult::Allow
+    } else {
+        PathPolicyResult::Deny {
+            reason: format!("路径 '{}' 不是允许启动的程序入口", path.display()),
+            code: PATH_DENY_INVALID.to_string(),
+        }
     }
 }
 
@@ -462,10 +509,8 @@ fn check_path_traversal(original: &str, normalized: &Path) -> Option<PathPolicyR
     if original.contains("..") || original.contains("./") || original.contains(".\\") {
         // 规范化后如果在不同盘符或根目录，可能是遍历攻击
         let orig_path = PathBuf::from(original);
-        if let (Some(_orig_parent), Some(_norm_parent)) = (
-            orig_path.parent(),
-            normalized.parent(),
-        ) {
+        if let (Some(_orig_parent), Some(_norm_parent)) = (orig_path.parent(), normalized.parent())
+        {
             // 如果原始路径在父目录，但规范化后跨到了不同的目录树
             if orig_path.components().count() < normalized.components().count() {
                 // 路径变长了，说明可能在利用 .. 和符号链接穿越
@@ -545,7 +590,7 @@ use rusqlite::Connection;
 /// 从数据库加载允许目录并转换为 PathBuf 列表
 pub fn load_trusted_dirs_from_db(conn: &Connection) -> AppResult<Vec<PathBuf>> {
     let mut stmt = conn.prepare(
-        "SELECT path FROM allowed_directories WHERE access_level IN ('TRUSTED', 'read', 'write')"
+        "SELECT path FROM allowed_directories WHERE access_level IN ('TRUSTED', 'read', 'write')",
     )?;
 
     let rows = stmt.query_map([], |row| {
@@ -597,5 +642,46 @@ fn expand_env_vars(path: &str) -> String {
             result = result.replace("~/", &format!("{}/", home));
         }
         result
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installed_executable_can_run_but_cannot_be_read_or_written() {
+        let policy = PathPolicy::new();
+        let qq = r"C:\Program Files\Tencent\QQNT\QQ.exe";
+
+        assert_eq!(policy.validate_path(qq, AccessType::Execute), PathPolicyResult::Allow);
+        assert!(matches!(
+            policy.validate_path(qq, AccessType::Read),
+            PathPolicyResult::Deny { ref code, .. } if code == PATH_DENY_PROTECTED
+        ));
+        assert!(matches!(
+            policy.validate_path(qq, AccessType::Write),
+            PathPolicyResult::Deny { ref code, .. } if code == PATH_DENY_PROTECTED
+        ));
+    }
+
+    #[test]
+    fn execute_permission_is_limited_to_program_entries() {
+        let policy = PathPolicy::new();
+        let config = r"C:\Program Files\Tencent\QQNT\config.json";
+
+        assert!(matches!(
+            policy.validate_path(config, AccessType::Execute),
+            PathPolicyResult::Deny { ref code, .. } if code == PATH_DENY_INVALID
+        ));
+    }
+
+    #[test]
+    fn similarly_named_directory_is_not_treated_as_program_files() {
+        let policy = PathPolicy::new();
+        assert_ne!(
+            policy.classify_path(Path::new(r"C:\Program Files-Evil\demo.exe")),
+            PathSecurityLevel::Protected
+        );
     }
 }

@@ -127,8 +127,13 @@ impl AgentTool for ReadFileTool {
 
         let final_content = if let Some(max) = max_lines {
             content.lines().take(max as usize).collect::<Vec<_>>().join("\n")
-        } else if content.len() > 10240 {
-            format!("{}\n... (文件过大，已截断，共 {} 字符)", &content[..10240], content.len())
+        } else if content.chars().count() > 10240 {
+            let total_chars = content.chars().count();
+            format!(
+                "{}\n... (文件过大，已截断，共 {} 字符)",
+                content.chars().take(10240).collect::<String>(),
+                total_chars
+            )
         } else {
             content
         };

@@ -7,16 +7,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::tools::RiskLevel;
 
-pub mod path_policy;
 pub mod command_policy;
+pub mod path_policy;
 
-pub use path_policy::{
-    PathPolicy, PathPolicyResult, PathSecurityLevel, AccessType,
-    PATH_DENY_PROTECTED, PATH_DENY_TRAVERSAL, PATH_DENY_SYMLINK_LOOP,
-    PATH_DENY_UNC, PATH_DENY_INVALID, PATH_DENY_OUTSIDE_SCOPE,
-    load_trusted_dirs_from_db,
-};
 pub use command_policy::{CommandPolicy, CommandPolicyResult};
+pub use path_policy::{
+    load_trusted_dirs_from_db, AccessType, PathPolicy, PathPolicyResult, PathSecurityLevel,
+    PATH_DENY_INVALID, PATH_DENY_OUTSIDE_SCOPE, PATH_DENY_PROTECTED, PATH_DENY_SYMLINK_LOOP,
+    PATH_DENY_TRAVERSAL, PATH_DENY_UNC,
+};
 
 // ============================================================
 // Phase 4: 权限确认弹窗类型
@@ -38,6 +37,9 @@ pub enum PermissionDecision {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PermissionRequestPayload {
     pub request_id: String,
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
     pub tool_name: String,
     pub description: String,
     pub risk_level: String,
@@ -59,10 +61,7 @@ pub enum PermissionResult {
     /// 需要用户确认
     ConfirmationRequired,
     /// 拒绝执行
-    Denied {
-        reason: String,
-        code: String,
-    },
+    Denied { reason: String, code: String },
 }
 
 /// 拒绝原因码
@@ -256,11 +255,7 @@ impl PermissionManager {
     ///
     /// # Returns
     /// PathPolicyResult
-    pub fn validate_path(
-        &self,
-        path: &str,
-        access_type: AccessType,
-    ) -> PathPolicyResult {
+    pub fn validate_path(&self, path: &str, access_type: AccessType) -> PathPolicyResult {
         self.path_policy.validate_path(path, access_type)
     }
 
@@ -290,11 +285,13 @@ impl Default for PermissionManager {
 
 fn infer_access_type(tool_name: &str) -> AccessType {
     match tool_name {
-        "read_file" | "list_directory" | "open_file" | "find_program" | "take_screenshot" => AccessType::Read,
+        "read_file" | "list_directory" | "open_file" | "find_program" | "take_screenshot" => {
+            AccessType::Read
+        }
         "write_file" => AccessType::Write,
         "delete_file" | "move_file" => AccessType::Delete,
         "execute_command" => AccessType::Write, // 命令执行视为写操作
-        "launch_program" => AccessType::Read,   // 启动程序视为读操作
+        "launch_program" => AccessType::Execute,
         _ => AccessType::Read,
     }
 }
@@ -303,10 +300,10 @@ fn infer_access_type(tool_name: &str) -> AccessType {
 // 数据库加载
 // ============================================================
 
-fn load_trusted_tools_from_db(conn: &rusqlite::Connection) -> crate::error::AppResult<Vec<TrustedToolEntry>> {
-    let mut stmt = conn.prepare(
-        "SELECT tool_name, path_pattern, risk_level FROM trusted_tools"
-    )?;
+fn load_trusted_tools_from_db(
+    conn: &rusqlite::Connection,
+) -> crate::error::AppResult<Vec<TrustedToolEntry>> {
+    let mut stmt = conn.prepare("SELECT tool_name, path_pattern, risk_level FROM trusted_tools")?;
 
     let rows = stmt.query_map([], |row| {
         Ok(TrustedToolEntry {
@@ -324,4 +321,24 @@ fn load_trusted_tools_from_db(conn: &rusqlite::Connection) -> crate::error::AppR
     }
 
     Ok(tools)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launch_program_allows_program_files_executable_only_for_execution() {
+        let permissions = PermissionManager::new();
+        let qq = r"C:\Program Files\Tencent\QQNT\QQ.exe";
+
+        assert_eq!(
+            permissions.check_permission(RiskLevel::Low, "launch_program", Some(qq)),
+            PermissionResult::Allowed
+        );
+        assert!(matches!(
+            permissions.check_permission(RiskLevel::Safe, "read_file", Some(qq)),
+            PermissionResult::Denied { ref code, .. } if code == PATH_DENY_PROTECTED
+        ));
+    }
 }

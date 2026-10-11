@@ -1,14 +1,9 @@
-//! V21: 三层精准意图识别
+//! 零模型本地意图路由。
 //!
-//! 第一层：关键词正则快速预判（零延迟）
-//! 第二层：轻量 LLM 意图分类（3秒超时兜底）
-//! 第三层：快速路径 [NEED_TOOL] 标记兜底
-//!
-//! 设计原则：意图识别精准度优先，不确定走完整路径（安全兜底）
+//! 明确闲聊走精简对话提示，明确操作选择窄工具集；不确定请求直接交给
+//! Jarvis 自适应执行器。路由阶段不进行额外模型调用。
 
-use crate::llm::{OllamaClient, OllamaMessage};
 pub use crate::tools::registry::ToolCategory;
-use tokio::time::{timeout, Duration};
 
 // ============================================================
 // 意图分类结果
@@ -17,12 +12,10 @@ use tokio::time::{timeout, Duration};
 /// 意图类型
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntentType {
-    /// 纯闲聊 — 走快速路径
+    /// 纯闲聊 — 走精简对话路径
     Chat,
-    /// 需要操作电脑 — 走完整 ReAct 路径
+    /// 需要操作电脑 — 走 Jarvis 工具路径
     Action,
-    /// 不确定 — 默认走完整路径（安全兜底）
-    Uncertain,
 }
 
 /// 完整意图分析结果
@@ -49,7 +42,6 @@ const CHAT_KEYWORDS: &[&str] = &[
     "你能做什么", "你会什么", "help", "帮助",
     "早上好", "下午好", "晚上好", "good morning", "good afternoon", "good evening",
     "晚安", "good night",
-    "今天天气", "天气怎么样", // 纯询问，不操作
     "讲个笑话", "说个笑话", "joke",
     "今天星期几", "今天几号", "what day",
     "你多大", "你几岁",
@@ -113,6 +105,7 @@ const ACTION_KEYWORDS: &[&str] = &[
     "压缩", "zip", "compress",
     "解压", "unzip", "extract",
     "搜索", "search", "find", "查找",
+    "天气", "weather",
     "排序", "sort",
     "过滤", "filter",
     "统计", "count", "统计一下",
@@ -143,7 +136,7 @@ const ACTION_KEYWORDS: &[&str] = &[
 
 /// 第一层：关键词正则快速预判
 ///
-/// 返回 Some(IntentResult) 表示明确命中，None 表示需要进入第二层
+/// 返回 Some(IntentResult) 表示明确命中，None 表示交给同一次自适应模型调用。
 pub fn quick_classify(user_content: &str) -> Option<IntentResult> {
     let lower = user_content.to_lowercase();
     let trimmed = lower.trim();
@@ -178,7 +171,7 @@ pub fn quick_classify(user_content: &str) -> Option<IntentResult> {
                     detected_categories.push(cat);
                 }
             }
-            break; // 只要命中一个操作词就判定为 Action
+            // 继续扫描，组合指令可能同时需要文件、浏览器、窗口等多个类别。
         }
     }
 
@@ -195,9 +188,9 @@ pub fn quick_classify(user_content: &str) -> Option<IntentResult> {
             categories: detected_categories,
             layer: "layer1_action",
         }),
-        // 都命中（冲突）→ 进入第二层
+        // 都命中（冲突）→ 自适应路径
         (true, true) => None,
-        // 都没命中 → 进入第二层
+        // 都没命中 → 自适应路径
         (false, false) => None,
     }
 }
@@ -273,6 +266,7 @@ fn keyword_to_category(keyword: &str) -> Option<ToolCategory> {
         Some(ToolCategory::ProcessWindow)
     } else if k.contains("browser") || k.contains("浏览器") || k.contains("chrome")
         || k.contains("edge") || k.contains("网页") || k.contains("网站")
+        || k.contains("天气") || k.contains("weather")
         || k.contains("navigate") || k.contains("click") || k.contains("type")
         || k.contains("scroll") || k.contains("screenshot") || k.contains("截图")
         || k.contains("截屏") || k.contains("tab") || k.contains("标签")
@@ -304,140 +298,6 @@ fn keyword_to_category(keyword: &str) -> Option<ToolCategory> {
     } else {
         None
     }
-}
-
-// ============================================================
-// 第二层：轻量 LLM 意图分类
-// ============================================================
-
-/// 第二层：轻量 LLM 意图分类
-///
-/// 极简 prompt，让模型只输出 "chat" 或 "action"
-/// 超时3秒或解析失败 → 默认完整路径（安全兜底）
-pub async fn llm_classify(
-    ollama: &OllamaClient,
-    model: &str,
-    user_content: &str,
-    temperature: f32,
-) -> IntentResult {
-    let prompt = format!(
-        r#"你是一个意图分类器。判断用户消息属于"闲聊"还是"操作电脑"。
-
-闲聊：问候、感谢、告别、问答、聊天、笑话、日期询问等不需要操作电脑的内容。
-操作：需要打开/关闭/查看/修改/执行任何电脑操作的内容。
-
-用户消息："{}"
-
-只回答一个单词：chat 或 action"#,
-        user_content
-    );
-
-    let messages = vec![OllamaMessage::user(&prompt)];
-
-    // 3秒超时兜底
-    let result = timeout(
-        Duration::from_secs(3),
-        ollama.chat(model, messages, None, temperature),
-    )
-    .await;
-
-    match result {
-        Ok(Ok((content, _))) => {
-            let lower = content.to_lowercase();
-            if lower.contains("chat") || lower.contains("闲聊") {
-                IntentResult {
-                    intent: IntentType::Chat,
-                    categories: vec![],
-                    layer: "layer2_chat",
-                }
-            } else if lower.contains("action") || lower.contains("操作") {
-                // 尝试从回复中提取类别
-                let categories = extract_categories_from_llm(&content);
-                IntentResult {
-                    intent: IntentType::Action,
-                    categories,
-                    layer: "layer2_action",
-                }
-            } else {
-                // 解析失败 → 安全兜底走完整路径
-                IntentResult {
-                    intent: IntentType::Action,
-                    categories: vec![],
-                    layer: "layer2_fallback",
-                }
-            }
-        }
-        // 超时或错误 → 安全兜底走完整路径
-        _ => IntentResult {
-            intent: IntentType::Action,
-            categories: vec![],
-            layer: "layer2_timeout",
-        },
-    }
-}
-
-/// 从 LLM 回复中尝试提取工具类别（如果模型输出了额外信息）
-fn extract_categories_from_llm(content: &str) -> Vec<ToolCategory> {
-    let lower = content.to_lowercase();
-    let mut cats = Vec::new();
-
-    let category_keywords = [
-        ("file", ToolCategory::File),
-        ("文件", ToolCategory::File),
-        ("program", ToolCategory::Program),
-        ("应用", ToolCategory::Program),
-        ("process", ToolCategory::ProcessWindow),
-        ("window", ToolCategory::ProcessWindow),
-        ("进程", ToolCategory::ProcessWindow),
-        ("窗口", ToolCategory::ProcessWindow),
-        ("browser", ToolCategory::Browser),
-        ("浏览器", ToolCategory::Browser),
-        ("system", ToolCategory::System),
-        ("系统", ToolCategory::System),
-        ("memory", ToolCategory::Memory),
-        ("记忆", ToolCategory::Memory),
-    ];
-
-    for (kw, cat) in category_keywords.iter() {
-        if lower.contains(kw) && !cats.contains(cat) {
-            cats.push(cat.clone());
-        }
-    }
-
-    cats
-}
-
-// ============================================================
-// 统一入口：三层意图识别
-// ============================================================
-
-/// 统一意图识别入口
-///
-/// 第一层：关键词快速预判（零延迟）
-/// 第二层：LLM 分类（3秒超时）
-/// 第三层：由快速路径运行时通过 [NEED_TOOL] 标记兜底
-pub async fn classify_intent(
-    ollama: &OllamaClient,
-    model: &str,
-    user_content: &str,
-    temperature: f32,
-) -> IntentResult {
-    // 第一层：关键词快速预判
-    if let Some(result) = quick_classify(user_content) {
-        eprintln!(
-            "[Intent] 第一层命中: {} → {:?} (categories: {:?})",
-            result.layer, result.intent, result.categories
-        );
-        return result;
-    }
-
-    // 第二层：LLM 分类
-    let result = llm_classify(ollama, model, user_content, temperature).await;
-    eprintln!(
-        "[Intent] 第二层结果: {} → {:?} (categories: {:?})",
-        result.layer, result.intent, result.categories
-    );
-    result
 }
 
 // ============================================================

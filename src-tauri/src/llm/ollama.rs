@@ -117,7 +117,7 @@ pub enum ChatChunk {
     /// 工具调用
     ToolCall(ToolCall),
     /// 流结束
-    Done,
+    Done(Option<String>),
     /// 错误
     Error(String),
 }
@@ -132,6 +132,18 @@ struct ChatRequest {
     tools: Option<Vec<serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<serde_json::Value>,
+    /// 让模型在内存中保持一段时间，降低连续指令的首 token 延迟。
+    keep_alive: String,
+    /// 桌面指令优先低延迟。Qwen3 等模型关闭长思维链后仍可正常工具调用。
+    think: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct WarmupRequest {
+    model: String,
+    prompt: String,
+    stream: bool,
+    keep_alive: String,
 }
 
 /// Ollama 聊天流式响应体
@@ -159,6 +171,7 @@ struct TagsResponse {
 /// 封装与 Ollama 本地服务的所有 HTTP 通信。
 pub struct OllamaClient {
     client: Client,
+    unlimited_client: Client,
     base_url: String,
     #[allow(dead_code)]
     timeout_ms: u64,
@@ -172,6 +185,7 @@ impl OllamaClient {
                 .timeout(std::time::Duration::from_millis(timeout_ms))
                 .build()
                 .unwrap_or_default(),
+            unlimited_client: Client::builder().build().unwrap_or_default(),
             base_url,
             timeout_ms,
         }
@@ -199,6 +213,32 @@ impl OllamaClient {
         Ok(data.models)
     }
 
+    /// 后台预热模型。空 prompt 只触发加载，不产生用户可见内容。
+    pub async fn warm_up(&self, model: &str) -> AppResult<()> {
+        let url = format!("{}/api/generate", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(120))
+            .json(&WarmupRequest {
+                model: model.to_string(),
+                prompt: String::new(),
+                stream: false,
+                keep_alive: "30m".to_string(),
+            })
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(AppError::Ollama(format!(
+                "模型预热失败，Ollama 返回 {}",
+                response.status()
+            )))
+        }
+    }
+
     /// 流式聊天
     ///
     /// 返回一个 Stream，前端可以逐片消费。
@@ -218,29 +258,95 @@ impl OllamaClient {
         tools: Option<Vec<serde_json::Value>>,
         temperature: f32,
     ) -> AppResult<Pin<Box<dyn Stream<Item = ChatChunk> + Send>>> {
+        self.chat_stream_with_timeout(
+            model,
+            messages,
+            tools,
+            temperature,
+            Some(self.timeout_ms),
+            None,
+        )
+        .await
+    }
+
+    /// 长任务专用流式聊天：不设总时限，由模型完成或用户退出应用时结束。
+    pub async fn chat_stream_unlimited(
+        &self,
+        model: &str,
+        messages: Vec<OllamaMessage>,
+        tools: Option<Vec<serde_json::Value>>,
+        temperature: f32,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = ChatChunk> + Send>>> {
+        self.chat_stream_with_timeout(model, messages, tools, temperature, None, None)
+            .await
+    }
+
+    /// 长输出场景（网页生成等）专用流式聊天。
+    ///
+    /// Ollama 的 `num_ctx` 默认只有 4096 token，既装不下需求文档，也写不完一个完整页面，
+    /// 必须由调用方显式指定，否则提示词会被静默截断。此方法允许传入额外的 options。
+    pub async fn chat_stream_with_options(
+        &self,
+        model: &str,
+        messages: Vec<OllamaMessage>,
+        temperature: f32,
+        extra_options: serde_json::Value,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = ChatChunk> + Send>>> {
+        self.chat_stream_with_timeout(model, messages, None, temperature, None, Some(extra_options))
+            .await
+    }
+
+    async fn chat_stream_with_timeout(
+        &self,
+        model: &str,
+        messages: Vec<OllamaMessage>,
+        tools: Option<Vec<serde_json::Value>>,
+        temperature: f32,
+        timeout_ms: Option<u64>,
+        extra_options: Option<serde_json::Value>,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = ChatChunk> + Send>>> {
         let (tx, rx) = mpsc::channel::<ChatChunk>(128);
 
         let url = format!("{}/api/chat", self.base_url);
-        let client = self.client.clone();
+        let client = if timeout_ms.is_some() {
+            self.client.clone()
+        } else {
+            self.unlimited_client.clone()
+        };
         let model = model.to_string();
+
+        let mut options = if timeout_ms.is_none() {
+            serde_json::json!({"temperature": temperature, "num_predict": -1})
+        } else {
+            serde_json::json!({"temperature": temperature})
+        };
+        if let Some(extra) = extra_options {
+            if let (Some(base), Some(extra_map)) = (options.as_object_mut(), extra.as_object()) {
+                for (key, value) in extra_map {
+                    base.insert(key.clone(), value.clone());
+                }
+            }
+        }
 
         let request_body = ChatRequest {
             model,
             messages,
             stream: true,
             tools,
-            options: Some(serde_json::json!({"temperature": temperature})),
+            options: Some(options),
+            keep_alive: "30m".to_string(),
+            think: false,
         };
 
         // 在后台任务中执行 HTTP 请求和 SSE 解析
         tokio::spawn(async move {
             let result = async {
-                let resp = client
-                    .post(&url)
-                    .json(&request_body)
-                    .send()
-                    .await
-                    .map_err(AppError::Network)?;
+                let request = client.post(&url).json(&request_body);
+                let request = match timeout_ms {
+                    Some(timeout_ms) => request.timeout(std::time::Duration::from_millis(timeout_ms)),
+                    None => request,
+                };
+                let resp = request.send().await.map_err(AppError::Network)?;
 
                 if !resp.status().is_success() {
                     let status = resp.status();
@@ -252,54 +358,29 @@ impl OllamaClient {
                 }
 
                 let mut stream = resp.bytes_stream();
+                let mut pending_line = Vec::<u8>::new();
 
                 while let Some(chunk_result) = stream.next().await {
                     let chunk = chunk_result.map_err(AppError::Network)?;
-                    let text = String::from_utf8_lossy(&chunk);
-
-                    for line in text.lines() {
+                    pending_line.extend_from_slice(&chunk);
+                    while let Some(newline) = pending_line.iter().position(|byte| *byte == b'\n') {
+                        let line_bytes = pending_line.drain(..=newline).collect::<Vec<_>>();
+                        let line = String::from_utf8_lossy(&line_bytes);
                         let line = line.trim();
                         if line.is_empty() || line == "data: [DONE]" {
                             continue;
                         }
+                        let json = line.strip_prefix("data: ").unwrap_or(line);
+                        process_chat_response_line(json, &tx).await;
+                    }
+                }
 
-                        // 去掉 "data: " 前缀
-                        let json_str = if line.starts_with("data: ") {
-                            &line[6..]
-                        } else {
-                            line
-                        };
-
-                        let parsed: Result<ChatResponse, _> =
-                            serde_json::from_str(json_str);
-
-                        match parsed {
-                            Ok(resp) => {
-                                if resp.done {
-                                    let _ = tx.send(ChatChunk::Done).await;
-                                    break;
-                                }
-
-                                if let Some(msg) = resp.message {
-                                    // 检查是否有 tool_calls
-                                    if let Some(tool_calls) = msg.tool_calls {
-                                        for tc in tool_calls {
-                                            let _ = tx.send(ChatChunk::ToolCall(tc)).await;
-                                        }
-                                    }
-
-                                    // 发送文本内容
-                                    if !msg.content.is_empty() {
-                                        let _ = tx
-                                            .send(ChatChunk::Text(msg.content))
-                                            .await;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("[Ollama] JSON parse error: {} | line: {}", e, line);
-                            }
-                        }
+                if !pending_line.is_empty() {
+                    let line = String::from_utf8_lossy(&pending_line);
+                    let line = line.trim();
+                    if !line.is_empty() && line != "data: [DONE]" {
+                        let json = line.strip_prefix("data: ").unwrap_or(line);
+                        process_chat_response_line(json, &tx).await;
                     }
                 }
 
@@ -308,7 +389,7 @@ impl OllamaClient {
             .await;
 
             if let Err(e) = result {
-                let _ = tx.send(ChatChunk::Error(e.to_string())).await;
+                let _ = tx.send(ChatChunk::Error(format!("{e:#}"))).await;
             }
         });
 
@@ -331,14 +412,11 @@ impl OllamaClient {
             stream: false,
             tools,
             options: Some(serde_json::json!({"temperature": temperature})),
+            keep_alive: "30m".to_string(),
+            think: false,
         };
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(&request_body)
-            .send()
-            .await?;
+        let resp = self.client.post(&url).json(&request_body).send().await?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -361,16 +439,13 @@ impl OllamaClient {
 
 /// 处理单条 Ollama 流式响应 JSON 行
 #[allow(dead_code)]
-async fn process_chat_response_line(
-    json_str: &str,
-    tx: &mpsc::Sender<ChatChunk>,
-) {
+async fn process_chat_response_line(json_str: &str, tx: &mpsc::Sender<ChatChunk>) {
     let parsed: Result<ChatResponse, _> = serde_json::from_str(json_str);
 
     match parsed {
         Ok(resp) => {
             if resp.done {
-                let _ = tx.send(ChatChunk::Done).await;
+                let _ = tx.send(ChatChunk::Done(resp.done_reason)).await;
                 return;
             }
 

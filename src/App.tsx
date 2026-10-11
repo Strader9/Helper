@@ -9,6 +9,7 @@ import Settings from "./pages/Settings";
 import Logs from "./pages/Logs";
 import GitHub from "./pages/GitHub";
 import MiniChat from "./pages/MiniChat";
+import WebStudio from "./pages/WebStudio";
 import "./App.css";
 import "./cyberpunk.css";
 
@@ -50,6 +51,7 @@ function App() {
           <Route path="/settings" element={<Settings />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/github" element={<GitHub />} />
+          <Route path="/web-studio" element={<WebStudio />} />
         </Routes>
       </main>
     </div>

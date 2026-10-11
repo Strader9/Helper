@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import CyberIcon from "../components/CyberIcon";
+import { createChatRunId, formatToolResult, humanizeError, parseEventEnvelope } from "../chatUi";
 
 // ============================================================
 // 类型定义（与 Chat.tsx 保持一致）
@@ -55,6 +56,8 @@ function MiniChat() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const avatarAreaRef = useRef<HTMLDivElement>(null);
   const unlistenRef = useRef<UnlistenFn[]>([]);
+  const listenerSetupGenerationRef = useRef(0);
+  const activeRunIdRef = useRef<string | null>(null);
   // 用 ref 存储当前对话 ID，避免 setupEventListeners 闭包捕获旧值
   const currentConversationIdRef = useRef<string | null>(null);
 
@@ -120,8 +123,7 @@ function MiniChat() {
 
   // ---- 事件监听 ----
   const setupEventListeners = useCallback(async () => {
-    unlistenRef.current.forEach((u) => u());
-    unlistenRef.current = [];
+    const generation = ++listenerSetupGenerationRef.current;
 
     const listeners: [string, (payload: string) => void][] = [
       ["chat:text", (payload) => {
@@ -135,6 +137,7 @@ function MiniChat() {
         }
       }],
       ["chat:thinking", () => {
+        setIsLoading(true);
         setThinking(true);
         setStreamingText("");
       }],
@@ -172,18 +175,17 @@ function MiniChat() {
               updated[actualIndex] = {
                 ...updated[actualIndex],
                 status: data.success ? "success" : "error",
-                result: data.content,
+                result: formatToolResult(data.content),
               };
               return updated;
             });
-            setIsLoading(false);
-            setThinking(false);
           }
         } catch (e) {
           console.error("Tool result parse error:", e);
         }
       }],
       ["chat:done", () => {
+        activeRunIdRef.current = null;
         setIsLoading(false);
         setThinking(false);
         setStreamingText("");
@@ -193,35 +195,60 @@ function MiniChat() {
         }
       }],
       ["chat:error", (payload) => {
+        activeRunIdRef.current = null;
         setIsLoading(false);
         setThinking(false);
-        console.error("Chat error:", payload);
+        console.error("Chat error:", humanizeError(payload, "AI 响应出错"));
       }],
     ];
 
-    for (const [eventName, handler] of listeners) {
-      const unlisten = await listen(eventName, (event) => {
+    const newUnlisteners = await Promise.all(
+      listeners.map(([eventName, handler]) => listen(eventName, (event) => {
         const payloadStr = String(event.payload);
         // session_id 过滤——防止收到主窗口或其他对话的事件
         const cid = currentConversationIdRef.current;
         try {
-          const parsed = JSON.parse(payloadStr);
+          const parsed = parseEventEnvelope(payloadStr);
           if (cid && (!parsed.session_id || parsed.session_id !== cid)) {
+            return;
+          }
+          if (eventName === "chat:thinking" && parsed.run_id) {
+            activeRunIdRef.current = parsed.run_id;
+          }
+          if (parsed.run_id && parsed.run_id !== activeRunIdRef.current) {
             return;
           }
         } catch {
           if (cid) return;
         }
         handler(payloadStr);
-      });
-      unlistenRef.current.push(unlisten);
+      }))
+    );
+
+    if (generation !== listenerSetupGenerationRef.current) {
+      newUnlisteners.forEach((unlisten) => unlisten());
+      return;
     }
+    unlistenRef.current.forEach((unlisten) => unlisten());
+    unlistenRef.current = newUnlisteners;
   }, []);
+
+  // 保持监听器常驻，发送时无需等待多次 IPC 注册。
+  useEffect(() => {
+    setupEventListeners().catch((e) => {
+      console.error("Failed to set up mini chat listeners:", e);
+    });
+    return () => {
+      listenerSetupGenerationRef.current += 1;
+      unlistenRef.current.forEach((unlisten) => unlisten());
+      unlistenRef.current = [];
+    };
+  }, [setupEventListeners]);
 
   // ---- 操作 ----
 
   async function handleSendMessage() {
-    if (!inputText.trim() || isLoading) return;
+    if (!inputText.trim()) return;
 
     let convId = currentConversationId;
     if (!convId) {
@@ -239,24 +266,42 @@ function MiniChat() {
     currentConversationIdRef.current = convId;
 
     const content = inputText.trim();
+    const requestId = createChatRunId();
+    activeRunIdRef.current = requestId;
     setInputText("");
     setIsLoading(true);
     setStreamingText("");
-    setThinking(false);
+    // 立即反馈并乐观显示消息，避免发送前重新拉取全部历史。
+    setThinking(true);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: -Date.now(),
+        session_id: convId,
+        role: "user",
+        content,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
     setToolExecutions([]);
     setShowChat(true);
 
-    await loadMessages(convId);
-    await setupEventListeners();
-
     try {
-      await invoke("send_message", {
+      const acceptedRunId = await invoke<string>("send_message", {
         conversationId: convId,
         content,
+        requestId,
       });
+      if (activeRunIdRef.current === requestId) {
+        activeRunIdRef.current = acceptedRunId;
+      }
     } catch (e) {
-      console.error("Failed to send message:", e);
-      setIsLoading(false);
+      console.error("Failed to send message:", humanizeError(e, "发送失败"));
+      if (activeRunIdRef.current === requestId) {
+        activeRunIdRef.current = null;
+        setIsLoading(false);
+        setThinking(false);
+      }
     }
   }
 
@@ -389,15 +434,15 @@ function MiniChat() {
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={handleKeyDown}
-              disabled={isLoading}
               rows={1}
             />
             <button
               className="mini-send-btn"
               onClick={handleSendMessage}
-              disabled={!inputText.trim() || isLoading}
+              disabled={!inputText.trim()}
+              title={isLoading ? "发送新指令并取消上一条" : "发送"}
             >
-              {isLoading ? <span className="btn-spinner" /> : <CyberIcon name="send" size={16} />}
+              <CyberIcon name="send" size={16} />
             </button>
           </div>
         </div>

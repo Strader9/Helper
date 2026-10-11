@@ -6,9 +6,13 @@
 //! 设计原则：Ollama 离线时仪表盘仍可用，监控服务完全独立。
 
 use serde::Serialize;
-use std::process::Command;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::process::Command;
+#[cfg(target_os = "windows")]
+use std::sync::{Mutex, OnceLock};
+#[cfg(target_os = "windows")]
+use std::time::{Duration, Instant};
 
 /// Windows CREATE_NO_WINDOW 标志，防止控制台窗口闪烁
 #[cfg(windows)]
@@ -67,7 +71,7 @@ pub struct MonitorStateSnapshot {
 pub fn get_system_metrics() -> SystemMetrics {
     #[cfg(target_os = "windows")]
     {
-        get_system_metrics_windows()
+        get_cached_system_metrics_windows()
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -84,18 +88,56 @@ pub fn get_system_metrics() -> SystemMetrics {
     }
 }
 
+#[cfg(target_os = "windows")]
+static METRICS_CACHE: OnceLock<Mutex<Option<(Instant, SystemMetrics)>>> = OnceLock::new();
+
+/// 仪表盘会频繁轮询，短 TTL 可以避免同一时刻重复启动多组 PowerShell。
+#[cfg(target_os = "windows")]
+fn get_cached_system_metrics_windows() -> SystemMetrics {
+    let cache = METRICS_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = cache.lock() {
+        if let Some((captured_at, metrics)) = guard.as_ref() {
+            if captured_at.elapsed() < Duration::from_secs(2) {
+                return metrics.clone();
+            }
+        }
+
+        let metrics = get_system_metrics_windows();
+        *guard = Some((Instant::now(), metrics.clone()));
+        metrics
+    } else {
+        get_system_metrics_windows()
+    }
+}
+
 // ============================================================
 // Windows 实现
 // ============================================================
 
 #[cfg(target_os = "windows")]
 fn get_system_metrics_windows() -> SystemMetrics {
-    let cpu_usage = get_cpu_usage_windows().unwrap_or(0.0);
-    let (memory_total_gb, memory_used_gb, memory_usage_percent) =
-        get_memory_usage_windows().unwrap_or((0.0, 0.0, 0.0));
-    let disks = get_disk_usage_windows().unwrap_or_default();
-    let network_ok = check_network_windows().unwrap_or(true);
-    let gpu = get_gpu_usage_windows().ok();
+    // 五项查询互不依赖，串行执行会叠加多个 PowerShell 的启动时间。
+    let (cpu, memory, disks, network, gpu) = std::thread::scope(|scope| {
+        let cpu = scope.spawn(get_cpu_usage_windows);
+        let memory = scope.spawn(get_memory_usage_windows);
+        let disks = scope.spawn(get_disk_usage_windows);
+        let network = scope.spawn(check_network_windows);
+        let gpu = scope.spawn(get_gpu_usage_windows);
+        (
+            cpu.join().unwrap_or(None),
+            memory.join().unwrap_or(None),
+            disks.join().unwrap_or(None),
+            network.join().unwrap_or(None),
+            gpu.join()
+                .unwrap_or_else(|_| Err("GPU 查询线程失败".to_string())),
+        )
+    });
+
+    let cpu_usage = cpu.unwrap_or(0.0);
+    let (memory_total_gb, memory_used_gb, memory_usage_percent) = memory.unwrap_or((0.0, 0.0, 0.0));
+    let disks = disks.unwrap_or_default();
+    let network_ok = network.unwrap_or(true);
+    let gpu = gpu.ok();
 
     SystemMetrics {
         cpu_usage,
@@ -116,7 +158,8 @@ fn get_cpu_usage_windows() -> Option<f32> {
         .args([
             "-NoProfile",
             "-NonInteractive",
-            "-WindowStyle", "Hidden",
+            "-WindowStyle",
+            "Hidden",
             "-Command",
             r"(Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue",
         ])
@@ -195,7 +238,8 @@ fn check_network_windows() -> Option<bool> {
         .args([
             "-NoProfile",
             "-NonInteractive",
-            "-WindowStyle", "Hidden",
+            "-WindowStyle",
+            "Hidden",
             "-Command",
             "Test-Connection -ComputerName 8.8.8.8 -Count 1 -Quiet",
         ])

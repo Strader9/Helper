@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import CyberIcon from "../components/CyberIcon";
+import { createChatRunId, formatToolResult, humanizeError, parseEventEnvelope } from "../chatUi";
 
 // ============================================================
 // 类型定义
@@ -82,6 +83,8 @@ interface RecoveryEvent {
 // Phase 4: 权限确认弹窗类型
 interface PermissionRequestPayload {
   request_id: string;
+  session_id: string;
+  run_id?: string;
   tool_name: string;
   description: string;
   risk_level: string;
@@ -121,6 +124,8 @@ function Chat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const unlistenRef = useRef<UnlistenFn[]>([]);
+  const listenerSetupGenerationRef = useRef(0);
+  const activeRunIdRef = useRef<string | null>(null);
   const permissionUnlistenRef = useRef<UnlistenFn | null>(null);
   // 用 ref 存储当前对话 ID，避免 setupEventListeners 闭包捕获旧值
   const currentConversationIdRef = useRef<string | null>(null);
@@ -137,6 +142,7 @@ function Chat() {
     setCurrentTask(null);
     setChatError(null);
     setTaskExpanded(false);
+    setPermissionRequest(null);
   }, []);
 
   // ---- 初始化 ----
@@ -148,6 +154,9 @@ function Chat() {
     const setupPermissionListener = async () => {
       const unlisten = await listen("permission-request", (event) => {
         const payload = event.payload as PermissionRequestPayload;
+        const currentSession = currentConversationIdRef.current;
+        if (currentSession && payload.session_id !== currentSession) return;
+        if (activeRunIdRef.current && payload.run_id && payload.run_id !== activeRunIdRef.current) return;
         setPermissionRequest(payload);
       });
       permissionUnlistenRef.current = unlisten;
@@ -182,12 +191,16 @@ function Chat() {
     if (!isLoading) return;
     const timer = setTimeout(() => {
       console.warn("[Chat] isLoading timed out after 90s, resetting");
+      activeRunIdRef.current = null;
       setIsLoading(false);
       setThinking(false);
       setChatError("请求超时，请重试");
+      if (currentConversationId) {
+        invoke("cancel_task", { conversationId: currentConversationId }).catch(() => {});
+      }
     }, 90000);
     return () => clearTimeout(timer);
-  }, [isLoading]);
+  }, [isLoading, currentConversationId]);
 
   // ---- 数据加载 ----
 
@@ -240,9 +253,15 @@ function Chat() {
 
   async function loadOllamaModels() {
     try {
-      const models = await invoke<OllamaModel[]>("get_ollama_models");
+      const [models, settings] = await Promise.all([
+        invoke<OllamaModel[]>("get_ollama_models"),
+        invoke<{ key: string; value: string }[]>("get_settings"),
+      ]);
       setOllamaModels(models);
-      if (models.length > 0 && !selectedModel) {
+      const configuredModel = settings.find((item) => item.key === "ollama.model")?.value;
+      if (configuredModel && models.some((item) => item.model === configuredModel)) {
+        setSelectedModel(configuredModel);
+      } else if (models.length > 0 && !models.some((item) => item.model === selectedModel)) {
         setSelectedModel(models[0].model);
       }
     } catch (e) {
@@ -253,8 +272,7 @@ function Chat() {
   // ---- 事件监听 ----
 
   const setupEventListeners = useCallback(async () => {
-    unlistenRef.current.forEach((u) => u());
-    unlistenRef.current = [];
+    const generation = ++listenerSetupGenerationRef.current;
 
     const listeners: [string, (payload: string) => void][] = [
       ["chat:text", (payload) => {
@@ -268,8 +286,10 @@ function Chat() {
         }
       }],
       ["chat:thinking", () => {
+        setIsLoading(true);
         setThinking(true);
         setStreamingText("");
+        setPermissionRequest(null);
       }],
       ["chat:tool_call", (payload) => {
         try {
@@ -308,7 +328,7 @@ function Chat() {
               updated[actualIndex] = {
                 ...updated[actualIndex],
                 status: data.success ? "success" : "error",
-                result: data.content,
+                result: formatToolResult(data.content),
               };
               return updated;
             });
@@ -318,6 +338,7 @@ function Chat() {
         }
       }],
       ["chat:done", () => {
+        activeRunIdRef.current = null;
         setIsLoading(false);
         setThinking(false);
         setStreamingText("");
@@ -332,15 +353,8 @@ function Chat() {
         setIsLoading(false);
         setThinking(false);
         // 解析错误消息：可能是纯字符串或 JSON 格式
-        let errorMsg = "AI 响应出错";
-        if (typeof payload === "string") {
-          try {
-            const parsed = JSON.parse(payload);
-            errorMsg = parsed.data || parsed.message || parsed.error || payload;
-          } catch {
-            errorMsg = payload;
-          }
-        }
+        const errorMsg = humanizeError(payload, "AI 响应出错");
+        activeRunIdRef.current = null;
         setChatError(errorMsg);
         console.error("Chat error:", payload);
         const cid = currentConversationIdRef.current;
@@ -379,18 +393,26 @@ function Chat() {
       }],
     ];
 
-    for (const [eventName, handler] of listeners) {
-      const unlisten = await listen(eventName, (event) => {
+    const newUnlisteners = await Promise.all(
+      listeners.map(([eventName, handler]) => listen(eventName, (event) => {
         const payloadStr = String(event.payload);
         // V21: session_id 深度防御过滤——所有对话事件必须携带 session_id 且匹配当前对话
         const cid = currentConversationIdRef.current;
         try {
-          const parsed = JSON.parse(payloadStr);
+          const parsed = parseEventEnvelope(payloadStr);
           if (cid) {
             // 有当前对话时：事件必须有 session_id 且必须匹配，否则忽略（防止旧对话/无主事件污染）
             if (!parsed.session_id || parsed.session_id !== cid) {
               return;
             }
+          }
+          // 主窗口与浮窗共享会话；新的 thinking 事件代表该会话已被新指令接管。
+          if (eventName === "chat:thinking" && parsed.run_id) {
+            activeRunIdRef.current = parsed.run_id;
+          }
+          // 同一会话只接收当前发送的运行；被新指令取代的旧流无法污染 UI。
+          if (parsed.run_id && parsed.run_id !== activeRunIdRef.current) {
+            return;
           }
         } catch {
           // 非 JSON payload（理论上不应发生），有当前对话时忽略，无对话时放行兼容
@@ -399,10 +421,29 @@ function Chat() {
           }
         }
         handler(payloadStr);
-      });
-      unlistenRef.current.push(unlisten);
+      }))
+    );
+
+    // React StrictMode 会重复执行 effect；丢弃已过期的异步注册结果，防止重复监听。
+    if (generation !== listenerSetupGenerationRef.current) {
+      newUnlisteners.forEach((unlisten) => unlisten());
+      return;
     }
+    unlistenRef.current.forEach((unlisten) => unlisten());
+    unlistenRef.current = newUnlisteners;
   }, []);
+
+  // 聊天事件监听器常驻，避免每次发送前串行注册多组 IPC 监听器。
+  useEffect(() => {
+    setupEventListeners().catch((e) => {
+      console.error("Failed to set up chat listeners:", e);
+    });
+    return () => {
+      listenerSetupGenerationRef.current += 1;
+      unlistenRef.current.forEach((unlisten) => unlisten());
+      unlistenRef.current = [];
+    };
+  }, [setupEventListeners]);
 
   // ---- 操作 ----
 
@@ -438,6 +479,10 @@ function Chat() {
 
   async function handleCancelTask() {
     if (!currentConversationId) return;
+    activeRunIdRef.current = null;
+    setIsLoading(false);
+    setThinking(false);
+    setPermissionRequest(null);
     try {
       await invoke("cancel_task", { conversationId: currentConversationId });
       setCurrentTask(null);
@@ -475,7 +520,7 @@ function Chat() {
   }
 
   async function handleSendMessage() {
-    if (!inputText.trim() || isLoading) return;
+    if (!inputText.trim()) return;
 
     let convId = currentConversationId;
     if (!convId) {
@@ -487,26 +532,47 @@ function Chat() {
     currentConversationIdRef.current = convId;
 
     const content = inputText.trim();
+    const requestId = createChatRunId();
+    activeRunIdRef.current = requestId;
     setInputText("");
     setIsLoading(true);
     setStreamingText("");
-    setThinking(false);
+    // 立即给用户反馈，并乐观显示刚发送的消息；不再为了发送而先重读整段会话。
+    setThinking(true);
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: -Date.now(),
+        session_id: convId,
+        role: "user",
+        content,
+        timestamp: new Date().toISOString(),
+      },
+    ]);
     setToolExecutions([]);
     setChatError(null);
     setActionStatuses([]);
     setRecoveryEvents([]);
-
-    await loadMessages(convId);
-    await setupEventListeners();
+    setPermissionRequest(null);
 
     try {
-      await invoke("send_message", {
+      const acceptedRunId = await invoke<string>("send_message", {
         conversationId: convId,
         content,
+        model: selectedModel,
+        requestId,
       });
+      if (activeRunIdRef.current === requestId) {
+        activeRunIdRef.current = acceptedRunId;
+      }
     } catch (e) {
       console.error("Failed to send message:", e);
-      setIsLoading(false);
+      if (activeRunIdRef.current === requestId) {
+        activeRunIdRef.current = null;
+        setIsLoading(false);
+        setThinking(false);
+        setChatError(humanizeError(e, "发送失败，请重试"));
+      }
     }
   }
 
@@ -752,15 +818,16 @@ function Chat() {
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
-            disabled={!ollamaAvailable || isLoading}
+            disabled={!ollamaAvailable}
             rows={1}
           />
           <button
             className="send-btn"
             onClick={handleSendMessage}
-            disabled={!inputText.trim() || !ollamaAvailable || isLoading}
+            disabled={!inputText.trim() || !ollamaAvailable}
+            title={isLoading ? "发送新指令并取消上一条" : "发送"}
           >
-            {isLoading ? <span className="btn-spinner" /> : <CyberIcon name="send" size={18} />}
+            <CyberIcon name="send" size={18} />
           </button>
         </div>
       </div>

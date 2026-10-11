@@ -647,6 +647,105 @@ function Settings() {
                   </label>
                 </div>
               </div>
+
+              {/* 网页发布：网页工坊生成完要能直接给出一个公网链接 */}
+              <div className="setting-row editable">
+                <div className="setting-info">
+                  <span className="setting-key">网页发布 · GitHub 访问令牌</span>
+                  <span className="setting-desc">
+                    填了它，网页工坊每生成一版就自动发布到 GitHub Pages，预览区顶部直接显示网址。
+                    到 github.com → Settings → Developer settings → Personal access tokens（Tokens
+                    classic）→ Generate new token，勾选 repo，生成后只显示一次，粘贴到这里。
+                    留空则不发布。
+                  </span>
+                </div>
+                <div className="setting-value">
+                  <span className="value-type type-STRING">STRING</span>
+                  <div className="setting-input-group">
+                    <input
+                      type="password"
+                      className="setting-input"
+                      defaultValue={getSettingValue("publish.github_token", "")}
+                      onBlur={(event) => void handleSave("publish.github_token", event.target.value.trim())}
+                      placeholder="粘贴 Personal access token"
+                      disabled={savingKey === "publish.github_token"}
+                    />
+                    {savingKey === "publish.github_token" && <span className="saving-indicator">保存中...</span>}
+                  </div>
+                </div>
+              </div>
+
+              <div className="setting-row editable">
+                <div className="setting-info">
+                  <span className="setting-key">网页发布 · GitHub 仓库名</span>
+                  <span className="setting-desc">
+                    网页发布到哪个仓库，不存在会自动创建（公开仓库才能免费用 Pages）。
+                    仓库名不变，网址就不会变。留空则用默认的 pc-guardian-web。
+                  </span>
+                </div>
+                <div className="setting-value">
+                  <span className="value-type type-STRING">STRING</span>
+                  <div className="setting-input-group">
+                    <input
+                      type="text"
+                      className="setting-input"
+                      defaultValue={getSettingValue("publish.github_repo", "")}
+                      onBlur={(event) => void handleSave("publish.github_repo", event.target.value.trim())}
+                      placeholder="pc-guardian-web"
+                      disabled={savingKey === "publish.github_repo"}
+                    />
+                    {savingKey === "publish.github_repo" && <span className="saving-indicator">保存中...</span>}
+                  </div>
+                </div>
+              </div>
+
+              <div className="setting-row editable">
+                <div className="setting-info">
+                  <span className="setting-key">网页发布 · Netlify 访问令牌（可选）</span>
+                  <span className="setting-desc">
+                    备用通道，只在上面没填 GitHub 令牌时生效。到 app.netlify.com → User settings
+                    → Applications → Personal access tokens 生成一个（只显示一次）粘贴到这里。
+                  </span>
+                </div>
+                <div className="setting-value">
+                  <span className="value-type type-STRING">STRING</span>
+                  <div className="setting-input-group">
+                    <input
+                      type="password"
+                      className="setting-input"
+                      defaultValue={getSettingValue("publish.netlify_token", "")}
+                      onBlur={(event) => void handleSave("publish.netlify_token", event.target.value.trim())}
+                      placeholder="粘贴 Personal access token"
+                      disabled={savingKey === "publish.netlify_token"}
+                    />
+                    {savingKey === "publish.netlify_token" && <span className="saving-indicator">保存中...</span>}
+                  </div>
+                </div>
+              </div>
+
+              <div className="setting-row editable">
+                <div className="setting-info">
+                  <span className="setting-key">网页发布 · 代理地址（可选）</span>
+                  <span className="setting-desc">
+                    生成时报「连接 GitHub 失败」时填这里。留空则自动使用系统代理；填了就以它为准，
+                    例如 Clash 的 http://127.0.0.1:7890。只影响发布，不影响本机模型。
+                  </span>
+                </div>
+                <div className="setting-value">
+                  <span className="value-type type-STRING">STRING</span>
+                  <div className="setting-input-group">
+                    <input
+                      type="text"
+                      className="setting-input"
+                      defaultValue={getSettingValue("publish.proxy", "")}
+                      onBlur={(event) => void handleSave("publish.proxy", event.target.value.trim())}
+                      placeholder="http://127.0.0.1:7890"
+                      disabled={savingKey === "publish.proxy"}
+                    />
+                    {savingKey === "publish.proxy" && <span className="saving-indicator">保存中...</span>}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </div>

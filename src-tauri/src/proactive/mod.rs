@@ -1004,6 +1004,7 @@ async fn execute_action(
                         tool_name: action.tool_name.clone(),
                         arguments: action.arguments.clone(),
                         session_id: Some("proactive_engine".to_string()),
+                        run_id: None,
                     };
                     let result = state.tool_executor.execute(request).await;
                     let (success, summary) = match result {
@@ -1080,6 +1081,7 @@ async fn execute_action(
                 tool_name: "launch_program".to_string(),
                 arguments: args.clone(),
                 session_id: Some("proactive_engine".to_string()),
+                run_id: None,
             };
             let result = state.tool_executor.execute(request).await;
             let (success, summary) = match result {

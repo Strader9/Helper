@@ -221,8 +221,13 @@ impl AgentTool for BrowserGetContentTool {
         let content = browser().get_content(as_text).await?;
 
         // 截断超长内容（最多 8000 字符）
-        let truncated = if content.len() > 8000 {
-            format!("{}... [已截断，共 {} 字符]", &content[..8000], content.len())
+        let truncated = if content.chars().count() > 8000 {
+            let total_chars = content.chars().count();
+            format!(
+                "{}... [已截断，共 {} 字符]",
+                content.chars().take(8000).collect::<String>(),
+                total_chars
+            )
         } else {
             content
         };

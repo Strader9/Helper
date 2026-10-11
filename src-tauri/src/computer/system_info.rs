@@ -6,9 +6,9 @@
 use crate::error::AppResult;
 use crate::monitoring::get_system_metrics;
 use crate::tools::{AgentTool, RiskLevel, ToolResult};
-use std::process::Command;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::process::Command;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -41,8 +41,16 @@ impl AgentTool for GetSystemContextTool {
     }
 
     async fn execute(&self, _args: serde_json::Value) -> AppResult<ToolResult> {
-        let metrics = get_system_metrics();
-        let (active_window, foreground_process, process_count) = get_window_and_process_info();
+        // WMI/PowerShell 查询是阻塞操作，放到 blocking 池避免拖住聊天事件循环。
+        let (metrics, active_window, foreground_process, process_count) =
+            tokio::task::spawn_blocking(|| {
+                let metrics = get_system_metrics();
+                let (active_window, foreground_process, process_count) =
+                    get_window_and_process_info();
+                (metrics, active_window, foreground_process, process_count)
+            })
+            .await
+            .map_err(|e| crate::error::AppError::Internal(format!("系统状态查询失败: {}", e)))?;
 
         let disk_summary: Vec<serde_json::Value> = metrics
             .disks
@@ -98,7 +106,11 @@ impl AgentTool for GetSystemContextTool {
             disk_str,
             active_window.as_deref().unwrap_or("未知"),
             process_count,
-            if metrics.network_ok { "正常" } else { "异常" }
+            if metrics.network_ok {
+                "正常"
+            } else {
+                "异常"
+            }
         );
 
         Ok(ToolResult::ok(serde_json::json!({
@@ -177,7 +189,8 @@ fn get_process_count() -> usize {
         .args([
             "-NoProfile",
             "-NonInteractive",
-            "-WindowStyle", "Hidden",
+            "-WindowStyle",
+            "Hidden",
             "-Command",
             "(Get-Process).Count",
         ])
