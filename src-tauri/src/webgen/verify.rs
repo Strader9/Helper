@@ -108,8 +108,12 @@ pub fn issue_weight(code: &str) -> usize {
         "NARROW_WORD_CLASS" => 6,
         // 功能缺一块：数据抄进来了没接进逻辑，或选项没有对应分支。
         "UNUSED_DATA_POOL" | "OPTION_UNHANDLED" => 3,
-        // 提示级：按钮没绑事件、函数没人调、需求覆盖不全。
-        "BUTTON_NO_HANDLER" => 2,
+        // 有函数没接上：成片出现时等于整块功能是空壳（severity 也随数量升为 Critical）。
+        "DEAD_FUNCTION" => 4,
+        // 按钮没绑事件：整页一处绑定都没有 → 所有交互全废（severity = Critical）。
+        "BUTTON_NO_HANDLER" => 5,
+        // 需求成片没落地。
+        "FEATURE_MISSING" => 2,
         _ => 1,
     }
 }
@@ -160,6 +164,47 @@ pub fn script_token_estimate(html: &str) -> usize {
     cjk + rest.div_ceil(4)
 }
 
+/// 判断一次改写是否把页面**改退化了** —— 该回滚保留原版。
+///
+/// 为什么必须单独有这一道：`verify_page` 面对一个空壳文件**没有问题可报**。
+/// 实测 18918 字的页面被模型替换成 3006 字片段后，`<body>` 与 `<script>` 全丢，
+/// 自检却报"通过"—— 因为它按"页面上有的东西"找缺陷，而那份残品上什么都没有。
+/// 于是"越改越烂"被当成了"改好了"。
+///
+/// 判据不用抽象分数，只看两条硬事实：
+///   1. **体量骤降**：新产物不足原版的 60%（定向修改绝不该让页面瘦掉一大截）
+///   2. **结构丢失**：原版有的 `<body>` / `<script>` / `</html>`，新版没了
+///
+/// 只用于"改写已有页面"的场景（生成首版时没有原版可比，不适用）。
+pub fn looks_degraded(original: &str, candidate: &str) -> Option<String> {
+    let before = original.chars().count();
+    let after = candidate.chars().count();
+    if before == 0 {
+        return None;
+    }
+
+    // 结构标签：原版有、新版没了 —— 这是"页面被截断/重写"最硬的证据。
+    for tag in ["<body", "</html>", "<script"] {
+        let had = original.to_ascii_lowercase().contains(tag);
+        let has = candidate.to_ascii_lowercase().contains(tag);
+        if had && !has {
+            return Some(format!(
+                "原页面包含 {tag} 而改写后没有了（页面结构被破坏）"
+            ));
+        }
+    }
+
+    // 体量骤降：不足原版 60%。放宽到 60% 是为了给"用户要求删掉一大块内容"留余地，
+    // 同时仍然能拦住"整页被替换成片段"这种 16% 的灾难。
+    if after * 100 < before * 60 {
+        return Some(format!(
+            "改写后只剩 {after} 字，不足原页面 {before} 字的 60%（内容大量丢失）"
+        ));
+    }
+
+    None
+}
+
 /// 跑完整自检。`spec` 是标准格式需求，用于功能覆盖比对。
 pub fn verify_page(html: &str, spec: &str) -> Vec<Issue> {
     let mut issues = Vec::new();
@@ -206,6 +251,66 @@ pub fn verify_page(html: &str, spec: &str) -> Vec<Issue> {
 /// 是否拦下了致命问题（决定要不要进修复轮次）。
 pub fn has_critical(issues: &[Issue]) -> bool {
     issues.iter().any(|issue| issue.severity == Severity::Critical)
+}
+
+/// "页面看着齐全、其实点不动"的功能性缺陷。
+///
+/// 这一类问题**不算语法错**，所以静态检查全过、括号也配平，但用户点下去什么都不会发生 ——
+/// 正是"不具备功能的网页"最典型的形态。它们过去被标成 `Major`（提示级），
+/// 于是"三个按钮全没绑事件"的页面会被直接交付。
+///
+/// 现在把它们单独归成一类，交给调用方决定要不要为它再跑一轮定向修复。
+pub const FUNCTIONAL_CODES: &[&str] = &[
+    // 有按钮，但脚本里一处事件绑定都没有。
+    "BUTTON_NO_HANDLER",
+    // 定义了却从没被调用的函数：需求里的功能只写了个空壳。
+    "DEAD_FUNCTION",
+    // 调用了未定义的函数（Critical，但同样属于这一类）。
+    "UNDEFINED_REFERENCE",
+    // 数据抄进来了没接进逻辑 / 选项没有对应分支。
+    "UNUSED_DATA_POOL",
+    "OPTION_UNHANDLED",
+    // 需求里成片的功能在页面上找不到任何痕迹。
+    "FEATURE_MISSING",
+];
+
+/// 这条问题是不是"功能没真正实现"。
+pub fn is_functional_defect(issue: &Issue) -> bool {
+    FUNCTIONAL_CODES.contains(&issue.code)
+}
+
+/// 这组问题里有没有功能性缺陷。
+///
+/// 与 `has_critical` 的区别：`has_critical` 只认"语法/运行期崩"，
+/// 这一条连"按钮没绑事件""功能只写空壳"也算 —— 因为从用户视角，"点不动"和"报错"
+/// 是同一件事：网页不具备它声称的功能。
+pub fn has_functional_defect(issues: &[Issue]) -> bool {
+    issues.iter().any(is_functional_defect)
+}
+
+/// 功能性缺陷加起来够不够格再跑一轮修复。
+///
+/// 不能"有一点点就修"：`DEAD_FUNCTION` 很容易因误报（比如函数只在内联 `onclick` 里被调用）
+/// 而出现一条，为它多跑一轮一分钟的推理不划算。判据取**加权致命度之和**：
+///
+/// - 一条 `UNDEFINED_REFERENCE`（9 分）→ 够。点下去必抛 ReferenceError，没有讨论余地。
+/// - 任意条 `BUTTON_NO_HANDLER`（2 分/条）→ 一条就够。这条误报率极低：只有在整份脚本
+///   连一处 `onclick` / `addEventListener` 都找不到时才报，出现了就是真没绑。
+/// - 其余功能性缺陷 → 按加权和 ≥ 6 判：两条 `UNUSED_DATA_POOL`(3+3) 够，
+///   一条单独的 `FEATURE_MISSING`(1) 或 `DEAD_FUNCTION`(1) 不够。
+pub fn functional_repair_worthwhile(issues: &[Issue]) -> bool {
+    let defects: Vec<&Issue> = issues.iter().filter(|issue| is_functional_defect(issue)).collect();
+    if defects.is_empty() {
+        return false;
+    }
+    if defects
+        .iter()
+        .any(|issue| matches!(issue.code, "UNDEFINED_REFERENCE" | "BUTTON_NO_HANDLER"))
+    {
+        return true;
+    }
+    let weight: usize = defects.iter().map(|issue| issue_weight(issue.code)).sum();
+    weight >= 6
 }
 
 /// 把问题清单写成给模型看的修复要求。
@@ -1619,7 +1724,13 @@ pub fn appendix_conflicts(html: &str, appendix: &str) -> Vec<String> {
 /// 至于"这轮修得值不值"交给 `health_with_html` 打分 + 回滚兜底，不在这里拦。
 pub fn function_appendix_plan(issues: &[Issue]) -> Option<bool> {
     let mut need_functions = false;
-    for issue in issues.iter().filter(|issue| issue.severity == Severity::Critical) {
+    // 只看 Critical 会漏掉"按钮没绑事件"这类被标成 Major 的功能缺陷 —— 而那恰恰是
+    // "页面看着齐全、点下去没反应"最常见的形态。这里改为按**性质**筛：
+    // 凡是"功能没真正实现"的问题都参与判定。
+    for issue in issues
+        .iter()
+        .filter(|issue| issue.severity == Severity::Critical || is_functional_defect(issue))
+    {
         if issue.code == "UNDEFINED_REFERENCE" {
             need_functions = true;
             continue;
@@ -1629,6 +1740,11 @@ pub fn function_appendix_plan(issues: &[Issue]) -> Option<bool> {
         }
     }
     let need_bindings = issues.iter().any(|issue| issue.code == "BUTTON_NO_HANDLER");
+    // `DEAD_FUNCTION` 同样靠"补绑定"解决：函数已经写好了，只是没人调它。
+    let need_bindings = need_bindings
+        || issues
+            .iter()
+            .any(|issue| issue.code == "DEAD_FUNCTION" && issue.severity == Severity::Critical);
     if need_functions || need_bindings {
         Some(need_bindings)
     } else {
@@ -2598,7 +2714,10 @@ fn check_buttons(html: &str, script: &str, issues: &mut Vec<Issue>) {
     if handlers == 0 {
         issues.push(Issue {
             code: "BUTTON_NO_HANDLER",
-            severity: Severity::Major,
+            // 提级为 Critical：整份脚本连一处事件绑定都找不到，页面上的按钮**全部**点不动，
+            // 与"没有脚本"（NO_SCRIPT）是同一件事，不该只当提示。过去它只是 Major，
+            // 于是"页面画得完整、按钮全不响应"的成品会被直接交付给用户。
+            severity: Severity::Critical,
             detail: format!("页面有 {buttons} 处按钮，但脚本里没有任何事件绑定，点下去不会有反应。"),
             fix: "给每个按钮绑定点击事件，事件里要做真实的状态变化（生成、复制、收藏、切换主题等）。"
                 .to_string(),
@@ -2606,15 +2725,55 @@ fn check_buttons(html: &str, script: &str, issues: &mut Vec<Issue>) {
     }
 }
 
+/// 把 HTML 里所有 `<script>…</script>` 的**内容**拿掉，只留脚本之外的标记。
+///
+/// 用途见 `check_dead_functions`：判断"函数有没有被外部引用"时必须排除脚本自己，
+/// 否则函数名在它自己的定义处就被数到一次，判据失效。
+fn html_without_scripts(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len());
+    let mut cursor = 0usize;
+    loop {
+        let Some(relative) = lower[cursor..].find("<script") else {
+            out.push_str(&html[cursor..]);
+            break;
+        };
+        let open = cursor + relative;
+        // 标签头（`<script …>`）保留下来，它本身不含函数名。
+        let Some(gt) = lower[open..].find('>') else {
+            out.push_str(&html[cursor..]);
+            break;
+        };
+        let content_start = open + gt + 1;
+        out.push_str(&html[cursor..content_start]);
+
+        // 找配对的 </script>；找不到就把剩余内容整体丢弃（未闭合的脚本）。
+        let Some(close_rel) = lower[content_start..].find("</script") else {
+            break;
+        };
+        cursor = content_start + close_rel;
+    }
+    out
+}
+
 /// 定义了却从未被调用的函数。
+///
+/// 修的坑：这里原本用 `count_of(html, &name)` 统计"HTML 里的调用"，但传进来的 `html`
+/// **整份文档里就包含 `<script>`**，于是函数名至少被数到 1 次（它的定义处），
+/// 与 `count_of(script, &name)` 的 1 次相加恒为 2 > 1 —— **这个检查从来没触发过**。
+/// 空壳函数于是永远抓不到，"需求功能只写了个函数名"这类页面畅通无阻地交付。
+///
+/// 现在把 HTML 里的脚本段剥掉再统计：剩下的才是真正的外部引用
+/// （内联事件属性 `onclick="foo()"`、分片的第二个 `<script>`、`data-*` 里的名字等）。
 fn check_dead_functions(script: &str, html: &str, issues: &mut Vec<Issue>) {
+    let outside_script = html_without_scripts(html);
     let mut dead = Vec::new();
     for (name, _) in function_bodies(script) {
         if name == "<匿名>" {
             continue;
         }
-        // 定义处 1 次；HTML 内联事件属性（onclick="foo()"）也算调用。
-        let calls = count_of(script, &name) + count_of(html, &name);
+        // 脚本里出现 1 次 = 只有定义；再加上脚本外部的引用次数。
+        let calls = count_of(script, &name) + count_of(&outside_script, &name);
         if calls <= 1 {
             dead.push(name);
         }
@@ -2622,9 +2781,17 @@ fn check_dead_functions(script: &str, html: &str, issues: &mut Vec<Issue>) {
     if dead.is_empty() {
         return;
     }
+    // 成片的死函数 = 需求里的功能整块只写了空壳（实测：模型把 6 组词库函数全定义好，
+    // 却没接到任何按钮上）。这时按严重问题处理，必须走修复轮；只有零星一两条才当提示，
+    // 免得因误报白跑一分钟推理。
+    let severity = if dead.len() >= 3 {
+        Severity::Critical
+    } else {
+        Severity::Major
+    };
     issues.push(Issue {
         code: "DEAD_FUNCTION",
-        severity: Severity::Major,
+        severity,
         detail: format!(
             "这些函数定义了但从未被调用：{} —— 需求里的功能可能只是写了个空壳。",
             dead.join(" / ")
@@ -2984,7 +3151,11 @@ fn check_feature_coverage(html: &str, spec: &str, issues: &mut Vec<Issue>) {
         .filter(|(_, candidates)| !candidates.iter().any(|token| html.contains(token.as_str())))
         .map(|(name, _)| name.as_str())
         .collect();
-    if missing.len() < 3 || missing.len() * 2 < features.len() {
+    // 阈值收紧：过去要求"缺失过半"（`missing * 2 >= features`）才出声，而一个真正的空壳页面
+    // 往往**恰好**过半 —— 生成出来的那一半能对上文字，靠文字匹配看不出功能是空壳。
+    // 现在改为"缺失达到三分之一"就记录，交给调用方按加权致命度决定要不要修。
+    // 严重度仍是 Major：这条检查只做文字包含匹配，误报率高于其它检查，不该单独触发 Critical。
+    if missing.len() < 2 || missing.len() * 3 < features.len() {
         return;
     }
     issues.push(Issue {
@@ -4242,8 +4413,11 @@ document.getElementById("go").onclick = () => {
         );
         assert_eq!(function_appendix_plan(&issues), Some(false));
 
-        // 只有"按钮没绑事件"（提示级，没有严重问题）也要走就地补写 ——
+        // 只有"按钮没绑事件"也要走就地补写 ——
         // 页面画得出来、按钮点了没反应，正是要治的那种"表面工作"。
+        //
+        // 注意这条现在是 **Critical**：整份脚本连一处事件绑定都找不到，页面上所有按钮全废，
+        // 与"没有脚本"（NO_SCRIPT）是同一件事。过去它只是 Major，导致这种成品被直接交付。
         let unbound = r#"<html><body><button id="go">生成</button><div id="out"></div>
 <script>
 const words = ["雨落", "星月", "清风"];
@@ -4251,7 +4425,9 @@ function pickOne(list) { return list[Math.floor(Math.random() * list.length)]; }
 function roll() { return pickOne(words); }
 </script></body></html>"#;
         let issues = verify_page(unbound, "");
-        assert!(!has_critical(&issues), "这份页面应当只有提示级问题：{issues:?}");
+        assert!(has_critical(&issues), "按钮全无绑定应当被拦下：{issues:?}");
+        assert!(has_functional_defect(&issues), "这属于功能性缺陷：{issues:?}");
+        assert!(functional_repair_worthwhile(&issues), "够格再跑一轮修复：{issues:?}");
         assert_eq!(function_appendix_plan(&issues), Some(true));
 
         // 脚本被截断这种得整段重写，就地补写救不了。
@@ -4261,8 +4437,7 @@ function roll() { return pickOne(words); }
     }
 
     #[test]
-    fn keeps_the_append_route_alive_when_a_pool_is_also_unused() {
-        // 实测原样（端到端第 4 轮）：同时报 `UNDEFINED_REFERENCE`（缺 7 个函数）与
+    fn keeps_the_append_route_alive_when_a_pool_is_also_unused() {        // 实测原样（端到端第 4 轮）：同时报 `UNDEFINED_REFERENCE`（缺 7 个函数）与
         // `UNUSED_DATA_POOL`（3 个数组没人读）。第二条严重问题一度把就地补写这条唯一可行
         // 的路线掐掉了，接着定点替换与整段重写都走不通，最后**交付了点了没反应的坏页面**。
         // 实际上缺的函数正是该去读那些数组的人，补写它们两个问题一起消失。
@@ -4675,5 +4850,176 @@ document.getElementById("go").onclick = () => { generateNames(); };
             fix: String::new(),
         }];
         assert!(function_patch_plan(page, &worse).is_none());
+    }
+
+    /// 交付闸门加固：这些"看着齐全、其实不具备功能"的页面**必须**被拦下。
+    ///
+    /// 这一组测试对应的是用户最直接的不满 —— 生成的网页"按钮点了没反应、数据不参与计算"。
+    /// 加固前它们能一路绿灯被交付：既没有语法错（不是 Critical），也没有可用的修复计划，
+    /// 于是走到 `critical == 0 && plan.is_none()` 那个分支被直接放行。
+    #[test]
+    fn blocks_a_page_whose_buttons_are_all_inert() {
+        // 三个按钮，一个事件绑定都没有 —— 页面画得出来，点下去毫无反应。
+        let inert = r#"<html><body>
+<header><h1>取名器</h1></header>
+<main>
+  <button id="gen">生成名字</button>
+  <button id="copy">复制</button>
+  <button id="fav">收藏</button>
+  <div id="out"></div>
+</main>
+<script>
+const pools = ["雨落", "星月", "清风", "白川"];
+function roll() { return pools[Math.floor(Math.random() * pools.length)]; }
+function copyText() { return null; }
+function toggleFav() { return null; }
+</script></body></html>"#;
+        let issues = verify_page(inert, "");
+        assert!(
+            issues.iter().any(|issue| issue.code == "BUTTON_NO_HANDLER"),
+            "三个按钮零绑定必须被抓到：{issues:?}"
+        );
+        assert!(has_critical(&issues), "必须拦住而不是放行：{issues:?}");
+        assert!(functional_repair_worthwhile(&issues), "必须值得再跑一轮修复");
+        // 走"就地补写"：把绑定补进脚本末尾，而不是重写整页。
+        assert!(function_appendix_plan(&issues).is_some());
+    }
+
+    /// 需求里的功能只写了空壳：函数都定义好了，但一个也没接到按钮上。
+    #[test]
+    fn blocks_a_page_full_of_shell_functions() {
+        let shell = r#"<html><body><button id="go">开始</button><div id="out"></div>
+<script>
+const styles = ["古典", "现代", "二次元"];
+function buildClassic() { return "古典名"; }
+function buildModern() { return "现代名"; }
+function buildAnime() { return "二次元名"; }
+function stash() { return []; }
+</script></body></html>"#;
+        let issues = verify_page(shell, "");
+        let dead = issues.iter().find(|issue| issue.code == "DEAD_FUNCTION");
+        assert!(dead.is_some(), "成片空壳函数必须被抓到：{issues:?}");
+        // 成片（≥3 个）时按严重问题处理，不再只是提示。
+        assert_eq!(dead.unwrap().severity, Severity::Critical);
+        assert!(functional_repair_worthwhile(&issues));
+    }
+
+    /// `DEAD_FUNCTION` 的已知盲区：函数名只要在 HTML 里出现过就当成"被调用了"。
+    ///
+    /// 这个盲区本身不影响交付闸门 —— 它只让"死函数"这一条**少报**，而同一份页面通常
+    /// 还会撞上 `BUTTON_NO_HANDLER` 或 `UNUSED_DATA_POOL`，照样被拦下。这里把这个行为
+    /// 钉住，避免以后有人误以为它能覆盖全部空壳场景。
+    #[test]
+    fn shell_functions_named_in_html_escape_the_dead_check_but_still_get_blocked() {
+        // 函数名写进了 data-* 属性，于是 `check_dead_functions` 认为它们被"调用"过。
+        let page = r#"<html><body>
+<button id="go" data-action="generateClassic">古典</button>
+<button id="copy" data-action="generateModern">现代</button>
+<div id="out"></div>
+<script>
+function generateClassic() { return "古典名"; }
+function generateModern() { return "现代名"; }
+</script></body></html>"#;
+        let issues = verify_page(page, "");
+        assert!(
+            !issues.iter().any(|issue| issue.code == "DEAD_FUNCTION"),
+            "这正是那条已知盲区：{issues:?}"
+        );
+        // 但按钮的 data-action 只是属性，脚本里并没有把点击接上去 —— 闸门依然拦得住。
+        assert!(
+            issues.iter().any(|issue| issue.code == "BUTTON_NO_HANDLER"),
+            "盲区之外仍要拦住：{issues:?}"
+        );
+        assert!(has_critical(&issues));
+    }
+
+    /// 只有零星一两条疑似问题时不该触发修复 —— 免得为误报白跑一分钟推理。
+    #[test]
+    fn stays_quiet_for_a_single_suspicious_shell_function() {
+        let page = r#"<html><body><button id="go" onclick="start()">开始</button>
+<script>
+function start() { document.getElementById("out").textContent = "ok"; }
+function helperNeverUsed() { return 1; }
+</script></body></html>"#;
+        let issues = verify_page(page, "");
+        let dead: Vec<&Issue> = issues
+            .iter()
+            .filter(|issue| issue.code == "DEAD_FUNCTION")
+            .collect();
+        // 允许报一条（提示级），但绝不该因此触发严重的判定。
+        assert!(dead.iter().all(|issue| issue.severity == Severity::Major));
+        assert!(!has_critical(&issues), "{issues:?}");
+        assert!(!functional_repair_worthwhile(&issues), "{issues:?}");
+    }
+
+    /// 退化产物要被拦住：自检面对空壳页没有问题可报，必须单独判。
+    #[test]
+    fn catches_a_page_rewritten_into_a_fragment() {
+        let original = format!(
+            "<html><head><style>{}</style></head><body>{}</body><script>{}</script></html>",
+            "a".repeat(2000),
+            "b".repeat(4000),
+            "c".repeat(2000)
+        );
+        // 模型只回了一个片段当整页 —— 正是实测那次：18918 → 3006 字，body/script 全丢。
+        let fragment = format!("<html><head><style>{}</style>", "a".repeat(2900));
+        let reason = looks_degraded(&original, &fragment).expect("必须判定为退化");
+        assert!(reason.contains("<body") || reason.contains("不足"), "{reason}");
+    }
+
+    /// 结构丢失单独也要能判出来（哪怕体量没骤降）。
+    #[test]
+    fn catches_a_page_that_lost_its_script() {
+        let original = format!("<html><body><p>{}</p></body><script>init()</script></html>", "x".repeat(1000));
+        let stripped = format!("<html><body><p>{}</p></body></html>", "x".repeat(1000));
+        let reason = looks_degraded(&original, &stripped).expect("脚本被删必须判定为退化");
+        assert!(reason.contains("<script"), "{reason}");
+    }
+
+    /// 正常的局部修改不能被误判 —— 少几个字、多几个字都该放行。
+    #[test]
+    fn stays_quiet_for_a_normal_edit() {
+        let original = format!("<html><body><button id=\"a\">生成</button>{}</body></html>", "x".repeat(1000));
+        let edited = format!(
+            "<html><body><button id=\"a\" style=\"color:red\">再摇一次</button>{}</body></html>",
+            "x".repeat(1000)
+        );
+        assert!(looks_degraded(&original, &edited).is_none());
+    }
+
+    /// 用户明确要求删掉一大块内容时不该拦（放宽到 60% 就是为这种情况留的余地）。
+    #[test]
+    fn allows_a_reasonable_shrink() {
+        let original = format!("<html><body>{}</body></html>", "x".repeat(1000));
+        let shrunk = format!("<html><body>{}</body></html>", "x".repeat(700));
+        assert!(looks_degraded(&original, &shrunk).is_none(), "缩减到 70% 该放行");
+    }
+
+    /// 功能性缺陷的归类要准确：语法错不算"功能性"，缺函数/没绑定才算。
+    #[test]
+    fn classifies_functional_defects_apart_from_syntax_errors() {
+        let syntax = Issue {
+            code: "SCRIPT_UNBALANCED",
+            severity: Severity::Critical,
+            detail: String::new(),
+            fix: String::new(),
+        };
+        assert!(!is_functional_defect(&syntax));
+
+        let inert = Issue {
+            code: "BUTTON_NO_HANDLER",
+            severity: Severity::Critical,
+            detail: String::new(),
+            fix: String::new(),
+        };
+        assert!(is_functional_defect(&inert));
+
+        let dangling = Issue {
+            code: "UNDEFINED_REFERENCE",
+            severity: Severity::Critical,
+            detail: String::new(),
+            fix: String::new(),
+        };
+        assert!(is_functional_defect(&dangling));
     }
 }

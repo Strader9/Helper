@@ -124,7 +124,7 @@ pub(crate) async fn run(context: JarvisContext<'_>, mut task: Task) -> AppResult
             match chunk {
                 Some(ChatChunk::Text(text)) => assistant_text.push_str(&text),
                 Some(ChatChunk::ToolCall(call)) => tool_calls.push(call),
-                Some(ChatChunk::Done(_)) | None => break,
+                Some(ChatChunk::Done(_, _)) | None => break,
                 Some(ChatChunk::Error(error)) => {
                     return fail_task(&mut task, context.db, context.tx, &error).await;
                 }

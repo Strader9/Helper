@@ -128,6 +128,9 @@ fn main() {
             pc_guardian_lib::commands::start_webpage_generation,
             pc_guardian_lib::commands::publish_webpage,
             pc_guardian_lib::commands::open_external,
+            pc_guardian_lib::commands::list_webpage_versions,
+            pc_guardian_lib::commands::restore_webpage_version,
+            pc_guardian_lib::commands::webpage_chain_id,
             // 窗口管理命令
             pc_guardian_lib::commands::show_main_window,
             pc_guardian_lib::commands::close_mini_window,

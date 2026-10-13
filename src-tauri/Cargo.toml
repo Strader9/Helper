@@ -47,7 +47,8 @@ dunce = "1"           # Windows 路径规范化（去除 UNC 前缀）
 # 与 Ollama 本地服务通信，流式 SSE 解析
 # 注意：reqwest 默认会读取 HTTP_PROXY / HTTPS_PROXY 环境变量。发布通道那边已显式
 #       no_proxy()，否则一旦进程继承了别处注入的代理变量，就会连到不存在的代理上。
-reqwest = { version = "0.12", features = ["json", "stream"] }
+# blocking 仅供 examples/ 下的端到端验证探针使用（一次性工具，不进产品链路）。
+reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
 
 # === 流处理 ===
 # tokio::sync::mpsc 的 Stream 包装

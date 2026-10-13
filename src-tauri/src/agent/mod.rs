@@ -657,7 +657,7 @@ async fn run_chat_fast(context: ChatFastContext<'_>) -> AppResult<bool> {
             ChatChunk::ToolCall(_) => {
                 // 快速路径不应有工具调用，忽略
             }
-            ChatChunk::Done(_) => break,
+            ChatChunk::Done(_, _) => break,
             ChatChunk::Error(e) => {
                 let _ = context.tx.send(ChatEvent::Error(e)).await;
                 return Ok(false);

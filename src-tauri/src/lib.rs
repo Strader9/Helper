@@ -602,6 +602,11 @@ pub mod commands {
     const WEBGEN_PREV_HTML_FULL_LIMIT: usize = 6_000;
     /// 超过上限时只回传现有页面的开头部分（足以传达 head 与视觉风格）。
     const WEBGEN_PREV_HTML_HEAD_CHARS: usize = 3_000;
+    /// 定向修改（点选了元素）且整页超长时，围绕目标元素回传的片段窗口。
+    ///
+    /// 比"开头片段"大一倍：这一段的唯一使命就是让模型看清"要改哪儿、周围长什么样"，
+    /// 窗口越大，模型越不容易因为看不见邻近结构而改坏东西。
+    const WEBGEN_PREV_HTML_PATCH_WINDOW: usize = 6_000;
     /// 单轮输出被封顶后，最多自动续写几次。
     /// 每轮约一万多字符，六轮足够覆盖一个信息量很大的页面。
     const MAX_CONTINUATION_ROUNDS: usize = 6;
@@ -610,14 +615,15 @@ pub mod commands {
     /// 功能自检不通过时，最多定向修复几次。
     ///
     /// 修复只重写 `<script>` 块（几行到几十行），不碰 HTML/CSS，所以在标准窗口里就能跑完，
-    /// 一轮约一分钟。留三轮，并且要求后一轮必须比前一轮的加权成本更低才继续 ——
+    /// 一轮约一分钟。留五轮，并且要求后一轮必须比前一轮的加权成本更低才继续 ——
     /// 没有进展就停，免得越改越差。
     ///
-    /// 为什么是三轮而不是两轮：走"就地补写"时，补进去的函数自己还会调用页面里本来就没写的
-    /// 小助手（实测补了 10 个函数，其中两个又引出 `hash` / `randomPick`），所以天然需要
-    /// **两级收敛**：第一轮补齐主体，第二轮补齐它们依赖的助手。两轮会在还剩两个缺失函数时
-    /// 就停下，页面照旧点不动。
-    const MAX_FUNCTION_REPAIR_ROUNDS: usize = 3;
+    /// 为什么是五轮而不是三轮：交付闸门收紧之后，"按钮没绑事件""功能只写空壳"这类问题
+    /// 也会触发返修，返修面比过去宽。这三类问题的收敛不是一步到位的 ——
+    /// 走"就地补写"时补进去的函数自己还会调用页面里本来就没写的小助手
+    /// （实测补了 10 个函数，其中两个又引出 `hash` / `randomPick`），天然需要**多级收敛**。
+    /// 三轮会在还剩两个缺失函数时就停下，页面照旧点不动；五轮给足收敛空间。
+    const MAX_FUNCTION_REPAIR_ROUNDS: usize = 5;
 
     #[derive(Clone, Serialize)]
     pub struct WebGenerationEvent {
@@ -711,6 +717,12 @@ pub mod commands {
         normalized_spec: Option<String>,
         // 前端展示并可编辑的梳理稿；用户改过就绕过清洗与梳理，直接规格化。
         digest: Option<String>,
+        // 版本链标识。同一份需求的多次修改沿用同一串，这样每次产物都进同一条链、
+        // 可以互相回退。前端不传时按需求指纹自动算一条。
+        chain_id: Option<String>,
+        // 用户在预览里点选出来的"要改哪里"（选择器路径 + 文本摘要）。
+        // 只在点选局部修改时带上；不带就是整页/追加式修改。
+        target: Option<String>,
     ) -> Result<(), String> {
         if generation_id.is_empty() || generation_id.len() > 80 {
             return Err("网页生成任务编号无效。".to_string());
@@ -757,13 +769,59 @@ pub mod commands {
             (crate::llm::OllamaClient::new(base_url, timeout_ms), model)
         };
 
-        // 迭代修改要把现有页面源码回传，这是提示词里最大的一块，超长时只回传开头部分。
+        // 点选出来的"改哪里"。截断到 600 字：这是给模型的定位提示，不是完整 DOM 导出，
+        // 过长的路径描述反而会挤掉需求与修改意见本身的空间。
+        //
+        // 必须定义在 `previous_payload` 之前 —— 后者要用它来决定回传哪一段源码。
+        let target_text = target
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+            .map(|text| {
+                if text.chars().count() > 600 {
+                    text.chars().take(600).collect::<String>()
+                } else {
+                    text
+                }
+            });
+
+        // 迭代修改要把现有页面源码回传，这是提示词里最大的一块，超长时只能给片段。
+        //
+        // 给哪一段很关键：点选局部修改时，**必须让模型看见它要改的那一处**。
+        // 早先的实现一律只给开头若干字符，于是当目标元素落在页面后半段时，
+        // 模型看不到它，只能凭需求猜着重写 —— 实测出现过"整份照抄、什么都没改"。
+        // 现在按用户点选的位置摘一段，把目标元素包在中间。
+        //
+        // **片段模式（`patch_mode`）**：整页超长时，让模型"看着 1/6 的片段输出完整页面"
+        // 是不可能完成的任务 —— 它只能凭空造出剩下的 5/6。实测就是这么坏的：18918 字的
+        // 页面回传 3006 字，模型把整页替换成那 3006 字，`<body>` 与 `<script>` 全丢。
+        // 所以这条分支改成"模型只输出改后的那一小块，程序负责贴回原位"（`webgen::merge_patch`）。
+        let mut patch_mode = false;
         let (previous_payload, previous_note) = match previous_html.as_ref() {
             None => (None, String::new()),
             Some(html) => {
                 let chars = html.chars().count();
                 if chars <= WEBGEN_PREV_HTML_FULL_LIMIT {
                     (Some(html.clone()), String::new())
+                } else if let Some(target) = target_text.as_ref() {
+                    // 定向修改：围绕目标元素摘片段，让"改哪里"真的有据可依。
+                    let (excerpt, located) = webgen::take_excerpt(
+                        html,
+                        target,
+                        WEBGEN_PREV_HTML_PATCH_WINDOW,
+                    );
+                    // 定位到了才走片段模式：没定位到就等于不知道改哪儿，
+                    // 让模型"只输出一小块"没有依据，会改出别的东西。
+                    patch_mode = located;
+                    let note = if located {
+                        format!(
+                            "\n\n（注意：现有页面共约 {chars} 字，这里只回传了包含**你要修改的元素**的片段。）"
+                        )
+                    } else {
+                        format!(
+                            "\n\n（注意：现有页面共约 {chars} 字，受上下文长度限制只回传了开头片段，且没能定位到你要修改的元素。请结合上面的元素描述与修改意见进行修改，并保持原有视觉风格与结构。）"
+                        )
+                    };
+                    (Some(excerpt), note)
                 } else {
                     (
                         Some(webgen::take_head(html, WEBGEN_PREV_HTML_HEAD_CHARS)),
@@ -773,6 +831,16 @@ pub mod commands {
                     )
                 }
             }
+        };
+        // 片段模式下提示词与要求都要换一套：不再要"完整页面"，只要"改后的那一小块"。
+        let previous_note = if patch_mode {
+            format!(
+                "{previous_note}\n\n**只输出你改过的那一小块代码**（例如那一个按钮、那一段样式、那一个函数），\
+                 不要输出整页，不要输出片段里其余未改动的部分。程序会把这一小块贴回原页对应位置。\
+                 除了这一小块之外，什么都不要返回。"
+            )
+        } else {
+            previous_note
         };
 
         // 提示词里除需求之外的部分：迭代修改回传的现有页面 + 修改意见。
@@ -786,6 +854,24 @@ pub mod commands {
                 .unwrap_or(0);
 
         let generation_id_for_task = generation_id.clone();
+        // 版本链：前端给了就用它的（同一需求反复改时保持一致），没给就按需求指纹算。
+        // 在这里算而不是在后台任务里，是为了让它能被闭包安全捕获。
+        let chain = chain_id
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| webgen::history::chain_id_for(&requirements));
+        // 首版与修改版的说明文字不同 —— 列表里要能一眼看出"这一版做了什么"。
+        let history_note = feedback_text
+            .as_ref()
+            .map(|text| {
+                let trimmed = text.trim();
+                if trimmed.chars().count() > 60 {
+                    format!("修改：{}…", trimmed.chars().take(60).collect::<String>())
+                } else {
+                    format!("修改：{trimmed}")
+                }
+            })
+            .unwrap_or_else(|| "首版".to_string());
+
         emit_web_generation_event(
             &app,
             &generation_id,
@@ -876,9 +962,31 @@ pub mod commands {
             );
             let mut user = requirements_block.clone();
             if let Some(feedback) = feedback_text.as_ref() {
-                user.push_str(&format!(
-                    "\n\n请根据以下修改意见，在现有网页基础上修改，并返回完整 HTML：\n{feedback}"
-                ));
+                // 点选局部修改：先把"改哪里"说清楚，再说"怎么改"。
+                //
+                // 为什么顺序不能反：8B 模型在长上下文里对**最后出现**的位置信息最敏感。
+                // 先说位置、再说要求，它才会把这条要求挂到那个元素上；反过来则容易忽略位置、
+                // 把整页重写一遍 —— 而整页重写正是"只想改个主色，结果按钮全点不动"的成因。
+                if let Some(target) = target_text.as_ref() {
+                    user.push_str(&format!(
+                        "\n\n【只改这一处】用户在预览里点选了下面这个元素，请**只针对它**做修改，其余部分原样保留：\n{target}"
+                    ));
+                }
+                // 片段模式下要求也必须是"只给一小块"。
+                //
+                // 这里是本次修的一个真坑：早先无论哪种模式都写"并返回完整 HTML"，
+                // 而片段模式的 `previous_note` 又说"只输出你改过的那一小块"——
+                // 两条互斥指令同时摆在一个 8B 模型面前，它两头都不照做：
+                // 实测只吐了 30 token 的敷衍内容（既不是完整页面，也不是有效片段）。
+                if patch_mode {
+                    user.push_str(&format!(
+                        "\n\n请根据以下修改意见，**只输出你改动过的那一小块代码**，不要输出整页：\n{feedback}"
+                    ));
+                } else {
+                    user.push_str(&format!(
+                        "\n\n请根据以下修改意见，在现有网页基础上修改，并返回完整 HTML：\n{feedback}"
+                    ));
+                }
                 if let Some(previous) = previous_payload.as_ref() {
                     user.push_str(&format!(
                         "\n\n<current_html>\n{previous}\n</current_html>{previous_note}"
@@ -941,6 +1049,8 @@ pub mod commands {
                 let round_start = html.chars().count();
                 let mut done_reason = None;
                 let mut page_closed = false;
+                // 本轮（或最近一轮）的用量统计，用于日志与生成摘要。
+                let mut last_usage: Option<crate::llm::ollama::TokenUsage> = None;
                 while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
                     match chunk {
                         ChatChunk::Text(text) => {
@@ -981,8 +1091,21 @@ pub mod commands {
                             emit_web_generation_event(&app, &generation_id_for_task, "error", format!("模型连接失败：{error}"), None);
                             return;
                         }
-                        ChatChunk::Done(reason) => {
+                        ChatChunk::Done(reason, usage) => {
                             done_reason = reason;
+                            // 用量只在最后一个分片里给。记下来，本轮结束后写进日志与
+                            // 生成摘要 —— 这是量化"一次生成消耗多少上下文"的唯一入口，
+                            // 也是判断提示词加固有没有效果的基线。
+                            if let Some(usage) = usage {
+                                if usage.is_measured() {
+                                    log(
+                                        &app,
+                                        &generation_id_for_task,
+                                        &format!("本轮用量：{}。", usage.log_line()),
+                                    );
+                                    last_usage = Some(usage);
+                                }
+                            }
                             break;
                         }
                     }
@@ -1000,6 +1123,54 @@ pub mod commands {
                 if continuation_count > 0 {
                     html = webgen::merge_continuation(&html, round_start);
                     last_reported = html.chars().count().min(last_reported);
+                }
+
+                // ---------- 片段模式合并 ----------
+                //
+                // 定向修改、整页超长时，模型只返回了"改后的那一小块"，这里要把它贴回原页。
+                //
+                // 这一步必须**在最前面**做：贴回之后的产物才是一份完整的页面，
+                // 后面那些确定性修复（脚本自洽性收口、空值兜底、死链修补……）才有东西可修。
+                //
+                // 合并失败一律**保留原页**：宁可告诉用户"这次没改成"，
+                // 也不能把一份残缺的页面交出去。这正是本次修的那个坑 ——
+                // 早先没有这一步，模型返回的 3006 字片段直接顶替了 18918 字的整页。
+                if patch_mode {
+                    if let (Some(original), Some(target)) =
+                        (previous_html.as_ref(), target_text.as_ref())
+                    {
+                        match webgen::merge_patch(
+                            original,
+                            target,
+                            WEBGEN_PREV_HTML_PATCH_WINDOW,
+                            &html,
+                        ) {
+                            Some(outcome) if outcome.changed => {
+                                log(
+                                    &app,
+                                    &generation_id_for_task,
+                                    "定向修改：模型只改了这一处，已由程序贴回原页（其余部分保持原样）。",
+                                );
+                                html = outcome.html;
+                            }
+                            Some(_) => {
+                                log(
+                                    &app,
+                                    &generation_id_for_task,
+                                    "定向修改：模型没有改动这一处，保留原页面。",
+                                );
+                                html = original.clone();
+                            }
+                            None => {
+                                log(
+                                    &app,
+                                    &generation_id_for_task,
+                                    "定向修改：改后内容无法安全贴回原页（结构或目标对不上），已保留原页面。请换一种说法再试，或改用整页修改。",
+                                );
+                                html = original.clone();
+                            }
+                        }
+                    }
                 }
 
                 // 收尾修补：模型续写时经常漏掉 `</script>`，JS 本身完整，但浏览器会把
@@ -1121,6 +1292,29 @@ pub mod commands {
                         cleaned = fixed;
                     }
 
+                    // ---------- 产物退化兜底 ----------
+                    //
+                    // 最后一道，也是最后一道能救命的：**改写把页面改烂了就该保留原版**。
+                    //
+                    // 为什么自检拦不住这种：`verify_page` 是按"页面上有的东西"找缺陷的，
+                    // 而一份被截断的残品上**什么都没有** —— 于是它报"通过"。
+                    // 实测：18918 字的页面被替换成 3006 字片段，`<body>` 与 `<script>` 全丢，
+                    // 自检无声通过，用户点"只改一个按钮"结果整页被删掉 84%。
+                    //
+                    // 判据只看两条硬事实：结构标签没了、体量骤降。
+                    if let Some(original) = previous_html.as_ref() {
+                        if let Some(reason) = webgen::looks_degraded(original, &cleaned) {
+                            log(
+                                &app,
+                                &generation_id_for_task,
+                                &format!(
+                                    "改动会让页面退化（{reason}），已保留原页面。请换一种说法再试。"
+                                ),
+                            );
+                            cleaned = original.clone();
+                        }
+                    }
+
                     // ---------- 功能自检 ----------
                     //
                     // 标签闭合只说明"文件是完整的"，不说明"功能是真的"。实测模型会把页面做得
@@ -1175,7 +1369,14 @@ pub mod commands {
                         // 只看严重问题会漏掉后者：那次抢救把损坏段连同尾部的绑定代码一起截掉，
                         // 页面画得出来、按钮点了没反应，而自检只报了提示级问题，于是被直接交付。
                         let plan = webgen::function_appendix_plan(&issues);
-                        if critical == 0 && plan.is_none() {
+                        // 交付闸门（三重）：
+                        // ① 有 Critical —— 语法/运行期就崩，必须修；
+                        // ② 有可"就地补写"的计划 —— 缺函数、按钮没绑事件；
+                        // ③ 有够格的功能性缺陷 —— 页面点得动但功能是空壳（成片死函数、需求成片没落地）。
+                        // 第 ③ 条是这次加固的重点：它对应的正是"看着齐全、其实不具备功能"的成品，
+                        // 过去因为既不是 Critical 也没有 repair 计划而被直接放行。
+                        let functional = webgen::functional_repair_worthwhile(&issues);
+                        if critical == 0 && plan.is_none() && !functional {
                             log(
                                 &app,
                                 &generation_id_for_task,
@@ -1354,7 +1555,19 @@ pub mod commands {
                                     repair_broken = true;
                                     break;
                                 }
-                                ChatChunk::Done(_) => break,
+                                ChatChunk::Done(_, usage) => {
+                                    // 修复轮同样记用量：修一轮要花多少上下文，直接决定
+                                    // "值得修几轮"以及窗口还够不够再修一轮。
+                                    if let Some(usage) = usage.filter(|usage| usage.is_measured()) {
+                                        log(
+                                            &app,
+                                            &generation_id_for_task,
+                                            &format!("本轮修复用量：{}。", usage.log_line()),
+                                        );
+                                        last_usage = Some(usage);
+                                    }
+                                    break;
+                                }
                                 ChatChunk::ToolCall(_) => {}
                             }
                         }
@@ -1518,6 +1731,63 @@ pub mod commands {
                         }
                     }
 
+                    // 交付前的终检：把"这一版到底还有没有问题"如实报出来。
+                    //
+                    // 这是"具备功能"的可验证指标 —— 自检一旦干净，日志里就只剩一句
+                    // "交付版本功能自检通过"；若仍有残留缺陷，用户能直接看到是哪几类，
+                    // 而不是打开页面挨个点按钮去发现。用量一并带上，便于对照调教效果。
+                    let final_issues = webgen::verify_page(&cleaned, &spec);
+                    let functional_left = final_issues
+                        .iter()
+                        .filter(|issue| webgen::is_functional_defect(issue))
+                        .count();
+                    let usage_note = last_usage
+                        .as_ref()
+                        .map(|usage| format!("，{}", usage.log_line()))
+                        .unwrap_or_default();
+                    if final_issues.is_empty() {
+                        log(
+                            &app,
+                            &generation_id_for_task,
+                            &format!(
+                                "交付版本功能自检通过：按钮绑定、数据链路、需求覆盖均正常（修复 {repair_round} 轮{usage_note}）。"
+                            ),
+                        );
+                    } else {
+                        log(
+                            &app,
+                            &generation_id_for_task,
+                            &format!(
+                                "交付版本仍有 {} 项自检问题（其中 {} 项影响功能），已尽力修复 {repair_round} 轮{usage_note}。清单如下：",
+                                final_issues.len(),
+                                functional_left
+                            ),
+                        );
+                        for issue in &final_issues {
+                            log(&app, &generation_id_for_task, &issue.log_line());
+                        }
+                    }
+
+                    // 存一版快照。放在交付之前而不是之后：`cleaned` 马上要被 move 进
+                    // `complete` 事件，而快照必须是**最终交付的这一版**——
+                    // 存错了版本，用户点"回退"就会拿到一个从没见过的页面。
+                    //
+                    // 自检指标跟着一起存：前端列表里要能直观看出"哪一版更健康"，
+                    // 否则回退就成了凭运气的操作。
+                    let version = webgen::history::push(
+                        &chain,
+                        cleaned.clone(),
+                        history_note.clone(),
+                        webgen::health(&final_issues).0,
+                        final_issues.len(),
+                        functional_left,
+                    );
+                    log(
+                        &app,
+                        &generation_id_for_task,
+                        &format!("已保存为第 {version} 版，可在「历史版本」里回退。"),
+                    );
+
                     emit_web_generation_event(
                         &app,
                         &generation_id_for_task,
@@ -1602,6 +1872,26 @@ pub mod commands {
                             log(&app, &generation_id_for_task, &issue.log_line());
                         }
                         let count = salvaged.chars().count();
+                        // 抢救版同样入链：它是用户实际拿到的东西，必须能回退到它之前的状态。
+                        // 缺陷指标据实记录 —— 抢救版通常问题不少，列表里一眼能看出来。
+                        let salvage_health = webgen::health_with_html(&salvaged, &issues).0;
+                        let salvage_functional = issues
+                            .iter()
+                            .filter(|issue| webgen::is_functional_defect(issue))
+                            .count();
+                        let version = webgen::history::push(
+                            &chain,
+                            salvaged.clone(),
+                            format!("{history_note}（续写中断抢救版）"),
+                            salvage_health,
+                            issues.len(),
+                            salvage_functional,
+                        );
+                        log(
+                            &app,
+                            &generation_id_for_task,
+                            &format!("已保存为第 {version} 版（含未修复问题，可在「历史版本」里回退）。"),
+                        );
                         emit_web_generation_event(
                             &app,
                             &generation_id_for_task,
@@ -1663,6 +1953,44 @@ pub mod commands {
         });
 
         Ok(())
+    }
+
+    // ============================================================
+    // 网页版本快照
+    //
+    // 解决"改坏了回不去"：每次生成/修改都留下完整一版，前端可以列出、取回、回退。
+    // 快照只活在内存里（见 webgen::history 的模块说明），进程重启即清空。
+    // ============================================================
+
+    /// 列出当前版本链的全部版本（摘要，不含 HTML 正文）。
+    ///
+    /// 不返回正文是刻意的：列表只需要版本号、说明与自检指标，正文可达几十 KB，
+    /// 传过去纯属浪费；真要回退时再按版本号取。
+    #[tauri::command]
+    pub fn list_webpage_versions(chain_id: Option<String>) -> Vec<webgen::history::SnapshotSummary> {
+        webgen::history::list(chain_id.as_deref())
+    }
+
+    /// 取回指定版本的完整 HTML，供前端回退。
+    ///
+    /// 取回后前端把它设回预览区与内部状态；下一次修改就基于这一版继续，
+    /// 相当于"把这一版重新放回编辑位"。
+    #[tauri::command]
+    pub fn restore_webpage_version(
+        chain_id: Option<String>,
+        version: u32,
+    ) -> Result<String, String> {
+        webgen::history::get(chain_id.as_deref(), version)
+            .ok_or_else(|| format!("第 {version} 版已不在历史里（可能已被更早的版本挤出保留窗口）。"))
+    }
+
+    /// 按需求文本算版本链标识。
+    ///
+    /// 前端首次进入某个需求时需要拿到这个串，之后每次生成都带上它，
+    /// 才能保证"同一份需求的多次修改"落进同一条链。
+    #[tauri::command]
+    pub fn webpage_chain_id(requirements: String) -> String {
+        webgen::history::chain_id_for(&requirements)
     }
 
     /// 把生成好的网页发布到公网静态托管，返回可以直接打开的链接。

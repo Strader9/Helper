@@ -25,7 +25,7 @@ const MAX_CONTINUATION_ROUNDS: usize = 6;
 /// 与 lib.rs 中的 `CONTINUATION_MIN_GAIN` 保持一致。
 const CONTINUATION_MIN_GAIN: usize = 40;
 /// 与 lib.rs 中的 `MAX_FUNCTION_REPAIR_ROUNDS` 保持一致。
-const MAX_FUNCTION_REPAIR_ROUNDS: usize = 3;
+const MAX_FUNCTION_REPAIR_ROUNDS: usize = 5;
 
 /// 与 lib.rs 里 `start_webpage_generation` 末尾的清理逻辑保持一致。
 fn tidy(html: &str) -> String {
@@ -176,8 +176,12 @@ async fn main() {
                     println!("[{}] [错误] {error}", now());
                     std::process::exit(2);
                 }
-                ChatChunk::Done(reason) => {
+                ChatChunk::Done(reason, usage) => {
                     done_reason = reason;
+                    // 与生产链路一致：把用量打出来，方便核对窗口预算是否吃紧。
+                    if let Some(usage) = usage.filter(|usage| usage.is_measured()) {
+                        println!("[{}] [用量] {}", now(), usage.log_line());
+                    }
                     break;
                 }
                 ChatChunk::ToolCall(_) => {}
@@ -298,7 +302,9 @@ async fn main() {
                     println!("[{}]   {}", now(), issue.log_line());
                 }
                 let plan = webgen::function_appendix_plan(&issues);
-                if critical == 0 && plan.is_none() {
+                // 交付闸门与 lib.rs 保持一致（三重）：Critical / 可就地补写 / 够格的功能性缺陷。
+                let functional = webgen::functional_repair_worthwhile(&issues);
+                if critical == 0 && plan.is_none() && !functional {
                     println!("[{}] [自检] 没有需要修复的严重问题，保留当前版本。", now());
                     break;
                 }
@@ -423,7 +429,7 @@ async fn main() {
                             broken = true;
                             break;
                         }
-                        ChatChunk::Done(_) => break,
+                        ChatChunk::Done(..) => break,
                         ChatChunk::ToolCall(_) => {}
                     }
                 }

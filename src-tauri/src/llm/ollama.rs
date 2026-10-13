@@ -107,6 +107,45 @@ pub struct OllamaModel {
     pub details: Option<serde_json::Value>,
 }
 
+/// 一次流式调用结束时的用量统计。
+///
+/// 为什么值得单独抽出来：本地 8B 模型跑在 8GB 显存上，"一次生成到底消耗了多少上下文"
+/// 决定了页面能不能一次做完 —— `prompt_eval_count` 逼近 `num_ctx` 时模型就已经在丢前面的内容了，
+/// 而这件事在日志里原本完全不可见，出了问题只能靠猜。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    /// 提示词占用的 token 数（Ollama 的 `prompt_eval_count`）。
+    pub prompt_tokens: u64,
+    /// 本轮实际生成的 token 数（Ollama 的 `eval_count`）。
+    pub output_tokens: u64,
+    /// 提示词处理耗时（纳秒）。
+    pub prompt_nanos: u64,
+    /// 生成耗时（纳秒）。
+    pub eval_nanos: u64,
+}
+
+impl TokenUsage {
+    /// 是否拿到了有效数据（Ollama 只在最后一个分片里给用量）。
+    pub fn is_measured(&self) -> bool {
+        self.prompt_tokens > 0 || self.output_tokens > 0
+    }
+
+    /// 一行的可读摘要，直接进日志。
+    pub fn log_line(&self) -> String {
+        let prompt_secs = self.prompt_nanos as f64 / 1_000_000_000.0;
+        let eval_secs = self.eval_nanos as f64 / 1_000_000_000.0;
+        let rate = if eval_secs > 0.01 {
+            format!("{:.1} tok/s", self.output_tokens as f64 / eval_secs)
+        } else {
+            "—".to_string()
+        };
+        format!(
+            "提示词 {} token（{:.1}s）｜输出 {} token（{:.1}s，{}）",
+            self.prompt_tokens, prompt_secs, self.output_tokens, eval_secs, rate
+        )
+    }
+}
+
 /// 流式响应分片
 ///
 /// 包含文本片段或完成标记。
@@ -117,7 +156,9 @@ pub enum ChatChunk {
     /// 工具调用
     ToolCall(ToolCall),
     /// 流结束
-    Done(Option<String>),
+    ///
+    /// 第一个字段是 `done_reason`，第二个是本次调用的用量统计（拿不到时为 `None`）。
+    Done(Option<String>, Option<TokenUsage>),
     /// 错误
     Error(String),
 }
@@ -158,6 +199,28 @@ struct ChatResponse {
     #[allow(dead_code)]
     #[serde(skip_serializing_if = "Option::is_none")]
     done_reason: Option<String>,
+    /// 用量字段只在最后一个分片（`done: true`）里出现，中间分片为 `None`。
+    #[serde(default)]
+    prompt_eval_count: Option<u64>,
+    #[serde(default)]
+    eval_count: Option<u64>,
+    #[serde(default)]
+    prompt_eval_duration: Option<u64>,
+    #[serde(default)]
+    eval_duration: Option<u64>,
+}
+
+impl ChatResponse {
+    /// 从最后一个分片里取用量。任何字段缺失都按 0 处理 —— 用量只用于观测，不该影响生成。
+    fn usage(&self) -> Option<TokenUsage> {
+        let usage = TokenUsage {
+            prompt_tokens: self.prompt_eval_count.unwrap_or(0),
+            output_tokens: self.eval_count.unwrap_or(0),
+            prompt_nanos: self.prompt_eval_duration.unwrap_or(0),
+            eval_nanos: self.eval_duration.unwrap_or(0),
+        };
+        usage.is_measured().then_some(usage)
+    }
 }
 
 /// Ollama 模型列表响应
@@ -445,7 +508,9 @@ async fn process_chat_response_line(json_str: &str, tx: &mpsc::Sender<ChatChunk>
     match parsed {
         Ok(resp) => {
             if resp.done {
-                let _ = tx.send(ChatChunk::Done(resp.done_reason)).await;
+                let _ = tx
+                    .send(ChatChunk::Done(resp.done_reason.clone(), resp.usage()))
+                    .await;
                 return;
             }
 
@@ -466,5 +531,77 @@ async fn process_chat_response_line(json_str: &str, tx: &mpsc::Sender<ChatChunk>
         Err(_e) => {
             // 忽略解析失败的行（可能是 SSE 格式不完整或心跳包）
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ollama 真正的最后一个分片长这样 —— 用量字段只在这里出现。
+    #[test]
+    fn reads_usage_from_the_final_chunk() {
+        let line = r#"{"model":"qwen3:8b","created_at":"2026-10-12T06:00:00Z","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":3120,"eval_count":2048,"prompt_eval_duration":1500000000,"eval_duration":41000000000}"#;
+        let resp: ChatResponse = serde_json::from_str(line).expect("应当能解析");
+        let usage = resp.usage().expect("应当拿到用量");
+        assert_eq!(usage.prompt_tokens, 3120);
+        assert_eq!(usage.output_tokens, 2048);
+        assert_eq!(usage.prompt_nanos, 1_500_000_000);
+        assert_eq!(usage.eval_nanos, 41_000_000_000);
+        assert!(usage.is_measured());
+    }
+
+    /// 中间分片没有用量字段，不能因此解析失败 —— 否则整条流会被打断。
+    #[test]
+    fn tolerates_stream_chunks_without_usage() {
+        let line = r#"{"model":"qwen3:8b","created_at":"2026-10-12T06:00:00Z","message":{"role":"assistant","content":"<div>"},"done":false}"#;
+        let resp: ChatResponse = serde_json::from_str(line).expect("应当能解析");
+        assert!(!resp.done);
+        assert!(resp.usage().is_none(), "没有用量就该是 None");
+    }
+
+    /// 用量全是 0 时按"没测到"处理，不要往日志里写一行全零的假数据。
+    #[test]
+    fn treats_all_zero_counts_as_unmeasured() {
+        let usage = TokenUsage::default();
+        assert!(!usage.is_measured());
+        assert!(ChatResponse {
+            model: String::new(),
+            created_at: String::new(),
+            message: None,
+            done: true,
+            done_reason: None,
+            prompt_eval_count: Some(0),
+            eval_count: Some(0),
+            prompt_eval_duration: None,
+            eval_duration: None,
+        }
+        .usage()
+        .is_none());
+    }
+
+    /// 日志摘要要能算出生成速率，且除零不能 panic。
+    #[test]
+    fn formats_a_readable_summary_without_dividing_by_zero() {
+        let usage = TokenUsage {
+            prompt_tokens: 1000,
+            output_tokens: 500,
+            prompt_nanos: 1_000_000_000,
+            eval_nanos: 10_000_000_000,
+        };
+        let line = usage.log_line();
+        assert!(line.contains("提示词 1000 token"));
+        assert!(line.contains("输出 500 token"));
+        assert!(line.contains("50.0 tok/s"), "{line}");
+
+        // 耗时为 0（某些后端不给）时不该出现 inf / NaN。
+        let no_timing = TokenUsage {
+            prompt_tokens: 1,
+            output_tokens: 1,
+            prompt_nanos: 0,
+            eval_nanos: 0,
+        };
+        let line = no_timing.log_line();
+        assert!(!line.contains("inf") && !line.contains("NaN"), "{line}");
     }
 }
