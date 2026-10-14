@@ -1,4 +1,58 @@
 /* ============================================================
+ * 浅色主题覆盖
+ *
+ * 通过 <html data-theme="light"> 切换。只覆盖颜色类变量，
+ * 尺寸/字体/圆角保持不变——这样切换主题不会让版式发生位移。
+ *
+ * 这里是"赛博朋克深色"的对应浅色版本：底色改为冷白，强调色保留
+ * 橙/蓝但在浅底上加深，保证文字对比度达标（浅底 + 霓虹色直接使用
+ * 会看不清）。
+ * ============================================================ */
+[data-theme="light"] {
+  /* ---- 背景层（冷白） ---- */
+  --bg-primary: #f5f6f8;
+  --bg-secondary: #eceef2;
+  --bg-tertiary: #e2e5eb;
+  --bg-hover: #d8dce4;
+  --bg-panel: rgba(255, 255, 255, 0.92);
+  --bg-glass: rgba(255, 255, 255, 0.7);
+
+  /* ---- 强调色（在浅底上加深以保证可读） ---- */
+  --neon-orange: #c96a00;
+  --neon-orange-dim: #a55600;
+  --neon-orange-glow: rgba(201, 106, 0, 0.25);
+
+  --neon-blue: #1a5f9e;
+  --neon-blue-dim: #14487a;
+  --neon-blue-glow: rgba(26, 95, 158, 0.25);
+
+  --neon-cyan: #007a8c;
+  --neon-teal: #00795c;
+
+  /* ---- 功能色 ---- */
+  --neon-green: #0a8c4a;
+  --neon-red: #c9203f;
+  --neon-yellow: #a67000;
+
+  /* ---- 文字（深色，保证对比度） ---- */
+  --text-primary: #1a1d23;
+  --text-secondary: #4a5260;
+  --text-muted: #78818f;
+
+  /* ---- 边框 ---- */
+  --border-color: rgba(0, 0, 0, 0.14);
+  --border-light: rgba(0, 0, 0, 0.07);
+  --border-glow: rgba(201, 106, 0, 0.35);
+
+  /* ---- 别名兼容 ---- */
+  --accent-color: var(--neon-orange);
+  --accent-hover: var(--neon-orange-dim);
+  --success-color: var(--neon-green);
+  --warning-color: var(--neon-orange);
+  --danger-color: var(--neon-red);
+}
+
+/* ============================================================
  * PC Guardian — 反应堆橙·赛博朋克主题全局样式
  * Reactor Orange Cyberpunk Theme
  * ============================================================ */

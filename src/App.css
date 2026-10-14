@@ -53,6 +53,37 @@
   background-color: var(--bg-primary);
 }
 
+/* === 浅色主题覆盖 ===
+ * App.css 在 index.css 之后引入，它的 :root 会覆盖前者的同名变量，
+ * 所以亮色主题必须在这里再声明一份，否则切到浅色时文字会变成浅色叠浅底。
+ * 只覆盖颜色，不碰尺寸与字体。 */
+:root[data-theme="light"] {
+  --bg-primary: #f5f6f8;
+  --bg-secondary: #eceef2;
+  --bg-tertiary: #e2e5eb;
+  --bg-hover: #d8dce4;
+
+  --neon-cyan: #007a8c;
+  --neon-blue: #1a5f9e;
+  --neon-teal: #00795c;
+  --neon-orange: #c96a00;
+  --neon-amber: #a67000;
+  --accent-color: #007a8c;
+  --accent-hover: #00666f;
+
+  --success-color: #0a8c4a;
+  --warning-color: #a67000;
+  --danger-color: #c9203f;
+
+  --text-primary: #1a1d23;
+  --text-secondary: #4a5260;
+  --text-muted: #78818f;
+
+  --border-color: rgba(0, 0, 0, 0.14);
+  --border-light: rgba(0, 0, 0, 0.07);
+  --border-glow: rgba(0, 122, 140, 0.35);
+}
+
 /* === 全局重置 === */
 * {
   box-sizing: border-box;
@@ -645,6 +676,163 @@ input, textarea {
   font-size: 11px;
   color: var(--neon-teal);
   font-family: var(--font-mono);
+}
+
+/* === 设置项分组 === */
+.settings-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.settings-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 4px;
+}
+
+.settings-group-title > span:first-child {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--neon-cyan);
+  text-transform: uppercase;
+  font-family: var(--font-display);
+}
+
+.settings-group-note {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* === 取值校验反馈 === */
+.setting-input.input-invalid {
+  border-color: var(--danger-color);
+  box-shadow: 0 0 8px rgba(255, 51, 102, 0.25);
+}
+
+.setting-unit {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.field-hint {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.field-hint.ok {
+  color: var(--neon-teal);
+}
+
+.field-hint.error {
+  color: var(--danger-color);
+}
+
+.field-range {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+/* === 规则阈值编辑 === */
+.rule-badge.preset {
+  background-color: rgba(0, 212, 255, 0.12);
+  color: var(--neon-cyan);
+  border-color: rgba(0, 212, 255, 0.3);
+}
+
+.rule-threshold-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.rule-threshold-input {
+  width: 80px;
+  padding: 4px 8px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.rule-threshold-input:focus {
+  outline: none;
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 8px rgba(0, 212, 255, 0.3);
+}
+
+.rule-threshold-input.input-invalid {
+  border-color: var(--danger-color);
+}
+
+.rule-threshold-unit {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.rule-edit-save,
+.rule-edit-cancel,
+.rule-edit-btn {
+  padding: 3px 10px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  border: 1px solid var(--border-color);
+  border-radius: 0;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.rule-edit-save {
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+}
+
+.rule-edit-save:hover {
+  background-color: rgba(0, 212, 255, 0.12);
+}
+
+.rule-edit-cancel:hover,
+.rule-edit-btn:hover {
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+}
+
+.rule-edit-error {
+  margin-top: 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--danger-color);
+}
+
+/* === 只读展示块 ===
+ * 用左侧竖线 + 降低的饱和度，在视觉上与可编辑行区分开，
+ * 让用户一眼看出"这块只是告诉你系统怎么工作的，点不了"。 */
+.security-info.readonly,
+.browser-info-box.readonly {
+  border-left: 2px solid var(--border-color);
+  padding-left: 12px;
+  opacity: 0.9;
+}
+
+.directory-add-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 /* Toggle Switch */

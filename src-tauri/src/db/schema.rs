@@ -34,11 +34,18 @@ CREATE TABLE IF NOT EXISTS migrations (
 -- ============================================================
 -- 2. settings - 配置表
 -- ============================================================
+-- min_value / max_value：数值型配置的合法区间，供前端做即时校验、
+-- 供后端在保存前拒绝越界输入。NULL 表示该配置项没有区间约束。
+-- unit：数值单位（%、ms、s、GB 等），仅用于界面展示，避免用户在
+-- "30000" 面前猜这是秒还是毫秒。
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     value_type TEXT NOT NULL DEFAULT 'string',
     description TEXT,
+    min_value REAL,
+    max_value REAL,
+    unit TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -126,7 +133,11 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     message_count INTEGER NOT NULL DEFAULT 0,
     last_message TEXT,
     is_pinned INTEGER NOT NULL DEFAULT 0,
-    is_archived INTEGER NOT NULL DEFAULT 0
+    is_archived INTEGER NOT NULL DEFAULT 0,
+    -- 远期对话的压缩摘要（由 agent::history 生成并缓存）。
+    -- summary_upto_id 记录摘要覆盖到哪一条消息，避免重复压缩同一段。
+    summary TEXT,
+    summary_upto_id INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_chat_sessions_updated ON chat_sessions(updated_at DESC);

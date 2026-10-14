@@ -161,7 +161,15 @@ fn stop_words() -> HashSet<&'static str> {
     words.iter().copied().collect()
 }
 
-/// 从文本中提取关键词（简单实现：标点分割 + 停用词过滤 + 长度过滤）
+/// 从文本中提取关键词（简单实现：标点分割 + 停用词过滤 + 中文 n-gram 切分）
+///
+/// 关于中文切分的说明：原先只按标点切分，导致「把刚才改的那几个文件提交一下」
+/// 整段成为一个 token，与记忆里存的关键词（"提交""文件"）一个都对不上 ——
+/// 中文没有空格，标点切分对口语长句几乎无效。
+///
+/// 这里对**不含 ASCII 的连续中文串**补一层 2–3 字滑动窗口切分（无需引入分词库）。
+/// 例如「文件提交一下」→ 文件/提交/交一/一下/文件提/件提交/提交一/交一下。
+/// 配合 `compute_relevance_score` 里的子串包含匹配，能显著提高召回。
 pub fn extract_keywords(text: &str) -> Vec<String> {
     let stop = stop_words();
     let mut keywords = Vec::new();
@@ -217,9 +225,33 @@ pub fn extract_keywords(text: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .collect();
 
+    // 判断一个字符是否属于"中文"（CJK 统一表意文字基本区）
+    fn is_cjk(c: char) -> bool {
+        matches!(c as u32, 0x4E00..=0x9FFF)
+    }
+
     for token in tokens {
         let lower = token.to_lowercase();
-        // 过滤：停用词、长度<2、纯数字
+        let chars: Vec<char> = lower.chars().collect();
+
+        // 纯中文或中英混合的长串：补 n-gram
+        if chars.len() >= 5 && chars.iter().any(|c| is_cjk(*c)) {
+            for n in 2..=3usize {
+                if chars.len() < n {
+                    continue;
+                }
+                for window in chars.windows(n) {
+                    let gram: String = window.iter().collect();
+                    if gram.chars().all(is_cjk) && !stop.contains(gram.as_str()) {
+                        if seen.insert(gram.clone()) {
+                            keywords.push(gram);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 保留原 token（英文词、短中文词走这里）
         if lower.len() < 2 {
             continue;
         }
@@ -234,8 +266,8 @@ pub fn extract_keywords(text: &str) -> Vec<String> {
         }
     }
 
-    // 最多保留 20 个关键词
-    keywords.truncate(20);
+    // 最多保留 40 个关键词（n-gram 会显著增加数量，上限相应放宽）
+    keywords.truncate(40);
     keywords
 }
 
@@ -467,6 +499,17 @@ fn row_to_memory_item(row: &rusqlite::Row) -> rusqlite::Result<MemoryItem> {
 /// 计算记忆与查询关键词的相关性分数
 ///
 /// score = importance * (0.95 ^ days_since_creation) * (1 + log(access_count + 1)) * keyword_match_factor
+///
+/// 关于 `keyword_match_factor` 的两处修正（原先都会导致检索不准）：
+///
+/// 1. **匹配从「精确相等」放宽为「双向子串包含」**。原先要求查询词与记忆关键词完全相同，
+///    但中文没有分词：用户说"帮我把改的提交一下"，切出来的是整段"把改的提交一下"，
+///    而记忆里存的关键词是"提交" —— 一个都对不上。现在只要任一方包含另一方就算命中。
+///
+/// 2. **无匹配时不再给 0.1 保底分**。原先无匹配返回 0.1，本意是"不排除"，但乘以高
+///    importance（如 90）之后仍有 9 分，足以在**任何无关问法**里都挤进前五 ——
+///    实测"下载 20GB 模型"这类与纪律条目毫无关系的问法，都被 git 纪律条目占满了名额。
+///    改为 0（完全排除），让真正匹配的记忆有位置。
 fn compute_relevance_score(item: &MemoryItem, query_keywords: &[String]) -> f64 {
     let importance = item.importance as f64;
 
@@ -481,21 +524,28 @@ fn compute_relevance_score(item: &MemoryItem, query_keywords: &[String]) -> f64 
     let keyword_factor = if query_keywords.is_empty() {
         1.0
     } else {
-        let item_kw_set: HashSet<&str> = item.keywords.iter().map(|s| s.as_str()).collect();
-        let matches = query_keywords
-            .iter()
-            .filter(|q| item_kw_set.contains(q.as_str()))
-            .count();
-        // content 包含查询词也加分
-        let content_matches = query_keywords
-            .iter()
-            .filter(|q| item.content.to_lowercase().contains(q.as_str()))
-            .count();
-        let total_matches = matches + content_matches;
-        if total_matches == 0 {
-            0.1 // 无匹配时给低分但不完全排除
+        let content_lower = item.content.to_lowercase();
+
+        // 双向子串包含：查询词落在关键词里，或关键词落在查询词里，都算命中。
+        let mut matches = 0usize;
+        for q in query_keywords {
+            if q.chars().count() < 2 {
+                continue;
+            }
+            let in_keywords = item.keywords.iter().any(|k| {
+                let k_lower = k.to_lowercase();
+                !k_lower.is_empty() && (k_lower.contains(q.as_str()) || q.contains(k_lower.as_str()))
+            });
+            let in_content = content_lower.contains(q.as_str());
+            if in_keywords || in_content {
+                matches += 1;
+            }
+        }
+
+        if matches == 0 {
+            0.0 // 无匹配：完全排除，不再靠 importance 保底占位
         } else {
-            1.0 + total_matches as f64 * 0.5
+            1.0 + matches as f64 * 0.5
         }
     };
 
@@ -509,5 +559,95 @@ fn days_since(date_str: &str) -> i64 {
         (now - dt).num_days()
     } else {
         0
+    }
+}
+
+// ============================================================
+// 测试
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(content: &str, keywords: &[&str], importance: u8) -> MemoryItem {
+        MemoryItem {
+            id: "test".to_string(),
+            memory_type: MemoryType::UserPreference,
+            content: content.to_string(),
+            keywords: keywords.iter().map(|s| s.to_string()).collect(),
+            importance,
+            access_count: 0,
+            created_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            last_accessed_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            expires_at: None,
+            source: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn splits_a_long_chinese_sentence_into_searchable_ngrams() {
+        // 为什么要切：中文没有空格，整句标点切分后是一个 token，
+        // 与记忆里存的关键词（"提交""文件"）一个都对不上，检索必然落空。
+        let kws = extract_keywords("把刚才改的那几个文件提交一下");
+        assert!(kws.iter().any(|k| k == "文件"), "应切出「文件」，实际: {:?}", kws);
+        assert!(kws.iter().any(|k| k == "提交"), "应切出「提交」，实际: {:?}", kws);
+    }
+
+    #[test]
+    fn keeps_short_tokens_and_english_words_intact() {
+        let kws = extract_keywords("pip install");
+        assert!(kws.iter().any(|k| k == "pip"), "应保留 pip，实际: {:?}", kws);
+        assert!(
+            kws.iter().any(|k| k == "install"),
+            "应保留 install，实际: {:?}",
+            kws
+        );
+    }
+
+    #[test]
+    fn matches_a_memory_whose_keyword_is_a_substring_of_the_query() {
+        // 核心回归：原先要求精确相等，"提交一下"匹配不上关键词"提交"。
+        let mem = item("禁止 git add .", &["git", "提交", "暂存"], 90);
+        let query = extract_keywords("帮我把改的文件提交一下");
+        let score = compute_relevance_score(&mem, &query);
+        assert!(score > 0.0, "含「提交」的问法应当命中，实际得分 {}", score);
+    }
+
+    #[test]
+    fn gives_zero_to_an_unrelated_memory_instead_of_a_floor_score() {
+        // 为什么必须是 0：原先无匹配给 0.1 保底，乘上 importance 90 仍有 9 分，
+        // 导致高优先级纪律条目在**任何**无关问法里都占满名额。
+        let mem = item("禁止 git add .", &["git", "提交", "暂存"], 90);
+        let query = extract_keywords("下载一个二十GB的模型到D盘");
+        let score = compute_relevance_score(&mem, &query);
+        assert_eq!(score, 0.0, "无关问法不应命中高优先级条目，实际得分 {}", score);
+    }
+
+    #[test]
+    fn a_high_importance_memory_still_loses_to_a_matched_one() {
+        // 排序正确性：高 importance 但无关的条目，不能压过相关但低 importance 的条目。
+        let unrelated_important = item("禁止 git add .", &["git", "提交"], 90);
+        let relevant_modest = item("大文件优先放 D 盘", &["d盘", "磁盘", "下载"], 60);
+        let query = extract_keywords("我要下载一个大文件放哪");
+        let s_unrelated = compute_relevance_score(&unrelated_important, &query);
+        let s_relevant = compute_relevance_score(&relevant_modest, &query);
+        assert!(
+            s_relevant > s_unrelated,
+            "相关条目({})应高于无关高优先级条目({})",
+            s_relevant,
+            s_unrelated
+        );
+    }
+
+    #[test]
+    fn does_not_split_gibberish_into_single_chars() {
+        // 反向断言：n-gram 的下界是 2 字，1 字碎片（噪音极大）不应出现。
+        let kws = extract_keywords("文件提交一下");
+        assert!(
+            kws.iter().all(|k| k.chars().count() >= 2),
+            "不应产生单字关键词，实际: {:?}",
+            kws
+        );
     }
 }

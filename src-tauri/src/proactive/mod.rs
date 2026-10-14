@@ -303,6 +303,9 @@ fn is_offline_cooldown_ok(last_triggered: &Option<String>, cooldown_sec: i64) ->
 // ============================================================
 
 /// 确保预设规则存在（首次启动时插入）
+///
+/// 已存在的规则**不覆盖**——用户在设置页可能已经改过阈值或关掉了某条，
+/// 每次启动都重置会把他的调整抹掉。
 pub fn ensure_preset_rules(conn: &rusqlite::Connection) -> Result<usize, String> {
     let presets = build_preset_rules();
     let mut inserted = 0;
@@ -319,7 +322,78 @@ pub fn ensure_preset_rules(conn: &rusqlite::Connection) -> Result<usize, String>
     Ok(inserted)
 }
 
+/// 把老库中预设规则的通知文案升级为带占位符的模板。
+///
+/// 背景：早期版本把阈值数字写死在通知文案里（"已超过 90%"）。用户一旦
+/// 在设置页改了阈值，文案就与实际不符。新版改成 `{threshold}` 占位符，
+/// 发送时按当前阈值渲染。但老库里存的仍是写死的旧句子，需要就地升级。
+///
+/// 只对**预设规则**且**文案中仍含旧硬编码数字**的做替换，用户自己写的
+/// 规则文案一律不碰——那是用户的内容，我们没有立场改。
+///
+/// 返回升级条数。可反复调用（幂等）：替换过之后模板里是 `{threshold}`，
+/// 不再匹配旧文案，自然跳过。
+pub fn upgrade_preset_messages(conn: &rusqlite::Connection) -> Result<usize, String> {
+    // (规则 id, 新的模板文案)
+    let upgrades: [(&str, &str); 3] = [
+        (
+            "preset_high_memory",
+            "系统内存使用率已超过 {threshold}%，建议关闭不必要的应用程序。",
+        ),
+        (
+            "preset_high_cpu",
+            "CPU 使用率已持续超过 {threshold}%，电脑可能出现卡顿，建议检查占用高的进程。",
+        ),
+        (
+            "preset_low_disk_c",
+            "C盘可用空间已不足 {threshold}GB，建议清理临时文件或卸载不常用软件。",
+        ),
+    ];
+
+    let mut upgraded = 0;
+    for (id, new_message) in upgrades {
+        let rule = match get_rule_by_id(conn, id)? {
+            Some(r) => r,
+            None => continue,
+        };
+
+        let mut action: NotifyAction = match serde_json::from_str(&rule.action_config) {
+            Ok(a) => a,
+            Err(_) => continue, // 配置损坏，留给用户在界面上处理
+        };
+
+        // 判定是否还是"写了死数字"的老文案。
+        //
+        // 不要求整句完全相等：不同版本间的标点或措辞可能差一两个字，
+        // 用"含旧数字 + 不含占位符"更稳。反过来，只要已经是模板
+        // （含 `{threshold}`），或用户自改过文案（不含任何旧数字特征），
+        // 就一律不动。
+        let has_placeholder = action.message.contains("{threshold}");
+        let has_legacy_number = action.message.contains("已超过 90%")
+            || action.message.contains("超过 95%")
+            || action.message.contains("不足 10GB");
+
+        if has_placeholder || !has_legacy_number {
+            continue;
+        }
+
+        action.message = new_message.to_string();
+        let mut updated = rule.clone();
+        updated.action_config =
+            serde_json::to_string(&action).map_err(|e| e.to_string())?;
+        update_rule(conn, &updated)?;
+        upgraded += 1;
+    }
+
+    Ok(upgraded)
+}
+
 /// 构建预设规则列表
+///
+/// 阈值来源说明：这三条规则此前分别硬编码 90% / 95% / 10GB，同时 settings 表里
+/// 又存在一套 `monitor.alert_*_threshold` 配置项——两套数值各说各话，谁也没接线。
+/// 现在统一为**以规则自身为准**：这里的初值只用于"首次启动时把规则写进库"，
+/// 写进去之后用户在设置页改的就是规则本身，不存在第二份副本。
 fn build_preset_rules() -> Vec<ProactiveRule> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
@@ -339,8 +413,11 @@ fn build_preset_rules() -> Vec<ProactiveRule> {
             .unwrap(),
             action_type: ActionType::Notify.as_str().to_string(),
             action_config: serde_json::to_string(&NotifyAction {
-                title: "⚠️ 内存占用过高".to_string(),
-                message: "系统内存使用率已超过 90%，建议关闭不必要的应用程序。".to_string(),
+                title: "内存占用过高".to_string(),
+                // `{threshold}` 是占位符，发送通知时替换成规则**当前**的阈值。
+                // 写死数字会导致用户改了阈值后，通知文案还在说旧值——
+                // "已超过 90%" 而实际卡在 75% 触发，属于自相矛盾。
+                message: "系统内存使用率已超过 {threshold}%，建议关闭不必要的应用程序。".to_string(),
                 level: "warning".to_string(),
             })
             .unwrap(),
@@ -349,14 +426,14 @@ fn build_preset_rules() -> Vec<ProactiveRule> {
             trigger_count: 0,
             created_at: now.clone(),
         },
-        // 2. CPU 过热提醒
+        // 2. CPU 高负载提醒
         ProactiveRule {
             id: "preset_high_cpu".to_string(),
             name: "CPU 高负载提醒".to_string(),
             trigger_type: TriggerType::SystemMetric.as_str().to_string(),
             trigger_config: serde_json::to_string(&SystemMetricTrigger {
                 metric: "cpu".to_string(),
-                threshold: 95.0,
+                threshold: 90.0,
                 operator: "gt".to_string(),
                 duration_sec: 30,
                 drive: None,
@@ -364,8 +441,8 @@ fn build_preset_rules() -> Vec<ProactiveRule> {
             .unwrap(),
             action_type: ActionType::Notify.as_str().to_string(),
             action_config: serde_json::to_string(&NotifyAction {
-                title: "🔥 CPU 负载过高".to_string(),
-                message: "CPU 使用率已持续超过 95%，电脑可能出现卡顿，建议检查占用高的进程。".to_string(),
+                title: "CPU 负载过高".to_string(),
+                message: "CPU 使用率已持续超过 {threshold}%，电脑可能出现卡顿，建议检查占用高的进程。".to_string(),
                 level: "warning".to_string(),
             })
             .unwrap(),
@@ -389,8 +466,8 @@ fn build_preset_rules() -> Vec<ProactiveRule> {
             .unwrap(),
             action_type: ActionType::Notify.as_str().to_string(),
             action_config: serde_json::to_string(&NotifyAction {
-                title: "💾 C盘空间不足".to_string(),
-                message: "C盘可用空间已不足 10GB，建议清理临时文件或卸载不常用软件。".to_string(),
+                title: "C盘空间不足".to_string(),
+                message: "C盘可用空间已不足 {threshold}GB，建议清理临时文件或卸载不常用软件。".to_string(),
                 level: "critical".to_string(),
             })
             .unwrap(),
@@ -737,9 +814,42 @@ impl ProactiveEngine {
         let started_at = self.started_at.clone();
 
         tauri::async_runtime::spawn(async move {
-            eprintln!("[Proactive] Engine started, monitoring every 15s");
-            let check_interval = Duration::from_secs(15);
-            let cooldown_sec = 300; // 5 分钟冷却
+            eprintln!("[Proactive] Engine started");
+
+            // 检查间隔与冷却期改为**每轮循环实时读取**配置，而不是启动时读一次。
+            // 理由：这两个值是用户在设置页随时可能调整的调参项，读一次就固定
+            // 意味着改完要重启应用才生效，与"设置改了立刻管用"的预期不符。
+            //
+            // 读取范围限定在下面这个闭包里，避免把 db 锁持有多轮循环。
+            fn read_timing(app: &AppHandle) -> (Duration, i64) {
+                let (interval_sec, cooldown_sec) = {
+                    let state = app.state::<crate::AppState>();
+                    // 这里是同步上下文（在 async 块内但不在 await 点），
+                    // try_lock 拿不到就退回默认值，绝不阻塞监控循环。
+                    //
+                    // 先把结果绑成具名变量再返回：直接在块尾返回 `match` 的结果，
+                    // 会让 MutexGuard 的临时值活到块的最后，晚于 `state` 被析构。
+                    let resolved = match state.db.try_lock() {
+                        Ok(db) => (
+                            db.get_setting("agent.proactive_interval_sec")
+                                .ok()
+                                .flatten()
+                                .and_then(|v| v.trim().parse::<u64>().ok())
+                                .map(|v| v.clamp(5, 300))
+                                .unwrap_or(15),
+                            db.get_setting("agent.proactive_cooldown_sec")
+                                .ok()
+                                .flatten()
+                                .and_then(|v| v.trim().parse::<i64>().ok())
+                                .map(|v| v.clamp(30, 3600))
+                                .unwrap_or(300),
+                        ),
+                        Err(_) => (15, 300),
+                    };
+                    resolved
+                };
+                (Duration::from_secs(interval_sec), cooldown_sec)
+            }
 
             // V21: 记录启动时间，触发应用启动事件
             {
@@ -751,6 +861,8 @@ impl ProactiveEngine {
             trigger_event_rules(&app_handle, "app_start", &triggers_count).await;
 
             while running.load(Ordering::Relaxed) {
+                // 每轮重新取一次间隔与冷却，用户在设置页改完下一轮即生效。
+                let (check_interval, cooldown_sec) = read_timing(&app_handle);
                 tokio::time::sleep(check_interval).await;
 
                 // 获取系统指标
@@ -944,19 +1056,28 @@ async fn execute_action(
                 }
             };
 
+            // 把文案里的 `{threshold}` 换成规则**当前**的阈值。
+            //
+            // 为什么要这一步：预设规则的通知文案过去把数字写死在句子里
+            // （"内存使用率已超过 90%"）。一旦用户在设置页改了阈值，或者
+            // 老库里的阈值与当前默认值不同，通知就会自己打自己的脸——
+            // 阈值明明是 95 却在说"超过 90% 了"。
+            // 现在文案里存模板，发送时按实际配置渲染，两边永远一致。
+            let message = render_notify_message(&action.message, rule);
+
             // 发送 Tauri 事件到前端
             let payload = serde_json::json!({
                 "rule_id": rule.id,
                 "rule_name": rule.name,
                 "title": action.title,
-                "message": action.message,
+                "message": message,
                 "level": action.level,
                 "context": context,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             });
 
             // 发送通知（Tauri 事件 + 托盘气泡）
-            emit_proactive_notification(app_handle, &payload, &action.title, &action.message);
+            emit_proactive_notification(app_handle, &payload, &action.title, &message);
             triggers_count.fetch_add(1, Ordering::Relaxed);
             eprintln!(
                 "[Proactive] 触发规则 '{}': {} ({})",
@@ -1116,6 +1237,38 @@ async fn execute_action(
     }
 }
 
+/// 把通知文案里的 `{threshold}` 占位符替换为规则当前的阈值。
+///
+/// 非 system_metric 规则（或配置解析失败）没有阈值可填，此时把占位符
+/// 整体去掉，避免用户看到字面的 `{threshold}`。
+///
+/// 数字格式：整数阈值不带小数点（"90%" 而不是 "90.0%"），
+/// 小数阈值保留一位（"87.5%"），与用户在设置页看到的一致。
+fn render_notify_message(template: &str, rule: &ProactiveRule) -> String {
+    if !template.contains("{threshold}") {
+        return template.to_string();
+    }
+
+    let threshold = serde_json::from_str::<SystemMetricTrigger>(&rule.trigger_config)
+        .ok()
+        .map(|t| t.threshold);
+
+    match threshold {
+        Some(value) => {
+            let rendered = if (value.fract()).abs() < f64::EPSILON {
+                format!("{}", value as i64)
+            } else {
+                format!("{:.1}", value)
+            };
+            template.replace("{threshold}", &rendered)
+        }
+        None => {
+            // 拿不到阈值就不留占位符，退化成一句没有数字的说明。
+            template.replace("{threshold}", "设定值")
+        }
+    }
+}
+
 /// V21: 写入 Proactive 自动执行的审计日志
 async fn write_proactive_audit_log(
     app_handle: &AppHandle,
@@ -1189,5 +1342,101 @@ async fn write_audit_log(
 
     if let Err(e) = result {
         eprintln!("[Proactive] 写入审计日志失败: {}", e);
+    }
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+
+    fn rule_with(metric: &str, threshold: f64) -> ProactiveRule {
+        ProactiveRule {
+            id: format!("test_{}", metric),
+            name: metric.to_string(),
+            trigger_type: TriggerType::SystemMetric.as_str().to_string(),
+            trigger_config: serde_json::to_string(&SystemMetricTrigger {
+                metric: metric.to_string(),
+                threshold,
+                operator: "gt".to_string(),
+                duration_sec: 0,
+                drive: None,
+            })
+            .unwrap(),
+            action_type: ActionType::Notify.as_str().to_string(),
+            action_config: "{}".to_string(),
+            enabled: true,
+            last_triggered: None,
+            trigger_count: 0,
+            created_at: "2026-01-01 00:00:00".to_string(),
+        }
+    }
+
+    #[test]
+    fn renders_integral_threshold_without_decimal_point() {
+        let rule = rule_with("cpu", 90.0);
+        let out = render_notify_message("已超过 {threshold}%", &rule);
+        // 关键：不能渲染成 "90.0%"，用户看到的是设置页里的 "90"
+        assert_eq!(out, "已超过 90%");
+    }
+
+    #[test]
+    fn keeps_one_decimal_for_fractional_threshold() {
+        let rule = rule_with("memory", 87.5);
+        let out = render_notify_message("超过 {threshold}% 了", &rule);
+        assert_eq!(out, "超过 87.5% 了");
+    }
+
+    #[test]
+    fn message_carries_the_actual_threshold_not_a_hardcoded_one() {
+        // 这是本次修复的核心：同一句模板，不同阈值必须渲染出不同数字。
+        let template = "系统内存使用率已超过 {threshold}%";
+        let a = render_notify_message(template, &rule_with("memory", 75.0));
+        let b = render_notify_message(template, &rule_with("memory", 95.0));
+        assert!(a.contains("75") && !a.contains("95"));
+        assert!(b.contains("95") && !b.contains("75"));
+    }
+
+    #[test]
+    fn template_without_placeholder_passes_through_untouched() {
+        let rule = rule_with("cpu", 90.0);
+        let out = render_notify_message("一句没有占位符的话", &rule);
+        assert_eq!(out, "一句没有占位符的话");
+    }
+
+    #[test]
+    fn never_leaves_a_raw_placeholder_when_threshold_is_missing() {
+        // 非 system_metric 规则没有阈值可填，但也不该把 `{threshold}`
+        // 原样展示给用户。
+        let mut rule = rule_with("cpu", 90.0);
+        rule.trigger_type = TriggerType::Schedule.as_str().to_string();
+        rule.trigger_config = "{}".to_string();
+        let out = render_notify_message("阈值是 {threshold}", &rule);
+        assert!(!out.contains("{threshold}"), "不应残留占位符: {}", out);
+    }
+
+    #[test]
+    fn preset_cpu_message_template_has_no_hardcoded_number() {
+        // 防线：预设规则的文案里不得再出现写死的数字。
+        // 一旦有人改回去，这条会失败。
+        let presets = build_preset_rules();
+        for rule in presets.iter().filter(|r| r.trigger_type == "system_metric") {
+            let action: NotifyAction =
+                serde_json::from_str(&rule.action_config).expect("解析通知配置");
+            assert!(
+                action.message.contains("{threshold}"),
+                "预设规则 {} 的文案缺少占位符，可能又写死了数字: {}",
+                rule.id,
+                action.message
+            );
+            // 允许出现 "C盘" 这类非数字文本，只禁止"百分之多少"的死数字。
+            assert!(
+                !action.message.contains("超过 90%")
+                    && !action.message.contains("超过 95%")
+                    && !action.message.contains("不足 10GB"),
+                "预设规则 {} 的文案里仍有硬编码阈值: {}",
+                rule.id,
+                action.message
+            );
+        }
     }
 }

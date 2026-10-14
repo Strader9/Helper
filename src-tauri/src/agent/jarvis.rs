@@ -18,15 +18,69 @@ use crate::tools::executor::{ToolCallRequest, ToolExecutor};
 use crate::tools::ToolRegistry;
 
 use super::task::{ActionStatusEvent, Task, TaskManager, TaskStatus, TaskStep, TaskUpdateEvent};
-use super::{convert_messages, extract_tool_calls, ChatEvent, RunCancellation};
+use super::{extract_tool_calls, ChatEvent, RunCancellation};
 use crate::tools::ToolCategory;
 
 const MAX_ADAPTIVE_TURNS: usize = 6;
 const MODEL_CHUNK_TIMEOUT_SECS: u64 = 20;
 const MAX_TOOL_ROUTING_TEMPERATURE: f32 = 0.2;
 
+/// 对话路径的上下文窗口默认值。
+///
+/// **必须显式指定。** Ollama 的 `num_ctx` 默认只有 4096 token，而本路径的消息里
+/// 光工具定义就占掉大头（每个工具连同 parameters schema 约 80–150 token），
+/// 剩下的空间装不下 system prompt、注入的记忆和对话历史 —— 提示词会被静默截断，
+/// 表现为模型"记不住用户偏好"。
+///
+/// 8192 是 8GB 显存下能 100% 跑 GPU 的上限——再大就会有一部分层落到 CPU，
+/// 单轮延迟明显变长。用户可在设置里调（`agent.num_ctx`），调大前应先确认
+/// 自己的显存扛得住。
+const DEFAULT_NUM_CTX: u32 = 8192;
+
+/// 单轮输出 token 上限的默认值。
+///
+/// `num_ctx` 只是窗口大小、不是输出上限：上下文写满后 Ollama 会滑动窗口继续生成，
+/// `num_predict: -1` 意味着模型可以无限写下去。对话场景的回答不需要很长，
+/// 1024 足够放下带工具调用的回复，同时保证「提示词 + 单轮输出」不会撑爆窗口。
+const DEFAULT_NUM_PREDICT: i64 = 1024;
+
+/// 从设置读取本轮对话要用的 (num_ctx, num_predict)。
+///
+/// 每次发起对话都读一次，用户在设置页改完下一轮即生效，不必重启。
+/// 读不到（锁被占用 / 值非法）就退回默认值——绝不因为一个配置项而
+/// 中断对话。
+fn resolve_context_options(db: &Arc<Mutex<Database>>) -> (u32, i64) {
+    let (num_ctx, num_predict) = match db.try_lock() {
+        Ok(guard) => (
+            guard
+                .get_setting("agent.num_ctx")
+                .ok()
+                .flatten()
+                .and_then(|v| v.trim().parse::<u32>().ok())
+                .map(|v| v.clamp(2048, 32768))
+                .unwrap_or(DEFAULT_NUM_CTX),
+            guard
+                .get_setting("agent.num_predict")
+                .ok()
+                .flatten()
+                .and_then(|v| v.trim().parse::<i64>().ok())
+                .map(|v| v.clamp(128, 8192))
+                .unwrap_or(DEFAULT_NUM_PREDICT),
+        ),
+        Err(_) => (DEFAULT_NUM_CTX, DEFAULT_NUM_PREDICT),
+    };
+    (num_ctx, num_predict)
+}
+
+/// 生成远期摘要的超时（秒）。
+///
+/// 摘要是「锦上添花」的一步，不能因为它拖住整个对话。超时就放弃本次压缩、
+/// 保留原有摘要不变，而不是让用户干等。
+const SUMMARY_TIMEOUT_SECS: u64 = 25;
+
 pub(crate) struct JarvisContext<'a> {
     pub session_id: &'a str,
+    pub user_content: &'a str,
     pub db: &'a Arc<Mutex<Database>>,
     pub ollama: &'a OllamaClient,
     pub executor: &'a ToolExecutor,
@@ -45,24 +99,126 @@ pub(crate) async fn run(context: JarvisContext<'_>, mut task: Task) -> AppResult
         .tool_registry
         .list_names_by_categories(context.categories);
     let tools_json = build_tools_json(context.tool_registry, &active_tool_names);
-    let system_prompt = build_jarvis_prompt();
 
-    let history = {
+    // 窗口与输出上限从设置读取，用户可在「设置 → 通用设置 → 生成参数」调整。
+    let (num_ctx, num_predict) = resolve_context_options(context.db);
+
+    // 把检索到的长期记忆拼进 System Prompt。
+    //
+    // 原先这里只有 `build_jarvis_prompt()` 那个静态字符串，记忆只在闲聊快速路径
+    // （`run_chat_fast`）里注入 —— 结果就是用户明确说过的偏好，在真正需要执行操作的
+    // 路径上反而看不见。用户偏好属于「任何时候都该生效」的信息，不该依赖检索撞运气。
+    let system_prompt = {
+        let memory = super::build_memory_context(context.user_content);
+        if memory.trim().is_empty() {
+            build_jarvis_prompt()
+        } else {
+            format!(
+                "{}\n\n## 关于用户的长期记忆\n以下是此前确认过的用户偏好与事实，执行时应当遵守：\n{}",
+                build_jarvis_prompt(),
+                memory
+            )
+        }
+    };
+
+    // 按 token 预算分级组装历史，而不是按条数一刀切。
+    //
+    // 原先的 `take(10)` 是按条数取：第 11 轮之前的对话从数据库角度就没被读进来，
+    // 用户第一轮交代的背景（"我在改 v7 分支"）到第 11 轮会凭空消失。
+    // 现在改为：先算出留给历史的预算，再让 `assemble_history` 从最新往回装，
+    // 装不下的部分归入「远期」，用缓存的摘要代替。
+    let (history, cached_summary, to_summarize) = {
         let db = context.db.lock().await;
         let manager = ConversationManager::new(db.connection());
-        let messages = manager.get_messages(context.session_id)?;
-        let recent = messages
-            .into_iter()
-            .rev()
-            .take(10)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>();
-        convert_messages(&recent)
+        let all = manager.get_messages(context.session_id)?;
+
+        // 已缓存的摘要（只压一次，覆盖到 summary_upto_id）
+        let cached = manager.get_summary(context.session_id).ok().flatten();
+        let already_covered = cached.as_ref().map(|(_, upto)| *upto).unwrap_or(0);
+
+        // 预算 = 窗口 - 工具定义 - system prompt - 输出余量 - 已有摘要
+        let tools_tokens = tools_json
+            .iter()
+            .map(|t| {
+                t.get("function")
+                    .and_then(|f| f.get("description"))
+                    .and_then(|d| d.as_str())
+                    .map(|d| super::history::estimate_tokens(d) + 60)
+                    .unwrap_or(60)
+            })
+            .sum::<usize>()
+            + 200; // 工具调用的外层结构开销
+        let system_tokens = super::history::estimate_tokens(&system_prompt);
+        let summary_tokens = cached
+            .as_ref()
+            .map(|(s, _)| super::history::estimate_tokens(s))
+            .unwrap_or(0);
+        let budget = (num_ctx as usize)
+            .saturating_sub(tools_tokens)
+            .saturating_sub(system_tokens)
+            .saturating_sub(summary_tokens)
+            .saturating_sub(super::history::OUTPUT_RESERVE_TOKENS);
+
+        let assembled = super::history::assemble_history(&all, budget);
+
+        // 远期条目中，已被缓存摘要覆盖的部分不再重复压缩
+        let pending: Vec<_> = all
+            .iter()
+            .take(assembled.pending_summary_count)
+            .filter(|m| m.id > already_covered)
+            .cloned()
+            .collect();
+
+        (
+            assembled.messages,
+            cached.map(|(s, _)| s),
+            pending,
+        )
     };
 
     let mut messages = vec![OllamaMessage::system(&system_prompt)];
+
+    // 有新的远期内容需要压缩时，先做一次摘要并落库缓存。
+    //
+    // 这一步只在该轮首次「撑爆预算」时触发：压缩结果连同覆盖范围写回会话，
+    // 后续轮次直接复用（`already_covered` 过滤掉了已覆盖的条目）。
+    let cached_summary = if to_summarize.is_empty() {
+        cached_summary
+    } else {
+        let flat = super::history::flatten_for_summary(&to_summarize);
+        let upto_id = to_summarize.last().map(|m| m.id).unwrap_or(0);
+        // 已有摘要时，把新段接在旧摘要后面，保持时间顺序
+        let combined_source = match &cached_summary {
+            Some(prev) if !prev.trim().is_empty() => {
+                format!("（更早的内容摘要）{}\n\n{}", prev, flat)
+            }
+            _ => flat,
+        };
+
+        match summarize_history(context.ollama, context.model, &combined_source).await {
+            Some(summary) => {
+                let db = context.db.lock().await;
+                let manager = ConversationManager::new(db.connection());
+                if manager.save_summary(context.session_id, &summary, upto_id).is_ok() {
+                    Some(summary)
+                } else {
+                    cached_summary // 落库失败：沿用旧摘要，不用这次的
+                }
+            }
+            // 压缩失败：保留原状（用户偏好——拿不准就不改，绝不交出残缺内容）
+            None => cached_summary,
+        }
+    };
+
+    // 远期摘要以 user 消息形式注入在历史之前 —— 用明确的标题让模型知道
+    // 这是「更早聊过的内容」，而不是当前正在发生的事。
+    if let Some(summary) = cached_summary.filter(|s| !s.trim().is_empty()) {
+        messages.push(OllamaMessage::user(&format!(
+            "【此前对话摘要】以下是本次对话更早的内容，供你回忆上下文：\n{}",
+            summary
+        )));
+    }
+
     messages.extend(history);
 
     task.is_simple = true;
@@ -80,11 +236,15 @@ pub(crate) async fn run(context: JarvisContext<'_>, mut task: Task) -> AppResult
         let _ = context.tx.send(ChatEvent::Thinking).await;
         let mut stream = match context
             .ollama
-            .chat_stream(
+            .chat_stream_with_tools_and_options(
                 context.model,
                 messages.clone(),
                 (!tools_json.is_empty()).then(|| tools_json.clone()),
                 context.temperature.min(MAX_TOOL_ROUTING_TEMPERATURE),
+                serde_json::json!({
+                    "num_ctx": num_ctx,
+                    "num_predict": num_predict,
+                }),
             )
             .await
         {
@@ -289,6 +449,64 @@ fn build_jarvis_prompt() -> String {
 6. 严格使用原生工具调用；只有模型不支持原生调用时才输出 <tool_call> 兼容格式。
 7. 可用能力以本次请求附带的工具定义为准，不要猜测不存在的工具。"#
         .to_string()
+}
+
+/// 把远期对话压成一段摘要。
+///
+/// 这是「智能清理」的核心：超限时不丢弃、也不无限堆积，而是把更早的内容
+/// 浓缩成一段可读的文字继续带着走。摘要**只生成一次并落库缓存**
+/// （见 `ConversationManager::save_summary`），后续轮次直接复用，
+/// 不重复付出推理代价。
+///
+/// 失败时返回 `None` —— 拿不准就保留原状，绝不写入一段残缺的摘要
+/// 污染后续所有对话。
+async fn summarize_history(
+    ollama: &OllamaClient,
+    model: &str,
+    flat: &str,
+) -> Option<String> {
+    let instruction = format!(
+        "请把下面这段对话压缩成一段简洁的中文摘要，供后续对话回忆上下文。\n\
+         要求：\n\
+         1. 只保留用户交代过的背景、已确认的偏好、已完成和待办的事项\n\
+         2. 不要复述寒暄，不要编造未提及的内容\n\
+         3. 按时间顺序陈述，直接输出摘要正文，不要任何前缀\n\
+         4. 控制在 300 字以内\n\n\
+         对话内容：\n{}",
+        flat
+    );
+
+    let messages = vec![OllamaMessage::user(&instruction)];
+    let mut stream = ollama
+        .chat_stream_with_options(
+            model,
+            messages,
+            0.3,
+            serde_json::json!({
+                "num_ctx": 4096,
+                "num_predict": 512, // 摘要不需要长输出，同时限制单次耗时
+            }),
+        )
+        .await
+        .ok()?;
+
+    let mut out = String::new();
+    loop {
+        match timeout(Duration::from_secs(SUMMARY_TIMEOUT_SECS), stream.next()).await {
+            Ok(Some(ChatChunk::Text(text))) => out.push_str(&text),
+            Ok(Some(ChatChunk::Done(_, _))) | Ok(None) => break,
+            // 出错或超时：放弃本次摘要，保留原状
+            Ok(Some(ChatChunk::Error(_))) | Err(_) => return None,
+            Ok(Some(ChatChunk::ToolCall(_))) => {} // 摘要不需要工具，忽略
+        }
+    }
+
+    let trimmed = out.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 fn is_terminal_tool(name: &str) -> bool {

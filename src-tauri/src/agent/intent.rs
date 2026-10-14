@@ -300,6 +300,27 @@ fn keyword_to_category(keyword: &str) -> Option<ToolCategory> {
     }
 }
 
+/// 判断不出意图时的安全工具子集。
+///
+/// 原先的兜底是「开放全部类别」，把 33 个工具的完整 schema（实测约 4000 token）
+/// 全塞进上下文 —— 光工具就吃掉 8192 窗口的一半，剩下的空间装不下历史与记忆。
+///
+/// 这里刻意**不含 Browser**（13 个工具，是最大的一类）和 **Skill**：
+/// - 浏览器操作需要用户明确要求（"打开网页""点一下这个按钮"），
+///   用户没说时不会突然需要开浏览器；真的需要时，用户的话里会带浏览器相关词，
+///   那时 `quick_classify` 会走 Action 路径并把 Browser 类别带进来。
+/// - 保留 Program / File / ProcessWindow / System / Memory / General 覆盖绝大多数
+///   日常操作（开关程序、读写文件、看系统状态、记忆管理）。
+pub fn fallback_categories() -> Vec<ToolCategory> {
+    vec![
+        ToolCategory::File,
+        ToolCategory::Program,
+        ToolCategory::ProcessWindow,
+        ToolCategory::System,
+        ToolCategory::Memory,
+    ]
+}
+
 // ============================================================
 // 快速路径 System Prompt
 // ============================================================

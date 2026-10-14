@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { listen, emit, UnlistenFn } from "@tauri-apps/api/event";
 import CyberIcon from "../components/CyberIcon";
 
 interface SettingItem {
@@ -9,6 +9,12 @@ interface SettingItem {
   value: string;
   value_type: string;
   description: string | null;
+  /** 数值型配置的合法下界；null 表示无约束 */
+  min_value: number | null;
+  /** 数值型配置的合法上界；null 表示无约束 */
+  max_value: number | null;
+  /** 数值单位（%、ms、s、token…），用于界面展示 */
+  unit: string | null;
 }
 
 interface AllowedDirectory {
@@ -77,6 +83,128 @@ interface SkillInfo {
 
 type TabType = "general" | "security" | "proactive" | "browser" | "skills" | "memory";
 
+/**
+ * 通用设置的分组定义。
+ *
+ * 为什么硬编码分组而不是按 key 前缀自动分组：分组标题和说明本身是产品文案，
+ * 需要"给谁看的、在什么场景下改"这种语境，自动生成只会得到
+ * "ollama.*" 这样对用户毫无意义的标题。
+ *
+ * 未出现在任何分组里的键会在界面上被忽略——这正好让"后端新增了配置
+ * 但前端还没想好怎么呈现"保持静默，而不是冒出个裸键给用户看。
+ */
+const SETTING_GROUPS: { title: string; note: string; keys: string[] }[] = [
+  {
+    title: "模型连接",
+    note: "服务地址与模型名在启动时确定，改动需重启应用；超时立即生效",
+    keys: ["ollama.base_url", "ollama.model", "ollama.timeout_ms"],
+  },
+  {
+    title: "生成参数",
+    note: "均立即生效，从下一条消息开始应用",
+    keys: [
+      "agent.max_iterations",
+      "agent.temperature",
+      "agent.num_ctx",
+      "agent.num_predict",
+    ],
+  },
+  {
+    title: "主动助手",
+    note: "均立即生效，下一轮巡检即按新频率执行",
+    keys: ["agent.proactive_interval_sec", "agent.proactive_cooldown_sec"],
+  },
+  {
+    title: "外观",
+    note: "切换后立即应用到当前窗口",
+    keys: ["ui.theme"],
+  },
+  {
+    title: "窗口与启动",
+    note: "均立即生效；开机自启会写入系统启动项，可随时关闭",
+    keys: [
+      "tray.minimize_on_close",
+      "startup.auto_launch",
+      "global_shortcut",
+    ],
+  },
+  {
+    title: "安全",
+    note: "立即生效，下一条待确认的操作即按新策略处理",
+    keys: ["security.confirm_medium_risk"],
+  },
+];
+
+/** 配置键到中文标签的映射；没登记的就直接显示原键名 */
+const SETTING_LABELS: Record<string, string> = {
+  "ollama.base_url": "服务地址",
+  "ollama.model": "模型名称",
+  "ollama.timeout_ms": "请求超时",
+  "agent.max_iterations": "最大执行轮次",
+  "agent.temperature": "模型温度",
+  "agent.num_ctx": "上下文窗口",
+  "agent.num_predict": "单次回复上限",
+  "agent.proactive_interval_sec": "检查间隔",
+  "agent.proactive_cooldown_sec": "触发冷却期",
+  "ui.theme": "界面主题",
+  "tray.minimize_on_close": "关闭按钮最小化到托盘",
+  "startup.auto_launch": "开机自动启动",
+  "global_shortcut": "全局快捷键",
+  "security.confirm_medium_risk": "MEDIUM 风险弹窗确认",
+};
+
+/** 含密钥的发布配置：用密码框渲染，避免明文暴露 */
+const PUBLISH_SECRET_KEYS = [
+  {
+    key: "publish.github_token",
+    label: "网页发布 · GitHub 访问令牌",
+    desc:
+      "填了它，网页工坊每生成一版就自动发布到 GitHub Pages，预览区顶部直接显示网址。" +
+      "到 github.com → Settings → Developer settings → Personal access tokens（Tokens classic）" +
+      "→ Generate new token，勾选 repo，生成后只显示一次，粘贴到这里。留空则不发布。",
+    placeholder: "粘贴 Personal access token",
+  },
+  {
+    key: "publish.github_repo",
+    label: "网页发布 · GitHub 仓库名",
+    desc:
+      "网页发布到哪个仓库，不存在会自动创建（公开仓库才能免费用 Pages）。" +
+      "仓库名不变，网址就不会变。留空则用默认的 pc-guardian-web。",
+    placeholder: "pc-guardian-web",
+  },
+  {
+    key: "publish.netlify_token",
+    label: "网页发布 · Netlify 令牌（可选）",
+    desc:
+      "备用发布通道，只在上面没填 GitHub 令牌时生效。到 app.netlify.com → User settings" +
+      " → Applications → Personal access tokens 生成一个（只显示一次）粘贴到这里。",
+    placeholder: "粘贴 Personal access token",
+  },
+  {
+    key: "publish.proxy",
+    label: "网页发布 · 代理地址（可选）",
+    desc:
+      "生成时报「连接 GitHub 失败」时填这里。留空则自动使用系统代理；填了就以它为准，" +
+      "例如 Clash 的 http://127.0.0.1:7890。只影响发布，不影响本机模型。",
+    placeholder: "http://127.0.0.1:7890",
+  },
+];
+
+/**
+ * 后端对凭据类配置只下发掩码（形如 ••••••••1234），空串表示未配置。
+ * 这里据此判断"填没填过"——不依赖明文，因为前端根本拿不到明文。
+ */
+function isConfiguredSecret(value: string): boolean {
+  return value.length > 0;
+}
+
+/** 从掩码里取出末四位，供用户辨认是哪一个凭据 */
+function secretTail(masked: string): string {
+  const tail = masked.slice(-4);
+  // 短值会被后端整体打码，取不出可辨认的尾巴，就别硬凑
+  return /[•]/.test(tail) ? "不可辨认" : tail;
+}
+
 // V21: 记忆管理类型
 interface MemoryItem {
   id: string;
@@ -102,6 +230,21 @@ function Settings() {
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  /** 每个配置项最近一次的校验/保存提示，成功与失败都记，供行内展示 */
+  const [fieldHint, setFieldHint] = useState<Record<string, { kind: "ok" | "error"; text: string }>>({});
+  /** 开机自启在系统里的真实状态；null 表示"还没查或查不到" */
+  const [autostartActual, setAutostartActual] = useState<boolean | null>(null);
+  /** 是否正在检测自启状态 */
+  const [autostartChecking, setAutostartChecking] = useState(false);
+  /** 是否尝试过检测但没查成（用于区分"未查"与"查不到"） */
+  const [autostartProbeFailed, setAutostartProbeFailed] = useState(false);
+  /**
+   * 凭据输入框的草稿值。
+   *
+   * 后端只下发掩码、不下发明文，所以输入框永远是空的，用户输入的内容
+   * 暂存在这里。提交成功后立即清空，保持"框里没东西 = 没在编辑"的语义。
+   */
+  const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({});
 
   // Phase 4: 安全设置状态
   const [allowedDirectories, setAllowedDirectories] = useState<AllowedDirectory[]>([]);
@@ -122,6 +265,12 @@ function Settings() {
   const [newRuleMetric, setNewRuleMetric] = useState("memory");
   const [newRuleThreshold, setNewRuleThreshold] = useState("85");
   const [newRuleMessage, setNewRuleMessage] = useState("");
+  /** 正在内联编辑阈值的规则 ID */
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  /** 编辑中的阈值草稿 */
+  const [ruleThresholdDraft, setRuleThresholdDraft] = useState("");
+  /** 规则编辑的报错，按规则 ID 记录 */
+  const [ruleEditError, setRuleEditError] = useState<Record<string, string>>({});
 
   // V20: 技能管理状态
   const [skills, setSkills] = useState<SkillInfo[]>([]);
@@ -207,17 +356,61 @@ function Settings() {
     }
   }
 
-  async function handleSave(key: string, newValue: string) {
+  /**
+   * 保存单个配置项。
+   *
+   * 返回是否成功——调用方（尤其是凭据输入框）靠它决定要不要清空草稿：
+   * 保存失败时草稿必须留着，否则用户刚敲进去的令牌会被清掉，
+   * 而这令牌他往往已经没法从别处再复制一份（GitHub 只显示一次）。
+   */
+  async function handleSave(key: string, newValue: string): Promise<boolean> {
     setSavingKey(key);
     setSaveError(null);
     try {
       await invoke("update_setting", { key, value: newValue });
+      // 保存成功：把本地状态对齐到真正落库的值（后端可能做规范化）
       setSettings((prev) =>
         prev.map((s) => (s.key === key ? { ...s, value: newValue } : s))
       );
+      setFieldHint((prev) => ({ ...prev, [key]: { kind: "ok", text: "已保存" } }));
+
+      // 主题变化要立刻作用到整个界面，不必刷新。
+      if (key === "ui.theme") {
+        await emit("theme:changed", newValue);
+      }
+
+      // 快捷键保存后后端可能改写实际生效值（用户填的键被占用时走回退链，
+      // 会换成备用键）。这里重新拉一次，让界面显示系统里真正生效的那个，
+      // 而不是用户填了但没抢到的那个。
+      if (key === "global_shortcut") {
+        const fresh = await invoke<SettingItem[]>("get_settings");
+        setSettings(fresh);
+      }
+
+      // 超时会被后端夹到 [5000, 300000]，重新拉一次避免界面值与实际不符。
+      if (key === "ollama.timeout_ms") {
+        const fresh = await invoke<SettingItem[]>("get_settings");
+        setSettings(fresh);
+      }
+
+      // 2 秒后自动淡出，避免长期占位
+      window.setTimeout(() => {
+        setFieldHint((prev) => {
+          if (prev[key]?.kind !== "ok") return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      }, 2000);
+      return true;
     } catch (e) {
       console.error("Failed to save setting:", e);
-      setSaveError(typeof e === "string" ? e : `保存 ${key} 失败`);
+      const text = typeof e === "string" ? e : `保存 ${key} 失败`;
+      // 校验失败是**可预期**的结果（比如超出区间），行内提示比顶部横幅更贴切，
+      // 同时保留顶部横幅兜底，方便一眼看到。
+      setFieldHint((prev) => ({ ...prev, [key]: { kind: "error", text } }));
+      setSaveError(text);
+      return false;
     } finally {
       setSavingKey(null);
     }
@@ -360,6 +553,108 @@ function Settings() {
     }
   }
 
+  /** 取出规则当前的阈值；非 system_metric 规则返回 null（不存在"阈值"概念） */
+  function getRuleThreshold(rule: ProactiveRule): number | null {
+    if (rule.trigger_type !== "system_metric") return null;
+    try {
+      const config = JSON.parse(rule.trigger_config);
+      return typeof config.threshold === "number" ? config.threshold : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 阈值单位：内存/CPU 是百分比，磁盘是 GB */
+  function getThresholdUnit(rule: ProactiveRule): string {
+    try {
+      const config = JSON.parse(rule.trigger_config);
+      return config.metric === "disk" ? "GB" : "%";
+    } catch {
+      return "";
+    }
+  }
+
+  function beginEditThreshold(rule: ProactiveRule) {
+    const t = getRuleThreshold(rule);
+    if (t === null) return;
+    setEditingRuleId(rule.id);
+    setRuleThresholdDraft(String(t));
+    setRuleEditError((prev) => {
+      const next = { ...prev };
+      delete next[rule.id];
+      return next;
+    });
+  }
+
+  /**
+   * 保存阈值。
+   *
+   * 实现方式是**读出原 trigger_config、只替换 threshold 字段，再整体写回**——
+   * 而不是用界面上能看到的字段重建一份配置。这样 metric / operator / duration_sec /
+   * drive 这些用户没在动的属性不会因为前端不了解就丢失。
+   */
+  async function saveThreshold(rule: ProactiveRule) {
+    const parsed = Number(ruleThresholdDraft);
+    const unit = getThresholdUnit(rule);
+
+    if (!Number.isFinite(parsed) || ruleThresholdDraft.trim() === "") {
+      setRuleEditError((prev) => ({ ...prev, [rule.id]: "请填一个数字" }));
+      return;
+    }
+    if (parsed < 0 || parsed > 100) {
+      setRuleEditError((prev) => ({
+        ...prev,
+        [rule.id]: unit === "%" ? "百分比需在 0–100 之间" : "数值需在 0–100 之间",
+      }));
+      return;
+    }
+
+    let triggerConfig: Record<string, unknown>;
+    try {
+      triggerConfig = JSON.parse(rule.trigger_config);
+    } catch {
+      setRuleEditError((prev) => ({ ...prev, [rule.id]: "规则配置已损坏，无法编辑" }));
+      return;
+    }
+    triggerConfig.threshold = parsed;
+
+    // 通知文案里通常写着旧阈值，一并替换掉，否则会出现
+    // "内存使用率已超过 90%" 而实际阈值是 75% 的自相矛盾。
+    let actionConfig = rule.action_config;
+    try {
+      const parsedAction = JSON.parse(rule.action_config);
+      const oldThreshold = getRuleThreshold(rule);
+      if (oldThreshold !== null && typeof parsedAction.message === "string") {
+        parsedAction.message = parsedAction.message.replace(
+          String(oldThreshold),
+          String(parsed)
+        );
+      }
+      actionConfig = JSON.stringify(parsedAction);
+    } catch {
+      // 动作配置解析失败就保持原样，不做无根据的改动
+    }
+
+    try {
+      await invoke("update_proactive_rule", {
+        id: rule.id,
+        name: rule.name,
+        triggerType: rule.trigger_type,
+        triggerConfig: JSON.stringify(triggerConfig),
+        actionType: rule.action_type,
+        actionConfig,
+        enabled: rule.enabled,
+      });
+      setEditingRuleId(null);
+      await loadProactiveData();
+    } catch (e) {
+      setRuleEditError((prev) => ({
+        ...prev,
+        [rule.id]: typeof e === "string" ? e : String(e),
+      }));
+    }
+  }
+
   // V20: 技能管理函数
   async function loadSkills() {
     setSkillsLoading(true);
@@ -367,6 +662,30 @@ function Settings() {
     try {
       const result = await invoke<SkillInfo[]>("get_skills");
       setSkills(result);
+    } catch (e) {
+      setSkillsError(typeof e === "string" ? e : String(e));
+    } finally {
+      setSkillsLoading(false);
+    }
+  }
+
+  /**
+   * 从本地目录安装技能。
+   *
+   * 后端 `install_skill` 命令一直存在，但界面上没有入口，
+   * 导致技能页的说明"本地技能可从目录安装"成了一句空话。
+   */
+  async function handleInstallSkill() {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "选择技能目录（需含 SKILL.md）",
+      });
+      if (!selected || typeof selected !== "string") return;
+      setSkillsLoading(true);
+      await invoke("install_skill", { sourceDir: selected });
+      await loadSkills();
     } catch (e) {
       setSkillsError(typeof e === "string" ? e : String(e));
     } finally {
@@ -484,8 +803,172 @@ function Settings() {
     return settings.find((s) => s.key === key)?.value ?? defaultValue;
   }
 
+  /**
+   * 部分配置项需要比"文本框/开关"更贴切的控件：
+   * - ui.theme：只能是 dark/light，用下拉避免用户输入非法值
+   * - startup.auto_launch：要说明它写进了系统启动项，用户才能放心开
+   * - global_shortcut：格式敏感，给出示例格式
+   *
+   * 返回 null 表示"没有特殊处理"，由通用渲染接管。
+   */
+  function renderSpecialized(item: SettingItem) {
+    const hint = fieldHint[item.key];
+    const isSaving = savingKey === item.key;
+
+    if (item.key === "ui.theme") {
+      return (
+        <div className="setting-input-group">
+          <select
+            className="setting-input"
+            value={item.value}
+            onChange={(e) => void handleSave(item.key, e.target.value)}
+            disabled={isSaving}
+          >
+            <option value="dark">深色（赛博朋克）</option>
+            <option value="light">浅色</option>
+          </select>
+          {isSaving && <span className="saving-indicator">保存中...</span>}
+          {!isSaving && hint && (
+            <span className={`field-hint ${hint.kind}`}>{hint.text}</span>
+          )}
+        </div>
+      );
+    }
+
+    if (item.key === "startup.auto_launch") {
+      return (
+        <div className="setting-input-group">
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={item.value === "true"}
+              onChange={(e) =>
+                void handleSave(item.key, e.target.checked ? "true" : "false")
+              }
+              disabled={isSaving || autostartChecking}
+            />
+            <span className="toggle-slider" />
+            <span className="toggle-label">
+              {isSaving
+                ? "处理中..."
+                : autostartChecking
+                  ? "检测中..."
+                  : item.value === "true"
+                    ? "已写入系统启动项"
+                    : "已禁用"}
+            </span>
+          </label>
+          <button
+            className="rule-edit-btn"
+            onClick={() => void checkAutostart()}
+            disabled={isSaving || autostartChecking}
+            title="到系统里查一下这个开关是否真的生效"
+          >
+            检测实际状态
+          </button>
+          {!isSaving && autostartActual !== null && (
+            <span
+              className={`field-hint ${
+                autostartActual === (item.value === "true") ? "ok" : "error"
+              }`}
+            >
+              {autostartActual === (item.value === "true")
+                ? "与系统一致"
+                : autostartActual
+                  ? "系统里已启用，配置说关闭"
+                  : "系统里未启用，配置说开启"}
+            </span>
+          )}
+          {!isSaving && autostartActual === null && autostartProbeFailed && (
+            <span className="field-hint error">无法查询（系统限制了外部程序调用）</span>
+          )}
+          {!isSaving && hint?.kind === "error" && (
+            <span className="field-hint error">{hint.text}</span>
+          )}
+        </div>
+      );
+    }
+
+    if (item.key === "global_shortcut") {
+      return (
+        <div className="setting-input-group">
+          <input
+            type="text"
+            className={`setting-input ${
+              hint?.kind === "error" ? "input-invalid" : ""
+            }`}
+            value={item.value}
+            onChange={(e) => handleChange(item.key, e.target.value)}
+            onBlur={(e) => void handleSave(item.key, e.target.value.trim())}
+            placeholder="Ctrl+Shift+Space"
+            disabled={isSaving}
+          />
+          {isSaving && <span className="saving-indicator">保存中...</span>}
+          {!isSaving && hint && (
+            <span className={`field-hint ${hint.kind}`}>{hint.text}</span>
+          )}
+          {!isSaving && !hint && (
+            <span className="field-range">
+              立即生效；若被其他软件占用会自动换一个可用的键
+            </span>
+          )}
+        </div>
+      );
+    }
+
+    return null;
+  }
+
+  /**
+   * 到系统里查开机自启的真实状态。
+   *
+   * 做成**按需触发**而不是启动时自动查：它要执行 reg.exe，
+   * 在受限环境里可能不可用，不该让一个查询动作影响应用启动。
+   */
+  async function checkAutostart() {
+    setAutostartChecking(true);
+    setAutostartProbeFailed(false);
+    try {
+      const result = await invoke<boolean | null>("check_autostart_status");
+      setAutostartActual(result);
+      if (result === null) setAutostartProbeFailed(true);
+    } catch {
+      setAutostartActual(null);
+      setAutostartProbeFailed(true);
+    } finally {
+      setAutostartChecking(false);
+    }
+  }
+
+  /** 把取值范围渲染成一句人话，例如「1024 – 65535」或「≥ 5 s」 */
+  function describeRange(item: SettingItem): string {
+    const { min_value: lo, max_value: hi, unit } = item;
+    const suffix = unit ? ` ${unit}` : "";
+    if (lo !== null && hi !== null) return `${lo} – ${hi}${suffix}`;
+    if (lo !== null) return `≥ ${lo}${suffix}`;
+    if (hi !== null) return `≤ ${hi}${suffix}`;
+    return "";
+  }
+
+  /** 前端即时校验：返回错误文案，null 表示当前输入合法 */
+  function validateLocally(item: SettingItem, raw: string): string | null {
+    if (item.value_type.toUpperCase() !== "NUMBER") return null;
+    if (raw.trim() === "") return "不能留空";
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return "需要填一个数字";
+    if (item.min_value !== null && parsed < item.min_value) {
+      return `不能小于 ${item.min_value}${item.unit ? " " + item.unit : ""}`;
+    }
+    if (item.max_value !== null && parsed > item.max_value) {
+      return `不能大于 ${item.max_value}${item.unit ? " " + item.unit : ""}`;
+    }
+    return null;
+  }
+
   function renderInput(item: SettingItem) {
     const isSaving = savingKey === item.key;
+    const hint = fieldHint[item.key];
+    const rangeText = describeRange(item);
 
     switch (item.value_type.toUpperCase()) {
       case "BOOLEAN":
@@ -511,14 +994,36 @@ function Settings() {
           <div className="setting-input-group">
             <input
               type="number"
-              className="setting-input"
+              className={`setting-input ${
+                hint?.kind === "error" ? "input-invalid" : ""
+              }`}
               value={item.value}
+              min={item.min_value ?? undefined}
+              max={item.max_value ?? undefined}
               onChange={(e) => handleChange(item.key, e.target.value)}
-              onBlur={(e) => handleSave(item.key, e.target.value)}
+              onBlur={(e) => {
+                const localErr = validateLocally(item, e.target.value);
+                if (localErr) {
+                  // 本地就能判定的错误不必往返一趟后端
+                  setFieldHint((prev) => ({
+                    ...prev,
+                    [item.key]: { kind: "error", text: localErr },
+                  }));
+                  return;
+                }
+                void handleSave(item.key, e.target.value);
+              }}
               disabled={isSaving}
               step="any"
             />
+            {item.unit && <span className="setting-unit">{item.unit}</span>}
             {isSaving && <span className="saving-indicator">保存中...</span>}
+            {!isSaving && hint && (
+              <span className={`field-hint ${hint.kind}`}>{hint.text}</span>
+            )}
+            {!isSaving && !hint && rangeText && (
+              <span className="field-range">{rangeText}</span>
+            )}
           </div>
         );
 
@@ -531,11 +1036,14 @@ function Settings() {
               className="setting-input"
               value={item.value}
               onChange={(e) => handleChange(item.key, e.target.value)}
-              onBlur={(e) => handleSave(item.key, e.target.value)}
+              onBlur={(e) => void handleSave(item.key, e.target.value)}
               disabled={isSaving}
               placeholder={item.description || ""}
             />
             {isSaving && <span className="saving-indicator">保存中...</span>}
+            {!isSaving && hint && (
+              <span className={`field-hint ${hint.kind}`}>{hint.text}</span>
+            )}
           </div>
         );
     }
@@ -605,147 +1113,103 @@ function Settings() {
           {loading ? (
             <p className="empty-state">加载中...</p>
           ) : (
-            <div className="settings-list">
-              {settings.map((item) => (
-                <div key={item.key} className="setting-row editable">
-                  <div className="setting-info">
-                    <span className="setting-key">{item.key}</span>
-                    {item.description && (
-                      <span className="setting-desc">{item.description}</span>
-                    )}
+            <div className="settings-groups">
+              {SETTING_GROUPS.map((group) => {
+                const items = settings.filter((s) => group.keys.includes(s.key));
+                if (items.length === 0) return null;
+                return (
+                  <div key={group.title} className="settings-group">
+                    <div className="settings-group-title">
+                      <span>{group.title}</span>
+                      <span className="settings-group-note">{group.note}</span>
+                    </div>
+                    <div className="settings-list">
+                      {items.map((item) => (
+                        <div key={item.key} className="setting-row editable">
+                          <div className="setting-info">
+                            <span className="setting-key">
+                              {SETTING_LABELS[item.key] ?? item.key}
+                            </span>
+                            {item.description && (
+                              <span className="setting-desc">{item.description}</span>
+                            )}
+                          </div>
+                          <div className="setting-value">
+                            {renderSpecialized(item) ?? renderInput(item)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="setting-value">
-                    <span className={`value-type type-${item.value_type}`}>
-                      {item.value_type}
-                    </span>
-                    {renderInput(item)}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
 
-              {/* V21: 关闭按钮最小化到托盘（独立开关，确保始终可见） */}
-              <div className="setting-row editable">
-                <div className="setting-info">
-                  <span className="setting-key">关闭按钮最小化到托盘</span>
-                  <span className="setting-desc">开启后点击窗口关闭按钮（X）将最小化到系统托盘，而非退出应用</span>
-                </div>
-                <div className="setting-value">
-                  <span className="value-type type-BOOLEAN">BOOLEAN</span>
-                  <label className="toggle-switch">
-                    <input
-                      type="checkbox"
-                      checked={getSettingValue("tray.minimize_on_close", "true") === "true"}
-                      onChange={(e) =>
-                        handleSave("tray.minimize_on_close", e.target.checked ? "true" : "false")
-                      }
-                      disabled={savingKey === "tray.minimize_on_close"}
-                    />
-                    <span className="toggle-slider" />
-                    <span className="toggle-label">
-                      {getSettingValue("tray.minimize_on_close", "true") === "true" ? "已启用" : "已禁用"}
-                    </span>
-                  </label>
-                </div>
-              </div>
-
-              {/* 网页发布：网页工坊生成完要能直接给出一个公网链接 */}
-              <div className="setting-row editable">
-                <div className="setting-info">
-                  <span className="setting-key">网页发布 · GitHub 访问令牌</span>
-                  <span className="setting-desc">
-                    填了它，网页工坊每生成一版就自动发布到 GitHub Pages，预览区顶部直接显示网址。
-                    到 github.com → Settings → Developer settings → Personal access tokens（Tokens
-                    classic）→ Generate new token，勾选 repo，生成后只显示一次，粘贴到这里。
-                    留空则不发布。
-                  </span>
-                </div>
-                <div className="setting-value">
-                  <span className="value-type type-STRING">STRING</span>
-                  <div className="setting-input-group">
-                    <input
-                      type="password"
-                      className="setting-input"
-                      defaultValue={getSettingValue("publish.github_token", "")}
-                      onBlur={(event) => void handleSave("publish.github_token", event.target.value.trim())}
-                      placeholder="粘贴 Personal access token"
-                      disabled={savingKey === "publish.github_token"}
-                    />
-                    {savingKey === "publish.github_token" && <span className="saving-indicator">保存中...</span>}
+              {/* 发布凭据含密钥，后端只下发掩码、绝不下发明文。
+                  因此这里刻意做成"空白输入框 + 状态提示"：
+                  - 不能回填掩码，否则用户 blur 一下就会把 •••• 写进库里，
+                    发布会拿着掩码去调用 API 然后静默失败；
+                  - 也不能显示明文，那等于把凭据摊在 DOM 里。
+                  想知道"填没填过"，看输入框下方的状态提示即可。 */}
+              {PUBLISH_SECRET_KEYS.map(({ key, label, desc, placeholder }) => {
+                const current = getSettingValue(key, "");
+                const configured = isConfiguredSecret(current);
+                return (
+                  <div key={key} className="setting-row editable">
+                    <div className="setting-info">
+                      <span className="setting-key">{label}</span>
+                      <span className="setting-desc">{desc}</span>
+                    </div>
+                    <div className="setting-value">
+                      <div className="setting-input-group">
+                        <input
+                          type="password"
+                          className="setting-input"
+                          value={secretDrafts[key] ?? ""}
+                          onChange={(event) => {
+                            const next = event.target.value;
+                            setSecretDrafts((prev) => ({ ...prev, [key]: next }));
+                          }}
+                          onBlur={(event) => {
+                            const next = event.target.value.trim();
+                            // 空输入 = 用户没打算改这个字段，直接放过。
+                            // 想清除凭据得用专门的按钮，避免误触把配置清空。
+                            if (!next) {
+                              setSecretDrafts((prev) => ({ ...prev, [key]: "" }));
+                              return;
+                            }
+                            void handleSave(key, next).then((ok) => {
+                              // 失败时保留草稿：用户多半没别的机会再拿到这串令牌，
+                              // 清空等于让他重新去平台生成一个。
+                              if (ok) {
+                                setSecretDrafts((prev) => ({ ...prev, [key]: "" }));
+                              }
+                            });
+                          }}
+                          placeholder={
+                            configured
+                              ? "已配置（重新输入可覆盖）"
+                              : placeholder
+                          }
+                          disabled={savingKey === key}
+                        />
+                        {savingKey === key && (
+                          <span className="saving-indicator">保存中...</span>
+                        )}
+                        {savingKey !== key && fieldHint[key] && (
+                          <span className={`field-hint ${fieldHint[key].kind}`}>
+                            {fieldHint[key].text}
+                          </span>
+                        )}
+                        {savingKey !== key && !fieldHint[key] && configured && (
+                          <span className="field-hint ok">
+                            已配置（末四位 {secretTail(current)}）· 留空不改动
+                          </span>
+                        )}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-
-              <div className="setting-row editable">
-                <div className="setting-info">
-                  <span className="setting-key">网页发布 · GitHub 仓库名</span>
-                  <span className="setting-desc">
-                    网页发布到哪个仓库，不存在会自动创建（公开仓库才能免费用 Pages）。
-                    仓库名不变，网址就不会变。留空则用默认的 pc-guardian-web。
-                  </span>
-                </div>
-                <div className="setting-value">
-                  <span className="value-type type-STRING">STRING</span>
-                  <div className="setting-input-group">
-                    <input
-                      type="text"
-                      className="setting-input"
-                      defaultValue={getSettingValue("publish.github_repo", "")}
-                      onBlur={(event) => void handleSave("publish.github_repo", event.target.value.trim())}
-                      placeholder="pc-guardian-web"
-                      disabled={savingKey === "publish.github_repo"}
-                    />
-                    {savingKey === "publish.github_repo" && <span className="saving-indicator">保存中...</span>}
-                  </div>
-                </div>
-              </div>
-
-              <div className="setting-row editable">
-                <div className="setting-info">
-                  <span className="setting-key">网页发布 · Netlify 访问令牌（可选）</span>
-                  <span className="setting-desc">
-                    备用通道，只在上面没填 GitHub 令牌时生效。到 app.netlify.com → User settings
-                    → Applications → Personal access tokens 生成一个（只显示一次）粘贴到这里。
-                  </span>
-                </div>
-                <div className="setting-value">
-                  <span className="value-type type-STRING">STRING</span>
-                  <div className="setting-input-group">
-                    <input
-                      type="password"
-                      className="setting-input"
-                      defaultValue={getSettingValue("publish.netlify_token", "")}
-                      onBlur={(event) => void handleSave("publish.netlify_token", event.target.value.trim())}
-                      placeholder="粘贴 Personal access token"
-                      disabled={savingKey === "publish.netlify_token"}
-                    />
-                    {savingKey === "publish.netlify_token" && <span className="saving-indicator">保存中...</span>}
-                  </div>
-                </div>
-              </div>
-
-              <div className="setting-row editable">
-                <div className="setting-info">
-                  <span className="setting-key">网页发布 · 代理地址（可选）</span>
-                  <span className="setting-desc">
-                    生成时报「连接 GitHub 失败」时填这里。留空则自动使用系统代理；填了就以它为准，
-                    例如 Clash 的 http://127.0.0.1:7890。只影响发布，不影响本机模型。
-                  </span>
-                </div>
-                <div className="setting-value">
-                  <span className="value-type type-STRING">STRING</span>
-                  <div className="setting-input-group">
-                    <input
-                      type="text"
-                      className="setting-input"
-                      defaultValue={getSettingValue("publish.proxy", "")}
-                      onBlur={(event) => void handleSave("publish.proxy", event.target.value.trim())}
-                      placeholder="http://127.0.0.1:7890"
-                      disabled={savingKey === "publish.proxy"}
-                    />
-                    {savingKey === "publish.proxy" && <span className="saving-indicator">保存中...</span>}
-                  </div>
-                </div>
-              </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -766,14 +1230,40 @@ function Settings() {
 
           <div className="section-card">
             <h3>安全策略</h3>
-            <div className="security-info">
+
+            {/* 可调项：MEDIUM 风险确认。
+                此前这里只是一行写着"弹窗确认"的死文字，而背后其实有
+                security.confirm_medium_risk 这个真正生效的配置——用户看着
+                像说明、没法改，等于把一个可调项藏起来了。 */}
+            <div className="settings-list">
+              {settings
+                .filter((s) => s.key === "security.confirm_medium_risk")
+                .map((item) => (
+                  <div key={item.key} className="setting-row editable">
+                    <div className="setting-info">
+                      <span className="setting-key">
+                        {SETTING_LABELS[item.key] ?? item.key}
+                      </span>
+                      <span className="setting-desc">
+                        关闭后，MEDIUM 风险的操作（如写入可信目录、修改非系统文件）
+                        将不再弹窗，直接执行。
+                      </span>
+                    </div>
+                    <div className="setting-value">
+                      {renderInput(item)}
+                    </div>
+                  </div>
+                ))}
+            </div>
+
+            <p className="section-note">
+              以下为系统的固有行为，<strong>不可调整</strong>——它们不随配置变化，
+              列出是为了让你知道 AI 在哪些地方被硬性约束。
+            </p>
+            <div className="security-info readonly">
               <div className="security-item">
                 <span className="security-label">风险等级体系</span>
                 <span className="security-value">SAFE / LOW / MEDIUM / HIGH / CRITICAL</span>
-              </div>
-              <div className="security-item">
-                <span className="security-label">MEDIUM 风险确认</span>
-                <span className="security-value">弹窗确认</span>
               </div>
               <div className="security-item">
                 <span className="security-label">HIGH 风险确认</span>
@@ -797,17 +1287,24 @@ function Settings() {
             </p>
 
             <div className="directory-add-row">
+              <button
+                className="directory-add-btn"
+                onClick={handleAddDirectory}
+                title="点击后从系统里挑选一个目录"
+              >
+                + 选择目录并加入可信列表
+              </button>
               <input
                 type="text"
                 className="directory-label-input"
-                placeholder="目录标签（如：项目代码）"
+                placeholder="标签（可选，如：项目代码）"
                 value={newDirLabel}
                 onChange={(e) => setNewDirLabel(e.target.value)}
               />
-              <button className="directory-add-btn" onClick={handleAddDirectory}>
-                + 添加目录
-              </button>
             </div>
+            <p className="directory-add-hint">
+              先点左边的按钮挑目录；标签只用于在列表里辨认，留空也可以。
+            </p>
 
             {securityLoading ? (
               <p className="empty-state">加载中...</p>
@@ -930,7 +1427,10 @@ function Settings() {
               </div>
             )}
             <p className="section-note">
-              引擎每 15 秒检查一次系统状态，满足规则条件时自动触发通知。触发后有 5 分钟冷却期避免刷屏。
+              引擎每 {getSettingValue("agent.proactive_interval_sec", "15")} 秒检查一次系统状态，
+              满足规则条件时自动触发通知；同一规则触发后
+              {getSettingValue("agent.proactive_cooldown_sec", "300")} 秒内不再重复提醒，避免刷屏。
+              这两项间隔可在「通用设置 → 主动助手」中调整。
             </p>
           </div>
 
@@ -1012,21 +1512,66 @@ function Settings() {
               <p className="empty-state">暂无规则，点击上方按钮添加</p>
             ) : (
               <div className="proactive-rules-list">
-                {proactiveRules.map((rule) => (
+                {proactiveRules.map((rule) => {
+                  const threshold = getRuleThreshold(rule);
+                  const isEditing = editingRuleId === rule.id;
+                  return (
                   <div key={rule.id} className={`proactive-rule-item ${rule.enabled ? "enabled" : "disabled"}`}>
                     <div className="rule-main">
                       <div className="rule-header">
                         <span className="rule-name">{rule.name}</span>
                         <span className={`rule-badge ${rule.trigger_type}`}>{rule.trigger_type}</span>
+                        {rule.id.startsWith("preset_") && (
+                          <span className="rule-badge preset">预设</span>
+                        )}
                       </div>
                       <div className="rule-details">
                         <span className="rule-detail">触发: {getTriggerDescription(rule)}</span>
                         <span className="rule-detail">动作: {getActionDescription(rule)}</span>
                       </div>
-                      <div className="rule-meta">
-                        <span>触发 {rule.trigger_count} 次</span>
-                        {rule.last_triggered && <span>上次: {rule.last_triggered}</span>}
-                      </div>
+
+                      {/* 阈值内联编辑：预设规则的阈值过去是硬编码的，现在可直接改 */}
+                      {isEditing ? (
+                        <div className="rule-threshold-edit">
+                          <input
+                            type="number"
+                            className={`rule-threshold-input ${
+                              ruleEditError[rule.id] ? "input-invalid" : ""
+                            }`}
+                            value={ruleThresholdDraft}
+                            onChange={(e) => setRuleThresholdDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") void saveThreshold(rule);
+                              if (e.key === "Escape") setEditingRuleId(null);
+                            }}
+                            min={0}
+                            max={100}
+                            autoFocus
+                          />
+                          <span className="rule-threshold-unit">{getThresholdUnit(rule)}</span>
+                          <button
+                            className="rule-edit-save"
+                            onClick={() => void saveThreshold(rule)}
+                          >
+                            保存
+                          </button>
+                          <button
+                            className="rule-edit-cancel"
+                            onClick={() => setEditingRuleId(null)}
+                          >
+                            取消
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="rule-meta">
+                          <span>触发 {rule.trigger_count} 次</span>
+                          {rule.last_triggered && <span>上次: {rule.last_triggered}</span>}
+                        </div>
+                      )}
+
+                      {ruleEditError[rule.id] && (
+                        <div className="rule-edit-error">{ruleEditError[rule.id]}</div>
+                      )}
                     </div>
                     <div className="rule-actions">
                       <label className="toggle-switch small">
@@ -1037,6 +1582,15 @@ function Settings() {
                         />
                         <span className="toggle-slider" />
                       </label>
+                      {threshold !== null && !isEditing && (
+                        <button
+                          className="rule-edit-btn"
+                          onClick={() => beginEditThreshold(rule)}
+                          title="修改触发阈值"
+                        >
+                          改阈值
+                        </button>
+                      )}
                       {!rule.id.startsWith("preset_") && (
                         <button
                           className="rule-delete-btn"
@@ -1048,7 +1602,8 @@ function Settings() {
                       )}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1059,48 +1614,112 @@ function Settings() {
       {activeTab === "browser" && (
         <div className="section-card">
           <h3>浏览器自动化配置</h3>
+          <p className="section-note">
+            这里的设置写入后，<strong>下次启动浏览器时</strong>生效。若浏览器已经在运行，
+            先关闭它再让 AI 重新打开，改动才会应用到新的调试连接上。
+          </p>
           <div className="settings-list">
             <div className="setting-row">
               <div className="setting-info">
                 <span className="setting-key">默认浏览器</span>
-                <span className="setting-desc">AI 控制浏览器时优先使用的浏览器（自动检测已安装的 Chrome/Edge）</span>
+                <span className="setting-desc">
+                  AI 控制浏览器时优先使用的浏览器。选中的浏览器未安装时会自动回退到
+                  系统可用的第一个，并把原因告知 AI。
+                </span>
               </div>
               <div className="setting-value">
-                <select
-                  value={settings.find((s) => s.key === "browser.default")?.value || "auto"}
-                  onChange={(e) => handleSave("browser.default", e.target.value)}
-                  disabled={savingKey === "browser.default"}
-                >
-                  <option value="auto">自动检测</option>
-                  <option value="chrome">Google Chrome</option>
-                  <option value="edge">Microsoft Edge</option>
-                </select>
+                <div className="setting-input-group">
+                  <select
+                    className="setting-input"
+                    value={getSettingValue("browser.default", "auto")}
+                    onChange={(e) => void handleSave("browser.default", e.target.value)}
+                    disabled={savingKey === "browser.default"}
+                  >
+                    <option value="auto">自动检测（按系统优先级）</option>
+                    <option value="chrome">Google Chrome</option>
+                    <option value="edge">Microsoft Edge</option>
+                    <option value="brave">Brave</option>
+                    <option value="firefox">Firefox</option>
+                    <option value="chromium">Chromium</option>
+                  </select>
+                  {savingKey === "browser.default" && (
+                    <span className="saving-indicator">保存中...</span>
+                  )}
+                  {savingKey !== "browser.default" && fieldHint["browser.default"] && (
+                    <span className={`field-hint ${fieldHint["browser.default"].kind}`}>
+                      {fieldHint["browser.default"].text}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
+
             <div className="setting-row">
               <div className="setting-info">
                 <span className="setting-key">CDP 调试端口</span>
-                <span className="setting-desc">浏览器远程调试端口（默认 9222）</span>
+                <span className="setting-desc">
+                  浏览器远程调试端口（1024–65535）。若该端口已被别的程序占用，
+                  换一个空闲端口即可。
+                </span>
               </div>
               <div className="setting-value">
-                <input
-                  type="number"
-                  value={settings.find((s) => s.key === "browser.cdp_port")?.value || "9222"}
-                  onChange={(e) => handleSave("browser.cdp_port", e.target.value)}
-                  disabled={savingKey === "browser.cdp_port"}
-                />
+                <div className="setting-input-group">
+                  <input
+                    type="number"
+                    className={`setting-input ${
+                      fieldHint["browser.cdp_port"]?.kind === "error"
+                        ? "input-invalid"
+                        : ""
+                    }`}
+                    value={getSettingValue("browser.cdp_port", "9222")}
+                    min={1024}
+                    max={65535}
+                    onChange={(e) => handleChange("browser.cdp_port", e.target.value)}
+                    onBlur={(e) => {
+                      const raw = e.target.value;
+                      const parsed = Number(raw);
+                      if (!Number.isFinite(parsed) || parsed < 1024 || parsed > 65535) {
+                        setFieldHint((prev) => ({
+                          ...prev,
+                          "browser.cdp_port": {
+                            kind: "error",
+                            text: "端口需在 1024–65535 之间",
+                          },
+                        }));
+                        return;
+                      }
+                      void handleSave("browser.cdp_port", raw);
+                    }}
+                    disabled={savingKey === "browser.cdp_port"}
+                  />
+                  {savingKey === "browser.cdp_port" && (
+                    <span className="saving-indicator">保存中...</span>
+                  )}
+                  {savingKey !== "browser.cdp_port" && fieldHint["browser.cdp_port"] && (
+                    <span className={`field-hint ${fieldHint["browser.cdp_port"].kind}`}>
+                      {fieldHint["browser.cdp_port"].text}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-          <div className="browser-info-box">
-            <h4><CyberIcon name="logs" size={14} /> 浏览器工具说明</h4>
-            <p>AI 可通过以下工具控制浏览器：</p>
+          <div className="browser-info-box readonly">
+            <h4><CyberIcon name="logs" size={14} /> 浏览器工具清单（只读）</h4>
+            <p>AI 可调用以下工具控制浏览器。这里只是清单，没有可调项。</p>
             <ul>
               <li><code>browser_open</code> — 打开浏览器并导航到 URL</li>
-              <li><code>browser_navigate</code> — 导航到指定页面</li>
+              <li><code>browser_close</code> — 关闭浏览器</li>
+              <li><code>browser_navigate</code> — 在当前标签页导航到指定页面</li>
               <li><code>browser_screenshot</code> — 截取当前页面</li>
               <li><code>browser_get_content</code> — 获取页面 HTML/文本</li>
-              <li><code>browser_click</code> / <code>browser_type</code> — 点击和输入</li>
+              <li><code>browser_get_title</code> — 读取页面标题</li>
+              <li><code>browser_click</code> — 点击元素</li>
+              <li><code>browser_type</code> — 在输入框里输入文字</li>
+              <li><code>browser_scroll</code> — 滚动页面</li>
+              <li><code>browser_wait</code> — 等待元素出现</li>
+              <li><code>browser_list_tabs</code> — 列出所有标签页</li>
+              <li><code>browser_switch_tab</code> — 切换标签页</li>
               <li><code>browser_execute_js</code> — 执行 JavaScript（高风险）</li>
             </ul>
             <p className="hint"><CyberIcon name="alertTriangle" size={14} /> 敏感域名（银行、支付等）会被自动阻止。点击/输入/JS 执行需权限确认。</p>
@@ -1111,8 +1730,17 @@ function Settings() {
       {/* V20: 技能管理 Tab */}
       {activeTab === "skills" && (
         <div className="section-card">
-          <h3>技能管理</h3>
-          <p className="section-desc">技能是可扩展的功能包，AI 可以发现并调用。内置技能不可卸载，本地技能可从目录安装。</p>
+          <div className="section-header-row">
+            <h3>技能管理</h3>
+            <button
+              className="proactive-add-btn"
+              onClick={() => void handleInstallSkill()}
+              disabled={skillsLoading}
+            >
+              + 从目录安装
+            </button>
+          </div>
+          <p className="section-desc">技能是可扩展的功能包，AI 可以发现并调用。内置技能不可卸载，本地技能可从目录安装（目录中需包含 SKILL.md）。</p>
 
           {skillsError && (
             <div className="alert-item critical">

@@ -4,6 +4,7 @@
 //! LLM 永不直接接触系统 API
 
 pub mod agent;
+pub mod autostart;
 pub mod browser;
 pub mod computer;
 pub mod db;
@@ -13,6 +14,7 @@ pub mod memory;
 pub mod monitoring;
 pub mod proactive;
 pub mod security;
+pub mod shortcut;
 pub mod skills;
 pub mod tools;
 pub mod utils;
@@ -50,7 +52,10 @@ pub struct AppState {
     pub ollama: Arc<OllamaClient>,
     pub ollama_model: String,
     /// 全局快捷键配置（在初始化时预加载，避免运行时 block_on）
-    pub global_shortcut: String,
+    ///
+    /// 用 Arc<Mutex<>> 而非普通 String：用户改快捷键时需要热重注册，
+    /// 注册结果（可能回退到备用键）要能写回这里，供下次热切换时注销旧键。
+    pub global_shortcut: Arc<Mutex<String>>,
     /// Phase 4: 待处理的权限确认请求（request_id → PendingPermission）
     pub pending_permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
     /// V18: Proactive 主动监控引擎
@@ -77,6 +82,13 @@ impl AppState {
         // V18: 确保 Proactive 预设规则存在
         match crate::proactive::ensure_preset_rules(db.connection()) {
             Ok(n) if n > 0 => eprintln!("[Proactive] 插入了 {} 条预设规则", n),
+            _ => {}
+        }
+
+        // 把老库中预设规则的通知文案升级为 `{threshold}` 模板。
+        // 只动预设规则、且只动仍含旧硬编码数字的那些，用户自写的文案不碰。
+        match crate::proactive::upgrade_preset_messages(db.connection()) {
+            Ok(n) if n > 0 => eprintln!("[Proactive] 升级了 {} 条预设规则的通知文案", n),
             _ => {}
         }
 
@@ -128,6 +140,18 @@ impl AppState {
             .unwrap_or(true);
         let minimize_to_tray = Arc::new(AtomicBool::new(minimize_to_tray_val));
 
+        // 开机自启**不在启动路径上查注册表**。
+        //
+        // 早先的写法是启动时调 `autostart::is_enabled()` 拿系统真实状态回写库，
+        // 好处是用户若在"任务管理器 → 启动"里手动禁用过，界面不会说谎。
+        // 但代价是：**每次启动都必须能成功执行 reg.exe**，一旦它在某些环境下
+        // 不可用（受限沙箱、组策略禁用、安全软件拦截），整个应用启动就失败了——
+        // 为一个开关付出"起不来"的代价，明显不成比例。
+        //
+        // 现在的策略：库里存的值就是界面上显示的值；只有用户**主动拨动**
+        // 那个开关时才去写注册表（见 update_setting 里的处理），写入成功才落库、
+        // 失败就把错误显示给用户。系统侧的变动改由设置页的"重新检测"按钮按需同步。
+
         // 从数据库读取运行参数，使用户选择的小模型和低延迟配置真正生效。
         let ollama_url = db
             .get_setting("ollama.base_url")?
@@ -152,6 +176,32 @@ impl AppState {
             .and_then(|value| value.parse::<u64>().ok())
             .map(|value| value.clamp(5_000, 300_000))
             .unwrap_or(60_000);
+
+        // 浏览器自动化：把设置里的偏好注入 BrowserManager 单例。
+        //
+        // BrowserManager 是 OnceLock 单例，创建时机不确定（首次有浏览器工具
+        // 调用时才初始化），所以必须在这里提前注入，否则它会用硬编码默认值。
+        // 注入失败（已注入过）不算错误——单例语义就是"只认第一份"。
+        {
+            let default_browser = db
+                .get_setting("browser.default")
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "auto".to_string());
+            let cdp_port = db
+                .get_setting("browser.cdp_port")
+                .ok()
+                .flatten()
+                .and_then(|v| v.trim().parse::<u16>().ok())
+                .filter(|p| *p >= 1024)
+                .unwrap_or(9222);
+            if !crate::browser::init_prefs(crate::browser::BrowserPrefs {
+                default_browser,
+                cdp_port,
+            }) {
+                eprintln!("[Browser] 偏好已注入过，跳过");
+            }
+        }
 
         let db_arc = Arc::new(Mutex::new(db));
 
@@ -207,7 +257,7 @@ impl AppState {
             agent: Arc::new(Mutex::new(agent)),
             ollama,
             ollama_model,
-            global_shortcut,
+            global_shortcut: Arc::new(Mutex::new(global_shortcut)),
             pending_permissions,
             proactive_engine,
             minimize_to_tray,
@@ -2265,20 +2315,144 @@ pub mod commands {
     // ============================================================
 
     /// 更新单个配置项
+    ///
+    /// 保存前按该键声明的 value_type 与取值区间校验。校验失败直接返回错误、
+    /// **不落库**——此前是静默 clamp，用户在界面上看到自己填的 99999，
+    /// 实际生效的却是 300000 上限，属于看不懂的偏差。
+    /// 校验交给调用方之前先做，保证库里的值永远在合法区间内。
     #[tauri::command]
     pub async fn update_setting(
         state: State<'_, AppState>,
+        app_handle: tauri::AppHandle,
         key: String,
         value: String,
     ) -> Result<(), String> {
+        // 校验需要读库，先取锁做完，再决定是否写入。
+        {
+            let db = state.db.lock().await;
+            let bounds = db
+                .get_setting_bounds(&key)
+                .map_err(|e| e.to_string())?;
+
+            if let Some((value_type, min_value, max_value, unit)) = bounds {
+                match value_type.to_uppercase().as_str() {
+                    "BOOLEAN" => {
+                        if value != "true" && value != "false" {
+                            return Err(format!("{} 只能是 true 或 false", key));
+                        }
+                    }
+                    "NUMBER" => {
+                        let parsed: f64 = value
+                            .trim()
+                            .parse()
+                            .map_err(|_| format!("{} 需要填一个数字，当前填的是「{}」", key, value))?;
+                        if !parsed.is_finite() {
+                            return Err(format!("{} 不能填 NaN 或无穷大", key));
+                        }
+                        if let Some(low) = min_value {
+                            if parsed < low {
+                                return Err(format!(
+                                    "{} 不能小于 {}{}",
+                                    key,
+                                    low,
+                                    unit.as_deref().unwrap_or("")
+                                ));
+                            }
+                        }
+                        if let Some(high) = max_value {
+                            if parsed > high {
+                                return Err(format!(
+                                    "{} 不能大于 {}{}",
+                                    key,
+                                    high,
+                                    unit.as_deref().unwrap_or("")
+                                ));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // V21: 同步更新内存中的原子变量（避免窗口事件回调读旧值）
         if key == "tray.minimize_on_close" {
             state
                 .minimize_to_tray
                 .store(value == "true", Ordering::SeqCst);
         }
+
+        // 开机自启要真正落到操作系统的启动项里，只写库不生效。
+        //
+        // 顺序很关键：**先动系统、成功了才落库**。反过来会出现
+        // "库里说已启用、系统里其实没有"的假象。
+        if key == "startup.auto_launch" {
+            let want = value == "true";
+            crate::autostart::apply_serialized(want).map_err(|e| e.to_string())?;
+        }
+
+        // 主题切换立即作用于当前窗口，无需重启。
+        if key == "ui.theme" {
+            // 主题的实际切换由前端监听 settings 变化后自己执行（data-theme 属性），
+            // 后端只需保证值合法即可。
+            if value != "dark" && value != "light" {
+                return Err("ui.theme 只能是 dark 或 light".to_string());
+            }
+        }
+
+        // Ollama 请求超时立即生效，无需重启。
+        //
+        // Client 构造时烘死的那个 timeout 改不了，但请求路径已经改成每轮现取
+        // 这个原子量，所以在这里 store 一下就能影响之后的所有请求。
+        if key == "ollama.timeout_ms" {
+            if let Ok(parsed) = value.trim().parse::<u64>() {
+                state.ollama.set_timeout_ms(parsed.clamp(5_000, 300_000));
+            }
+        }
+
+        // MEDIUM 风险确认策略立即生效。
+        //
+        // 改动前它只在启动时读一次，用户在设置里关掉这个开关后实际仍会弹窗——
+        // 一个安全的开关却是个假开关，比没有更糟：用户以为自己关掉了。
+        if key == "security.confirm_medium_risk" {
+            let mut pm = state.permission_manager.lock().await;
+            pm.update_config(value == "true");
+        }
+
+        // 全局快捷键立即重注册，无需重启。        //
+        // 先注销旧的再注册新的，否则改完之后两个键都能唤起窗口——用户会以为
+        // 设置没生效。注册结果可能不是他填的那个（被占用时走回退链），
+        // 这时把实际生效值落库，让界面如实显示。
+        if key == "global_shortcut" {
+            let previous = state.global_shortcut.lock().await.clone();
+            let effective = crate::shortcut::register_global_shortcut_at(
+                &app_handle,
+                value.trim(),
+                Some(previous.as_str()),
+            );
+            *state.global_shortcut.lock().await = effective.clone();
+
+            let db = state.db.lock().await;
+            return db
+                .update_setting(&key, &effective)
+                .map_err(|e| e.to_string());
+        }
+
         let db = state.db.lock().await;
         db.update_setting(&key, &value).map_err(|e| e.to_string())
+    }
+
+    /// 查询开机自启在系统里的真实状态
+    ///
+    /// 单独做成命令而**不在启动时调用**：它要执行 `reg.exe`，而这个外部程序
+    /// 在某些受限环境（沙箱、组策略、安全软件）里可能不可用。放在设置页由用户
+    /// 按需触发，就不会因为一个查询动作拖垮应用启动。
+    ///
+    /// 返回 `None` 表示"查不到"（reg 不可用或执行失败），与 `Some(false)`
+    /// （确认未启用）区分开，让界面能如实显示"未知"而不是误报"已关闭"。
+    #[tauri::command]
+    pub fn check_autostart_status() -> Option<bool> {
+        crate::autostart::query_or_none()
     }
 
     // ============================================================
@@ -2355,6 +2529,12 @@ pub mod commands {
         pub value: String,
         pub value_type: String,
         pub description: Option<String>,
+        /// 数值型配置的合法下界；None 表示无约束（字符串/布尔项恒为 None）
+        pub min_value: Option<f64>,
+        /// 数值型配置的合法上界；None 表示无约束
+        pub max_value: Option<f64>,
+        /// 数值单位（%、ms、s、token…），仅用于界面展示
+        pub unit: Option<String>,
     }
 
     // ============================================================

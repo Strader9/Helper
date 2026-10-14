@@ -13,6 +13,41 @@ use crate::error::AppResult;
 use crate::commands::SettingItem;
 use crate::agent::observation::Observation as AgentObservation;
 
+/// 凭据类配置键：这些键的值不允许离开后端进程。
+///
+/// 判断依据是"值本身就是凭据"——即拿到这个字符串就等于拿到了访问权。
+/// 像 `publish.github_repo` 这种只是名字，不属于此列；`ollama.base_url`
+/// 是内网地址，也不算凭据。
+pub fn is_secret_setting(key: &str) -> bool {
+    matches!(
+        key,
+        "publish.github_token" | "publish.netlify_token"
+    ) || ["token", "secret", "password", "api_key"]
+        .iter()
+        .any(|suffix| key.ends_with(suffix))
+}
+
+/// 把凭据值替换成掩码，只保留头尾极少量字符用于人工辨认。
+///
+/// 设计取舍：完全不显示的话，用户无法确认"我填的到底是哪个 token"，
+/// 于是会反复重填。保留末 4 位是最小可辨认信息——足以区分多个令牌，
+/// 又不足以还原凭据本身（GitHub PAT 是 40 位随机串，末 4 位没有利用价值）。
+///
+/// 空值保持空值：前端据此区分"未配置"与"已配置"。
+pub fn mask_secret(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() <= 8 {
+        // 短值连末 4 位都不该透出，整体打码
+        return "••••••••".to_string();
+    }
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("••••••••{tail}")
+}
+
 /// 数据库连接封装
 pub struct Database {
     conn: Connection,
@@ -39,9 +74,107 @@ impl Database {
     /// 避免后续多次迁移。
     pub fn init_schema(&self) -> AppResult<()> {
         self.conn.execute_batch(schema::SCHEMA_SQL)?;
+        self.ensure_settings_metadata_columns()?;
         self.seed_default_settings()?;
+        self.purge_phantom_settings()?;
+        self.refresh_setting_descriptions()?;
         self.seed_default_directories()?;
         self.run_phase4_migration()?;
+        self.ensure_session_summary_columns()?;
+        Ok(())
+    }
+
+    /// 给已存在的 settings 表补上 min_value / max_value / unit 三列。
+    ///
+    /// 与 `ensure_session_summary_columns` 同样的理由：SQLite 没有
+    /// `ADD COLUMN IF NOT EXISTS`，重复 ALTER 会报 duplicate column name，
+    /// 所以先查 `PRAGMA table_info` 再决定是否执行。
+    fn ensure_settings_metadata_columns(&self) -> AppResult<()> {
+        let existing: Vec<String> = {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(settings)")?;
+            let names: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            names
+        };
+
+        for (column, decl) in [
+            ("min_value", "REAL"),
+            ("max_value", "REAL"),
+            ("unit", "TEXT"),
+        ] {
+            if !existing.iter().any(|c| c == column) {
+                self.conn
+                    .execute_batch(&format!("ALTER TABLE settings ADD COLUMN {} {}", column, decl))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 用最新的默认说明覆盖老库里的说明文本与取值范围。
+    ///
+    /// 老库里存的是写入当时的说明，随着实现演进可能已经不准确
+    /// （典型例子：超时默认值从 30000 改成 60000、快捷键从 Alt+Space
+    /// 改成 Ctrl+Shift+Space）。**只更新说明与元数据，不动用户填的值。**
+    fn refresh_setting_descriptions(&self) -> AppResult<()> {
+        let updates: [(&str, &str, Option<f64>, Option<f64>, Option<&str>); 20] = [
+            ("ollama.base_url", "Ollama 服务地址", None, None, None),
+            ("ollama.model", "默认模型名称", None, None, None),
+            ("ollama.timeout_ms", "请求超时（毫秒）", Some(5000.0), Some(300000.0), Some("ms")),
+            ("agent.max_iterations", "Agent Loop 最大轮次", Some(1.0), Some(50.0), Some("轮")),
+            ("agent.temperature", "模型温度（越高越发散）", Some(0.0), Some(2.0), None),
+            ("agent.num_ctx", "上下文窗口（token）", Some(2048.0), Some(32768.0), Some("token")),
+            ("agent.num_predict", "单次回复上限（token）", Some(128.0), Some(8192.0), Some("token")),
+            ("agent.proactive_interval_sec", "主动引擎检查间隔", Some(5.0), Some(300.0), Some("s")),
+            ("agent.proactive_cooldown_sec", "同一规则触发冷却期", Some(30.0), Some(3600.0), Some("s")),
+            ("ui.theme", "主题（dark/light）", None, None, None),
+            ("security.confirm_medium_risk", "MEDIUM 风险是否弹窗确认", None, None, None),
+            ("tray.minimize_on_close", "关闭窗口时最小化到托盘", None, None, None),
+            ("startup.auto_launch", "开机自启", None, None, None),
+            ("global_shortcut", "全局快捷键（如 Ctrl+Shift+Space）", None, None, None),
+            ("browser.default", "优先使用的浏览器（auto/chrome/edge/...）", None, None, None),
+            ("browser.cdp_port", "浏览器远程调试端口", Some(1024.0), Some(65535.0), None),
+            ("publish.github_token", "GitHub Personal Access Token", None, None, None),
+            ("publish.github_repo", "GitHub Pages 仓库名", None, None, None),
+            ("publish.netlify_token", "Netlify 备用发布通道令牌", None, None, None),
+            ("publish.proxy", "发布用代理地址（留空自动）", None, None, None),
+        ];
+
+        let mut stmt = self.conn.prepare(
+            "UPDATE settings SET description = ?2, min_value = ?3, max_value = ?4, unit = ?5 WHERE key = ?1"
+        )?;
+        for (key, description, min_value, max_value, unit) in updates {
+            stmt.execute(params![key, description, min_value, max_value, unit])?;
+        }
+        Ok(())
+    }
+
+    /// 给已存在的 chat_sessions 补上摘要相关字段。
+    ///
+    /// SQLite 没有 `ADD COLUMN IF NOT EXISTS`，而对旧库重复执行 `ALTER TABLE`
+    /// 会报 "duplicate column name"。所以先查 `PRAGMA table_info` 再决定，
+    /// 保证本方法可以反复调用。
+    fn ensure_session_summary_columns(&self) -> AppResult<()> {
+        let existing: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare("PRAGMA table_info(chat_sessions)")?;
+            let names: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            names
+        };
+
+        if !existing.iter().any(|c| c == "summary") {
+            self.conn
+                .execute_batch("ALTER TABLE chat_sessions ADD COLUMN summary TEXT")?;
+        }
+        if !existing.iter().any(|c| c == "summary_upto_id") {
+            self.conn
+                .execute_batch("ALTER TABLE chat_sessions ADD COLUMN summary_upto_id INTEGER")?;
+        }
         Ok(())
     }
 
@@ -52,36 +185,86 @@ impl Database {
     }
 
     /// 写入默认配置项
+    ///
+    /// 这里只收录**真正有消费点**的配置：每一项都能在源码里找到读取它的地方，
+    /// 改了它行为就会变。曾有一批"看着像功能、实则无人读取"的假配置
+    /// （ui.language、web_search.provider、github.token_set 等），
+    /// 已由 `purge_phantom_settings` 从老库中清理。
+    ///
+    /// 元组含义：(key, 默认值, 类型, 说明, 最小值, 最大值, 单位)
     fn seed_default_settings(&self) -> AppResult<()> {
-        let defaults = [
-            ("ollama.base_url", "http://localhost:11434", "string", "Ollama 服务地址"),
-            ("ollama.model", "qwen3:8b", "string", "默认模型名称"),
-            ("ollama.timeout_ms", "30000", "number", "请求超时（毫秒）"),
-            ("agent.max_iterations", "10", "number", "Agent Loop 最大轮次"),
-            ("agent.temperature", "0.7", "number", "模型温度"),
-            ("monitor.cpu_interval_ms", "2000", "number", "CPU 采集间隔"),
-            ("monitor.process_interval_ms", "5000", "number", "进程采集间隔"),
-            ("monitor.alert_cpu_threshold", "90", "number", "CPU 告警阈值（%）"),
-            ("monitor.alert_memory_threshold", "90", "number", "内存告警阈值（%）"),
-            ("monitor.alert_disk_threshold", "10", "number", "磁盘剩余告警阈值（%）"),
-            ("ui.theme", "dark", "string", "主题（dark/light）"),
-            ("ui.language", "zh-CN", "string", "界面语言"),
-            ("security.confirm_medium_risk", "true", "boolean", "MEDIUM 风险是否弹窗确认"),
-            ("tray.minimize_on_close", "true", "boolean", "关闭窗口时最小化到托盘"),
-            ("startup.auto_launch", "false", "boolean", "开机自启"),
-            ("global_shortcut", "Alt+Space", "string", "全局快捷键（如 Alt+Space）"),
-            ("web_search.provider", "", "string", "Web 搜索 Provider"),
-            ("github.token_set", "false", "boolean", "GitHub Token 是否已设置"),
+        let defaults: [(&str, &str, &str, &str, Option<f64>, Option<f64>, Option<&str>); 20] = [
+            // ---- 模型连接 ----
+            ("ollama.base_url", "http://localhost:11434", "string", "Ollama 服务地址", None, None, None),
+            ("ollama.model", "qwen3:8b", "string", "默认模型名称", None, None, None),
+            ("ollama.timeout_ms", "60000", "number", "请求超时（毫秒）", Some(5000.0), Some(300000.0), Some("ms")),
+            // ---- Agent 行为 ----
+            ("agent.max_iterations", "10", "number", "Agent Loop 最大轮次", Some(1.0), Some(50.0), Some("轮")),
+            ("agent.temperature", "0.7", "number", "模型温度（越高越发散）", Some(0.0), Some(2.0), None),
+            // ---- 上下文窗口 ----
+            // 8GB 显存下 8192 可全程跑 GPU，再大就会溢出到 CPU 让响应变慢。
+            ("agent.num_ctx", "8192", "number", "上下文窗口（token）", Some(2048.0), Some(32768.0), Some("token")),
+            ("agent.num_predict", "1024", "number", "单次回复上限（token）", Some(128.0), Some(8192.0), Some("token")),
+            // ---- 主动助手 ----
+            ("agent.proactive_interval_sec", "15", "number", "主动引擎检查间隔", Some(5.0), Some(300.0), Some("s")),
+            ("agent.proactive_cooldown_sec", "300", "number", "同一规则触发冷却期", Some(30.0), Some(3600.0), Some("s")),
+            // ---- 界面 ----
+            ("ui.theme", "dark", "string", "主题（dark/light）", None, None, None),
+            // ---- 安全 ----
+            ("security.confirm_medium_risk", "true", "boolean", "MEDIUM 风险是否弹窗确认", None, None, None),
+            // ---- 托盘与启动 ----
+            ("tray.minimize_on_close", "true", "boolean", "关闭窗口时最小化到托盘", None, None, None),
+            ("startup.auto_launch", "false", "boolean", "开机自启", None, None, None),
+            ("global_shortcut", "Ctrl+Shift+Space", "string", "全局快捷键（如 Ctrl+Shift+Space）", None, None, None),
+            // ---- 浏览器自动化 ----
+            ("browser.default", "auto", "string", "优先使用的浏览器（auto/chrome/edge/...）", None, None, None),
+            ("browser.cdp_port", "9222", "number", "浏览器远程调试端口", Some(1024.0), Some(65535.0), None),
+            // ---- 网页发布 ----
+            ("publish.github_token", "", "string", "GitHub Personal Access Token", None, None, None),
+            ("publish.github_repo", "", "string", "GitHub Pages 仓库名", None, None, None),
+            ("publish.netlify_token", "", "string", "Netlify 备用发布通道令牌", None, None, None),
+            ("publish.proxy", "", "string", "发布用代理地址（留空自动）", None, None, None),
         ];
 
         let mut stmt = self.conn.prepare(
-            "INSERT OR IGNORE INTO settings (key, value, value_type, description) VALUES (?1, ?2, ?3, ?4)"
+            "INSERT OR IGNORE INTO settings (key, value, value_type, description, min_value, max_value, unit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
         )?;
 
-        for (key, value, value_type, description) in defaults {
-            stmt.execute(params![key, value, value_type, description])?;
+        for (key, value, value_type, description, min_value, max_value, unit) in defaults {
+            stmt.execute(params![key, value, value_type, description, min_value, max_value, unit])?;
         }
 
+        Ok(())
+    }
+
+    /// 清除历史遗留的"幽灵配置"：这些键曾经被写进 settings 表，
+    /// 但源码里没有任何地方读取它们，改了对行为毫无影响。
+    /// 把它们留在设置页只会误导用户以为自己掌握了一个开关。
+    fn purge_phantom_settings(&self) -> AppResult<()> {
+        // ui.language：应用只有中文界面，切语言无实现。
+        // web_search.provider：模型侧无联网检索后端。
+        // github.token_set：与 publish.github_token 语义重复，且是派生标志位，
+        //                   不该作为独立配置项暴露给用户编辑。
+        // monitor.*：告警逻辑并入主动助手规则系统后，这五项不再单独生效。
+        //
+        // 注意 publish.netlify_token **不在**此列——它是 Netlify 备用发布
+        // 通道的凭据，lib.rs 的 publish_webpage 真的会读它。
+        const PHANTOM_KEYS: [&str; 8] = [
+            "ui.language",
+            "web_search.provider",
+            "github.token_set",
+            "monitor.cpu_interval_ms",
+            "monitor.process_interval_ms",
+            "monitor.alert_cpu_threshold",
+            "monitor.alert_memory_threshold",
+            "monitor.alert_disk_threshold",
+        ];
+
+        let mut stmt = self.conn.prepare("DELETE FROM settings WHERE key = ?1")?;
+        for key in PHANTOM_KEYS {
+            stmt.execute(params![key])?;
+        }
         Ok(())
     }
 
@@ -106,21 +289,89 @@ impl Database {
     }
 
     /// 获取所有配置项
+    ///
+    /// 对"元数据列尚不存在"的老库做了降级处理：如果 `min_value` / `max_value`
+    /// / `unit` 还没被 `init_schema` 补上，就先用旧的三列查询、把三个元数据
+    /// 字段留空，而不是直接抛 SQL 错误。
+    ///
+    /// 为什么需要这个兜底：产品路径里 `init_schema` 紧跟在建连之后，顺序上
+    /// 没问题。但只要有一处代码在这之前读设置（诊断工具、临时的启动探针、
+    /// 将来新增的某个初始化步骤），就会撞上一个"列不存在"的崩溃——
+    /// 而崩溃信息 `no such column: min_value` 完全无法让人联想到"迁移没跑"。
     pub fn get_all_settings(&self) -> AppResult<Vec<SettingItem>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT key, value, value_type, description FROM settings ORDER BY key"
-        )?;
+        let has_metadata = self.settings_has_metadata_columns();
 
+        let sql = if has_metadata {
+            "SELECT key, value, value_type, description, min_value, max_value, unit
+             FROM settings ORDER BY key"
+        } else {
+            "SELECT key, value, value_type, description, NULL, NULL, NULL
+             FROM settings ORDER BY key"
+        };
+
+        let mut stmt = self.conn.prepare(sql)?;
         let items = stmt.query_map([], |row| {
             Ok(SettingItem {
                 key: row.get(0)?,
                 value: row.get(1)?,
                 value_type: row.get(2)?,
                 description: row.get(3)?,
+                min_value: row.get(4)?,
+                max_value: row.get(5)?,
+                unit: row.get(6)?,
             })
         })?;
 
-        Ok(items.collect::<Result<Vec<_>, _>>()?)
+        let mut collected = items.collect::<Result<Vec<_>, _>>()?;
+
+        // 凭据类配置在离开数据库前就被替换成掩码，明文永不进入前端内存。
+        // 前端拿到掩码后只用于判断"是否已配置"，写入仍走 update_setting。
+        for item in collected.iter_mut() {
+            if is_secret_setting(&item.key) {
+                item.value = mask_secret(&item.value);
+            }
+        }
+
+        Ok(collected)
+    }
+
+    /// settings 表是否已具备取值范围相关的三列
+    fn settings_has_metadata_columns(&self) -> bool {
+        let mut stmt = match self.conn.prepare("PRAGMA table_info(settings)") {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let names: Vec<String> = match stmt.query_map([], |row| row.get::<_, String>(1)) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(_) => return false,
+        };
+        names.iter().any(|c| c == "min_value")
+    }
+
+    /// 读取单个配置项的取值范围约束
+    ///
+    /// 返回 (值类型, 下界, 上界, 单位)。键不存在时返回 None，由调用方
+    /// 决定是放行还是拒绝——不在这里抛错，避免把"未知键"也做成致命错误。
+    ///
+    /// 老库缺元数据列时返回 None：那时也没有区间可查，与"键不存在"的处理
+    /// 一致（放行），比让保存操作报 SQL 错误更合理。
+    pub fn get_setting_bounds(
+        &self,
+        key: &str,
+    ) -> AppResult<Option<(String, Option<f64>, Option<f64>, Option<String>)>> {
+        if !self.settings_has_metadata_columns() {
+            return Ok(None);
+        }
+
+        let mut stmt = self.conn.prepare(
+            "SELECT value_type, min_value, max_value, unit FROM settings WHERE key = ?1"
+        )?;
+        let mut rows = stmt.query(params![key])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+        } else {
+            Ok(None)
+        }
     }
 
     /// 获取单个配置项
@@ -379,4 +630,270 @@ pub struct TrustedTool {
     pub path_pattern: Option<String>,
     pub risk_level: String,
     pub added_at: String,
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// 建一个临时库并跑完整初始化，返回 (Database, 临时目录)
+    fn fresh_db(tag: &str) -> (Database, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "pcg-settings-test-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let db = Database::new(&dir.join("t.db")).expect("打开数据库");
+        db.init_schema().expect("初始化 schema");
+        (db, dir)
+    }
+
+    fn cleanup(dir: &PathBuf) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn seeds_only_settings_that_have_a_consumer() {
+        let (db, dir) = fresh_db("seeds");
+        let items = db.get_all_settings().expect("读取设置");
+
+        // 已删除的"幽灵配置"不得再出现。它们曾经存在于库中，
+        // 但没有任何代码读取，留在设置页只会误导用户。
+        for phantom in [
+            "ui.language",
+            "web_search.provider",
+            "github.token_set",
+            "monitor.cpu_interval_ms",
+            "monitor.process_interval_ms",
+            "monitor.alert_cpu_threshold",
+            "monitor.alert_memory_threshold",
+            "monitor.alert_disk_threshold",
+        ] {
+            assert!(
+                !items.iter().any(|s| s.key == phantom),
+                "幽灵配置 {} 仍在设置表中",
+                phantom
+            );
+        }
+
+        // 新接入的配置项必须在。
+        for expected in [
+            "agent.num_ctx",
+            "agent.num_predict",
+            "agent.proactive_interval_sec",
+            "agent.proactive_cooldown_sec",
+            "browser.default",
+            "browser.cdp_port",
+            "startup.auto_launch",
+            "ui.theme",
+        ] {
+            assert!(
+                items.iter().any(|s| s.key == expected),
+                "缺少配置项 {}",
+                expected
+            );
+        }
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn numeric_settings_carry_their_bounds() {
+        let (db, dir) = fresh_db("bounds");
+
+        // 有区间的项必须真的带上区间，否则前端无从做即时校验。
+        let (vtype, lo, hi, _unit) = db
+            .get_setting_bounds("agent.temperature")
+            .expect("查询成功")
+            .expect("temperature 存在");
+        assert_eq!(vtype, "number");
+        assert_eq!(lo, Some(0.0));
+        assert_eq!(hi, Some(2.0));
+
+        let (_, lo, hi, unit) = db
+            .get_setting_bounds("ollama.timeout_ms")
+            .expect("查询成功")
+            .expect("timeout 存在");
+        assert_eq!(lo, Some(5000.0));
+        assert_eq!(hi, Some(300000.0));
+        assert_eq!(unit.as_deref(), Some("ms"));
+
+        // 字符串项没有区间，应当是 None 而不是 0——0 会被误当成合法下界。
+        let (vtype, lo, hi, _) = db
+            .get_setting_bounds("ollama.model")
+            .expect("查询成功")
+            .expect("model 存在");
+        assert_eq!(vtype, "string");
+        assert_eq!(lo, None);
+        assert_eq!(hi, None);
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn bounds_query_returns_none_for_unknown_key() {
+        let (db, dir) = fresh_db("unknown");
+        // 未知键不是错误，返回 None 让调用方自己决定放行还是拒绝。
+        assert!(db
+            .get_setting_bounds("no.such.key")
+            .expect("查询不应报错")
+            .is_none());
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn initialization_is_idempotent() {
+        let (db, dir) = fresh_db("idempotent");
+        let before = db.get_all_settings().expect("首次读取").len();
+
+        // 老库升级路径会反复调用这些方法，重复执行必须不报错、
+        // 不重复插入、不覆盖用户已改的值。
+        db.init_schema().expect("二次初始化不应失败");
+        db.init_schema().expect("三次初始化不应失败");
+
+        let after = db.get_all_settings().expect("再次读取").len();
+        assert_eq!(before, after, "重复初始化不应改变配置项数量");
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn refresh_keeps_the_users_value_but_updates_description() {
+        let (db, dir) = fresh_db("refresh");
+
+        // 模拟用户改过值，然后再次初始化（相当于升级后重启）。
+        db.update_setting("ollama.timeout_ms", "120000")
+            .expect("写入用户值");
+        db.init_schema().expect("再次初始化");
+
+        assert_eq!(
+            db.get_setting("ollama.timeout_ms")
+                .expect("读取")
+                .as_deref(),
+            Some("120000"),
+            "用户的取值不应被默认值覆盖"
+        );
+
+        // 说明文本应来自最新定义（不是老库里的旧文案）。
+        let desc = db
+            .get_all_settings()
+            .expect("读取")
+            .into_iter()
+            .find(|s| s.key == "ollama.timeout_ms")
+            .and_then(|s| s.description)
+            .unwrap_or_default();
+        assert!(
+            desc.contains("超时"),
+            "说明应被刷新为最新文案，实际为: {}",
+            desc
+        );
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn purge_removes_phantoms_from_an_old_database() {
+        let (db, dir) = fresh_db("purge");
+
+        // 模拟老库：手动塞入一个已废弃的配置项。
+        db.connection()
+            .execute(
+                "INSERT OR REPLACE INTO settings (key, value, value_type, description)
+                 VALUES ('ui.language', 'en-US', 'string', '旧的语言设置')",
+                [],
+            )
+            .expect("塞入幽灵项");
+
+        assert!(db
+            .get_setting("ui.language")
+            .expect("读取")
+            .is_some());
+
+        db.init_schema().expect("再次初始化应清理幽灵项");
+
+        assert!(
+            db.get_setting("ui.language").expect("读取").is_none(),
+            "老库里的幽灵项应被清理"
+        );
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn get_all_settings_never_exposes_a_raw_token() {
+        let (db, dir) = fresh_db("secret-mask");
+
+        // 这是被修复的真实缺陷：凭据原本以明文随设置列表下发到前端，
+        // 虽然输入框用 type=password 做了视觉掩码，但值就躺在 DOM 的
+        // value 属性里，DevTools 一行 querySelector 即可读出。
+        //
+        // 这里必须是构造出来的假令牌：测试只需一个"长得像凭据"的字符串，
+        // 绝不能用真实凭据——那等于把密钥写进仓库历史。
+        let token = "ghp_FAKE_TEST_TOKEN_0123456789abcdefghij";
+        db.update_setting("publish.github_token", token)
+            .expect("写入令牌");
+
+        let items = db.get_all_settings().expect("读取设置");
+        let entry = items
+            .iter()
+            .find(|s| s.key == "publish.github_token")
+            .expect("令牌项存在");
+
+        assert!(
+            !entry.value.contains("ghp_"),
+            "令牌前缀不得出现在下发值中，实际为: {}",
+            entry.value
+        );
+        assert!(
+            !entry.value.contains("FAKE_TEST_TOKEN_0123456789abcdefghij"),
+            "令牌主体不得出现在下发值中"
+        );
+        assert!(
+            entry.value.contains("••••"),
+            "应以掩码形式下发，实际为: {}",
+            entry.value
+        );
+
+        // 关键：脱敏只作用于下发通道，库里必须仍存原文，
+        // 否则发布会因为拿到掩码而静默失败。
+        assert_eq!(
+            db.get_setting("publish.github_token")
+                .expect("读取")
+                .as_deref(),
+            Some(token),
+            "数据库中的原文不能被掩码污染"
+        );
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn mask_keeps_just_enough_to_identify_the_credential() {
+        // 长值：保留末 4 位，够用户辨认是哪一个 token。
+        assert_eq!(mask_secret("ghp_abcdefghijklmnop1234"), "••••••••1234");
+        // 空值：保持空，前端据此判断"未配置"。
+        assert_eq!(mask_secret(""), "");
+        assert_eq!(mask_secret("   "), "");
+        // 短值：连末 4 位都不透出，整体打码。
+        assert_eq!(mask_secret("abc123"), "••••••••");
+    }
+
+    #[test]
+    fn secret_detection_covers_the_obvious_shapes() {
+        assert!(is_secret_setting("publish.github_token"));
+        assert!(is_secret_setting("publish.netlify_token"));
+        assert!(is_secret_setting("foo.api_key"));
+        assert!(is_secret_setting("bar.password"));
+        assert!(is_secret_setting("baz_secret"));
+
+        // 下面这些不是凭据：仓库名是公开信息，base_url 是内网地址，
+        // 把它们的值也打码会让设置页变得没法用。
+        assert!(!is_secret_setting("publish.github_repo"));
+        assert!(!is_secret_setting("ollama.base_url"));
+        assert!(!is_secret_setting("ollama.model"));
+        assert!(!is_secret_setting("ui.theme"));
+    }
 }

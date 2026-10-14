@@ -6,7 +6,6 @@ use std::sync::atomic::Ordering;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 fn main() {
     tauri::Builder::default()
@@ -140,6 +139,7 @@ fn main() {
             pc_guardian_lib::commands::get_system_metrics,
             // 设置管理命令
             pc_guardian_lib::commands::update_setting,
+            pc_guardian_lib::commands::check_autostart_status,
             // 审计日志命令
             pc_guardian_lib::commands::get_audit_logs,
             // 任务管理命令
@@ -230,49 +230,38 @@ fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-/// 注册全局快捷键 Ctrl+Shift+Space
+
+/// 启动时注册全局快捷键：从设置读，注册，并把最终生效值写回库。
+///
+/// 写回的必要性：如果用户填的键被别的软件占用，这里会回退到备用键，
+/// 界面上却仍显示他填的那个——下次启动又会去抢同一个失败的键。
+/// 把实际生效值落库，界面看到的就和系统里的一致。
 fn register_global_shortcut(
     app_handle: &tauri::AppHandle,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let shortcut_str = {
         let state = app_handle.state::<AppState>();
-        state.global_shortcut.clone()
+        let guard = state.global_shortcut.blocking_lock();
+        guard.clone()
     };
 
-    let shortcut = match shortcut_str.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!(
-                "[GlobalShortcut] 解析 '{}' 失败: {}，使用默认 Ctrl+Shift+Space",
-                shortcut_str, e
-            );
-            "Ctrl+Shift+Space".parse()?
-        }
-    };
+    let effective = pc_guardian_lib::shortcut::register_global_shortcut_at(
+        app_handle,
+        &shortcut_str,
+        None,
+    );
 
-    match app_handle.global_shortcut().register(shortcut) {
-        Ok(_) => {
-            eprintln!("[GlobalShortcut] 已注册: {}", shortcut_str);
-            return Ok(());
+    // 回退链可能选中了别的键（用户填的被占用），把实际生效值写回两处：
+    // 内存里的句柄供下次热切换注销，库里供界面显示。
+    if effective != shortcut_str {
+        {
+            let state = app_handle.state::<AppState>();
+            *state.global_shortcut.blocking_lock() = effective.clone();
         }
-        Err(e) => {
-            eprintln!(
-                "[GlobalShortcut] 注册 '{}' 失败: {}，尝试备用快捷键",
-                shortcut_str, e
-            );
+        if let Ok(db) = app_handle.state::<AppState>().db.try_lock() {
+            let _ = db.update_setting("global_shortcut", &effective);
         }
     }
 
-    let fallbacks = ["Ctrl+Alt+Space", "Ctrl+Shift+A", "Alt+Shift+Space"];
-    for fb in &fallbacks {
-        if let Ok(fb_shortcut) = fb.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-            if app_handle.global_shortcut().register(fb_shortcut).is_ok() {
-                eprintln!("[GlobalShortcut] 已回退到备用快捷键: {}", fb);
-                return Ok(());
-            }
-        }
-    }
-
-    eprintln!("[GlobalShortcut] 所有快捷键均注册失败，全局快捷键功能不可用");
     Ok(())
 }

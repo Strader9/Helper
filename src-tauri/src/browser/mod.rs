@@ -213,6 +213,36 @@ fn expand_env(path: &str) -> String {
 // ============================================================
 
 /// 浏览器管理器
+/// 浏览器模块的运行时偏好设置
+///
+/// 由 `AppState::new` 在启动时从数据库注入一次。
+/// 之所以不在 `BrowserManager::new()` 里直接读库：`browser::global()` 是
+/// `OnceLock` 单例，而它可能在数据库准备好之前就被首次调用。
+/// 用独立的注入点可以把"读配置"和"建单例"解耦，也便于测试时跳过。
+#[derive(Debug, Clone)]
+pub struct BrowserPrefs {
+    /// 用户偏好的浏览器类型；"auto" 表示让探测顺序决定
+    pub default_browser: String,
+    /// CDP 远程调试端口
+    pub cdp_port: u16,
+}
+
+static BROWSER_PREFS: OnceLock<BrowserPrefs> = OnceLock::new();
+
+/// 注入浏览器偏好设置（只在首次调用时生效）
+///
+/// 返回是否注入成功。重复调用不会覆盖已有值——与单例语义保持一致：
+/// 进程生命周期内只认第一份配置，改配置需要重启（`open()` 里用的是
+/// 已启动进程的端口，中途改端口没有意义）。
+pub fn init_prefs(prefs: BrowserPrefs) -> bool {
+    BROWSER_PREFS.set(prefs).is_ok()
+}
+
+/// 读取当前生效的浏览器偏好；未注入时返回 None
+fn prefs() -> Option<&'static BrowserPrefs> {
+    BROWSER_PREFS.get()
+}
+
 ///
 /// 管理浏览器进程、CDP 连接、标签页。
 /// 使用 Mutex 保护，所有操作串行化（避免 CDP 并发冲突）。
@@ -245,17 +275,51 @@ struct BrowserManagerInner {
 
 impl BrowserManager {
     /// 创建新的浏览器管理器
+    ///
+    /// 初始浏览器与端口取自 `BrowserPrefs`（若已注入）：
+    /// - `default_browser` 为 "auto" 时按探测优先级取第一个；
+    ///   指定了具体类型（如 "chrome"）时优先选它，未安装则回退到第一个
+    ///   并在 `fallback_message` 里说明，用户下次调用就能看到原因。
+    /// - `cdp_port` 决定 `--remote-debugging-port`，填错会导致 CDP 连不上。
     pub fn new() -> Self {
         let available = detect_all_browsers();
-        let (browser_type, browser_path) = available
-            .first()
-            .map(|b| (b.browser_type.clone(), b.path.clone()))
-            .unwrap_or_else(|| ("none".to_string(), String::new()));
+        let prefs = prefs();
+
+        let port = prefs.map(|p| p.cdp_port).unwrap_or(9222);
+        let preferred = prefs
+            .map(|p| p.default_browser.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "auto");
+
+        // 解析初始浏览器：先看用户偏好，再退探测顺序。
+        let (browser_type, browser_path, fallback_message) = match preferred {
+            Some(ref want) => match available.iter().find(|b| b.browser_type == *want) {
+                Some(found) => (found.browser_type.clone(), found.path.clone(), None),
+                None => {
+                    let msg = format!(
+                        "设置里指定的 {} 未安装，已自动改用 {}",
+                        want,
+                        available
+                            .first()
+                            .map(|b| b.display_name.as_str())
+                            .unwrap_or("未知浏览器")
+                    );
+                    eprintln!("[Browser] {}", msg);
+                    available
+                        .first()
+                        .map(|b| (b.browser_type.clone(), b.path.clone(), Some(msg.clone())))
+                        .unwrap_or_else(|| ("none".to_string(), String::new(), Some(msg)))
+                }
+            },
+            None => available
+                .first()
+                .map(|b| (b.browser_type.clone(), b.path.clone(), None))
+                .unwrap_or_else(|| ("none".to_string(), String::new(), None)),
+        };
 
         Self {
             inner: Mutex::new(BrowserManagerInner {
                 process: None,
-                debug_port: 9222,
+                debug_port: port,
                 current_tab_id: None,
                 ws_tx: None,
                 ws_handle: None,
@@ -263,9 +327,14 @@ impl BrowserManager {
                 browser_type,
                 browser_path,
                 available_browsers: available,
-                fallback_message: None,
+                fallback_message,
             }),
         }
+    }
+
+    /// 当前实际使用的 CDP 端口（供界面展示"设置是否真的生效"）
+    pub async fn debug_port(&self) -> u16 {
+        self.inner.lock().await.debug_port
     }
 
     /// 检查系统是否有可用浏览器

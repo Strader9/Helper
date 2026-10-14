@@ -283,11 +283,18 @@ impl ContextEngine {
         }
     }
 
-    /// 估算上下文 token 数（粗略估算：中文 1.5 char/token，英文 4 char/token）
+    /// 估算一段文本的 token 数。
+    ///
+    /// 折算方式：ASCII 字符约 4 char/token，非 ASCII（中文等）约 1 字 0.6 token。
+    ///
+    /// 原先的实现有三处错：变量 `chinese_chars` 实际筛的是 **ASCII** 字符；
+    /// 用 `text.len()`（字节数）去减字符数，中文一字占 3 字节导致数值虚高；
+    /// 于是「这是一句中文」被算出 9 token，而正确值约 3.6 —— **高估 2.5 倍**。
+    /// token 一旦高估，`smart_truncate` 会在远未超限时就砍掉内容。
+    ///
+    /// 实现委托给 `history::estimate_tokens`，避免同一件事有两份会漂移的算法。
     pub fn estimate_tokens(text: &str) -> usize {
-        let chinese_chars = text.chars().filter(|c| c.is_ascii()).count();
-        let other_chars = text.len() - chinese_chars;
-        (chinese_chars / 4) + (other_chars / 2)
+        super::history::estimate_tokens(text)
     }
 
     /// 智能截断：如果文本超过 token 限制，保留开头和结尾，中间用摘要替代

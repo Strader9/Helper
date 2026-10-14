@@ -3,7 +3,7 @@
 //! 管理 chat_sessions 和 chat_messages 表的 CRUD 操作。
 //! 所有对话数据持久化到 SQLite。
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppResult;
@@ -188,6 +188,33 @@ impl<'a> ConversationManager<'a> {
         })?;
 
         Ok(messages.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// 读取会话缓存的远期摘要，返回 (摘要文本, 覆盖到的消息 id)。
+    ///
+    /// 摘要只压一次并缓存（见 `agent::history`），所以需要记录它覆盖到哪一条，
+    /// 避免每次组装历史都把同一段话重复压缩。
+    pub fn get_summary(&self, session_id: &str) -> AppResult<Option<(String, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT summary, summary_upto_id FROM chat_sessions WHERE id = ?1",
+        )?;
+        let result = stmt
+            .query_row(params![session_id], |row| {
+                let summary: Option<String> = row.get(0)?;
+                let upto: Option<i64> = row.get(1)?;
+                Ok(summary.zip(upto))
+            })
+            .optional()?;
+        Ok(result.flatten())
+    }
+
+    /// 写入会话的远期摘要及其覆盖范围。
+    pub fn save_summary(&self, session_id: &str, summary: &str, upto_id: i64) -> AppResult<()> {
+        self.conn.execute(
+            "UPDATE chat_sessions SET summary = ?1, summary_upto_id = ?2 WHERE id = ?3",
+            params![summary, upto_id, session_id],
+        )?;
+        Ok(())
     }
 
     /// 删除对话（级联删除消息）

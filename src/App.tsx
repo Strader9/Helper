@@ -13,6 +13,20 @@ import WebStudio from "./pages/WebStudio";
 import "./App.css";
 import "./cyberpunk.css";
 
+/**
+ * 把主题写到 <html data-theme>，CSS 里靠 `:root[data-theme="light"]`
+ * 覆盖颜色变量。默认的 dark 不设属性——这样 CSS 里的深色定义
+ * 不需要额外维护一份 `[data-theme="dark"]` 副本。
+ */
+function applyTheme(theme: string) {
+  const root = document.documentElement;
+  if (theme === "light") {
+    root.setAttribute("data-theme", "light");
+  } else {
+    root.removeAttribute("data-theme");
+  }
+}
+
 function App() {
   const [isMini, setIsMini] = useState<boolean | null>(null);
   const navigate = useNavigate();
@@ -21,6 +35,24 @@ function App() {
     invoke<boolean>("is_mini_window")
       .then(setIsMini)
       .catch(() => setIsMini(false));
+  }, []);
+
+  // 主题：启动时从设置里读一次并应用到 <html>，让浅色用户的界面在
+  // 第一帧就是对的（而不是先闪一下深色再切过去）。
+  useEffect(() => {
+    invoke<{ key: string; value: string }[]>("get_settings")
+      .then((items) => {
+        const theme = items.find((s) => s.key === "ui.theme")?.value ?? "dark";
+        applyTheme(theme);
+      })
+      .catch(() => applyTheme("dark"));
+
+    // 设置页保存主题后广播，让主界面立刻跟随，无需刷新。
+    let unlisten: (() => void) | null = null;
+    listen<string>("theme:changed", (event) => {
+      applyTheme(String(event.payload));
+    }).then((fn) => { unlisten = fn; });
+    return () => { if (unlisten) unlisten(); };
   }, []);
 
   // V21: 托盘菜单"设置"导航

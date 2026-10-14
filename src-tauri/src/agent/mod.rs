@@ -19,6 +19,7 @@ use crate::security::PermissionManager;
 use crate::tools::executor::{PendingPermission, ToolCallRequest, ToolExecutor};
 use crate::tools::ToolRegistry;
 pub mod context;
+pub mod history;
 pub mod intent;
 pub mod jarvis;
 pub mod observation;
@@ -100,6 +101,38 @@ impl RunCancellation {
 // ============================================================
 // AgentRuntime
 // ============================================================
+
+/// 从配置表解析单次推理要用的运行参数。
+///
+/// 返回 (温度, 最大轮次)。任何一项读不到或解析失败，都回落到
+/// `fallback_*`——也就是构造 `AgentRuntime` 时的默认值。
+///
+/// 之所以独立成函数而不是内联：这段逻辑的正确性直接决定"设置改了到底
+/// 有没有用"，必须能脱离 ollama 连接、脱离 tokio 运行时单独测。
+fn resolve_run_params(
+    db: &Database,
+    fallback_temperature: f32,
+    fallback_max_iterations: usize,
+) -> (f32, usize) {
+    let temperature = db
+        .get_setting("agent.temperature")
+        .ok()
+        .flatten()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .filter(|v| v.is_finite())
+        .map(|v| v.clamp(0.0, 2.0))
+        .unwrap_or(fallback_temperature);
+
+    let max_iterations = db
+        .get_setting("agent.max_iterations")
+        .ok()
+        .flatten()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .map(|v| v.clamp(1, 50))
+        .unwrap_or(fallback_max_iterations);
+
+    (temperature, max_iterations)
+}
 
 pub struct AgentRuntime {
     ollama: Arc<OllamaClient>,
@@ -206,8 +239,18 @@ impl AgentRuntime {
             .filter(|model| !model.trim().is_empty())
             .unwrap_or(&self.model)
             .to_string();
-        let temperature = self.temperature;
-        let max_iterations = self.max_iterations;
+        // 运行参数每次发起推理时从库里现读，而不是沿用启动时的快照。
+        //
+        // 为什么：用户改了温度/轮次上限后，如果只写库不重读，界面显示新值、
+        // 实际仍跑旧值——设置项看着可调却无效，正是这次要消灭的东西。
+        //
+        // 这里用 await 取锁而非 try_lock：try_lock 撞上锁竞争会静默沿用旧值，
+        // 用户刚改的参数就白白不生效，而且没有任何提示。等一小会儿拿到锁、
+        // 读准新值，比"快但可能读错"更符合设置项的语义。
+        let (temperature, max_iterations) = {
+            let guard = db.lock().await;
+            resolve_run_params(&guard, self.temperature, self.max_iterations)
+        };
         let active_runs = self.active_runs.clone();
         let execution_run_id = run_id.clone();
         let task_cancellation = cancellation.clone();
@@ -265,13 +308,16 @@ impl AgentRuntime {
                     eprintln!("[Agent] 闲聊模型请求工具，自动切换 Jarvis 路径");
                 }
 
-                // 明确动作使用本地推断的窄工具集；无法判断或由闲聊回退时开放全部类别。
+                // 明确动作使用本地推断的窄工具集；闲聊回退时保留全部类别
+                // （模型已经判断过需要工具，不再二次收窄，避免该有的工具被砍掉）；
+                // 完全判断不出意图时用安全子集，而不是开放全部 —— 后者会把 33 个工具的
+                // schema 全塞进上下文，吃掉半个窗口。
                 let categories = if explicit_chat {
                     all_tool_categories()
                 } else {
                     local_intent
                         .map(|result| result.categories)
-                        .unwrap_or_else(all_tool_categories)
+                        .unwrap_or_else(intent::fallback_categories)
                 };
                 eprintln!("[Agent] 走 Jarvis 自适应路径: {}", user_content);
                 let task = {
@@ -286,6 +332,7 @@ impl AgentRuntime {
                 jarvis::run(
                     jarvis::JarvisContext {
                         session_id: &session_id,
+                        user_content: &user_content,
                         db: &db,
                         ollama: &ollama,
                         executor: &executor,
@@ -840,5 +887,117 @@ mod fast_path_tests {
         )
         .await
         .expect("取消通知不应丢失");
+    }
+}
+
+#[cfg(test)]
+mod run_param_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn fresh_db(tag: &str) -> (Database, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "pcg-runparam-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let db = Database::new(&dir.join("t.db")).expect("打开数据库");
+        db.init_schema().expect("初始化 schema");
+        (db, dir)
+    }
+
+    /// 这是本次改动的核心断言：设置改完之后，下一次取运行参数必须拿到新值。
+    ///
+    /// 改动前这两项是启动时快照，改设置只写库、运行时仍用旧值——
+    /// 界面上改了温度却毫无效果，正是"假可调"的典型。
+    #[test]
+    fn picking_up_new_settings_immediately() {
+        let (db, dir) = fresh_db("hot");
+
+        // 先确认默认值与构造时的回落值不同，避免测试因为"新旧值恰好一样"而假通过
+        db.update_setting("agent.temperature", "1.8").expect("写温度");
+        db.update_setting("agent.max_iterations", "33").expect("写轮次");
+
+        let (temperature, max_iterations) = resolve_run_params(&db, 0.7, 10);
+        assert_eq!(temperature, 1.8, "温度应读到刚写入的新值");
+        assert_eq!(max_iterations, 33, "轮次上限应读到刚写入的新值");
+
+        // 再改一次，验证不是"只在首次生效"
+        db.update_setting("agent.temperature", "0.2").expect("再写温度");
+        let (temperature, _) = resolve_run_params(&db, 0.7, 10);
+        assert_eq!(temperature, 0.2, "第二次修改同样要立即生效");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn out_of_range_settings_are_clamped() {
+        let (db, dir) = fresh_db("clamp");
+
+        // 直接绕过命令层写库（模拟历史数据或外部改库），
+        // 读取侧必须自己兜住，不能把 99.0 的温度丢给模型。
+        db.connection()
+            .execute(
+                "UPDATE settings SET value = '99.0' WHERE key = 'agent.temperature'",
+                [],
+            )
+            .expect("写入越界温度");
+        db.connection()
+            .execute(
+                "UPDATE settings SET value = '9999' WHERE key = 'agent.max_iterations'",
+                [],
+            )
+            .expect("写入越界轮次");
+
+        let (temperature, max_iterations) = resolve_run_params(&db, 0.7, 10);
+        assert_eq!(temperature, 2.0, "温度应被夹到上界");
+        assert_eq!(max_iterations, 50, "轮次上限应被夹到上界");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unparseable_settings_fall_back_instead_of_panicking() {
+        let (db, dir) = fresh_db("fallback");
+
+        db.connection()
+            .execute(
+                "UPDATE settings SET value = 'hot' WHERE key = 'agent.temperature'",
+                [],
+            )
+            .expect("写入非数字温度");
+
+        // 读不出来就回落，绝不能因为一个脏配置让整个对话流程崩掉
+        let (temperature, max_iterations) = resolve_run_params(&db, 0.7, 10);
+        assert_eq!(temperature, 0.7, "解析失败应回落到默认值");
+        assert_eq!(max_iterations, 10, "未改动项应保持默认值");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nan_is_rejected_rather_than_clamped() {
+        let (db, dir) = fresh_db("nan");
+
+        db.connection()
+            .execute(
+                "UPDATE settings SET value = 'NaN' WHERE key = 'agent.temperature'",
+                [],
+            )
+            .expect("写入 NaN");
+
+        // f32::clamp 遇到 NaN 会返回 NaN，若直接放行会一路传进模型请求。
+        // 这里必须挡住并回落到默认值。
+        let (temperature, _) = resolve_run_params(&db, 0.7, 10);
+        assert!(
+            temperature.is_finite(),
+            "温度不能是 NaN 或无穷大，实际为 {}",
+            temperature
+        );
+        assert_eq!(temperature, 0.7);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

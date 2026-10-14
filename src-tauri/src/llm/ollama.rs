@@ -9,6 +9,8 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 
@@ -236,8 +238,12 @@ pub struct OllamaClient {
     client: Client,
     unlimited_client: Client,
     base_url: String,
-    #[allow(dead_code)]
-    timeout_ms: u64,
+    /// 请求超时，单位毫秒。
+    ///
+    /// 用原子量而非普通字段：用户在设置里改了超时后应当立刻生效，
+    /// 不必重启应用。`Client` 的 timeout 是构造时烘死的、改不动，
+    /// 所以这里额外保留一份可变的超时值，由请求方每轮现取。
+    timeout_ms: Arc<AtomicU64>,
 }
 
 impl OllamaClient {
@@ -250,8 +256,21 @@ impl OllamaClient {
                 .unwrap_or_default(),
             unlimited_client: Client::builder().build().unwrap_or_default(),
             base_url,
-            timeout_ms,
+            timeout_ms: Arc::new(AtomicU64::new(timeout_ms)),
         }
+    }
+
+    /// 热更新请求超时（毫秒）。供设置保存时调用。
+    ///
+    /// 注意只影响之后发起的请求：已经建好的连接不会被追改，
+    /// 这是 HTTP 客户端层面的固有限制，不是这里的疏漏。
+    pub fn set_timeout_ms(&self, timeout_ms: u64) {
+        self.timeout_ms.store(timeout_ms, Ordering::SeqCst);
+    }
+
+    /// 当前生效的请求超时（毫秒）
+    fn current_timeout(&self) -> u64 {
+        self.timeout_ms.load(Ordering::SeqCst)
     }
 
     /// 检查 Ollama 服务是否可用
@@ -326,8 +345,32 @@ impl OllamaClient {
             messages,
             tools,
             temperature,
-            Some(self.timeout_ms),
+            Some(self.current_timeout()),
             None,
+        )
+        .await
+    }
+
+    /// 带工具、带总时限、且可追加推理参数的流式聊天。
+    ///
+    /// `chat_stream` 无法指定 `num_ctx`（走 Ollama 默认的 4096），
+    /// `chat_stream_with_options` 又丢掉了 tools 参数且不设总时限，
+    /// 两者都不满足 Agent 对话路径的需要（要同时有工具、有超时、有窗口配置）。
+    pub async fn chat_stream_with_tools_and_options(
+        &self,
+        model: &str,
+        messages: Vec<OllamaMessage>,
+        tools: Option<Vec<serde_json::Value>>,
+        temperature: f32,
+        extra_options: serde_json::Value,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = ChatChunk> + Send>>> {
+        self.chat_stream_with_timeout(
+            model,
+            messages,
+            tools,
+            temperature,
+            Some(self.current_timeout()),
+            Some(extra_options),
         )
         .await
     }
@@ -603,5 +646,36 @@ mod tests {
         };
         let line = no_timing.log_line();
         assert!(!line.contains("inf") && !line.contains("NaN"), "{line}");
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    /// 超时热更新：设置里改完之后，请求路径必须拿到新值。
+    ///
+    /// 改动前 timeout 是构造时烘死的普通字段，改了要重启才生效；
+    /// 现在放在原子量里，`current_timeout()` 每轮现取。
+    #[test]
+    fn timeout_updates_take_effect_without_rebuilding_the_client() {
+        let client = OllamaClient::new("http://localhost:11434".to_string(), 30_000);
+        assert_eq!(client.current_timeout(), 30_000);
+
+        client.set_timeout_ms(120_000);
+        assert_eq!(client.current_timeout(), 120_000, "改完之后应立刻读出新值");
+
+        client.set_timeout_ms(5_000);
+        assert_eq!(client.current_timeout(), 5_000, "再次修改同样立即生效");
+    }
+
+    /// 原子量在 Arc 上是共享的，设置端 clone 出来的句柄改了也要能被读到。
+    #[test]
+    fn timeout_atomic_is_shared_across_clones_of_the_field() {
+        let client = OllamaClient::new("http://localhost:11434".to_string(), 30_000);
+        let handle = client.timeout_ms.clone();
+        // 模拟命令层通过另一个句柄写值
+        handle.store(88_000, Ordering::SeqCst);
+        assert_eq!(client.current_timeout(), 88_000);
     }
 }
