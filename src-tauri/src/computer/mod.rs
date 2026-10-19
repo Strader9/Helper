@@ -6,3 +6,4 @@ pub mod processes;
 pub mod windows;
 pub mod system_info;
 pub mod app_manager;
+pub mod input;

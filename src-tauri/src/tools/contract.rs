@@ -433,6 +433,58 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::None,
         required_fields: &[],
     },
+    // ============ Input（键鼠模拟）============
+    // 这几个工具的副作用不在文件系统上，而在**别人家的窗口里**：点一下可能
+    // 就是提交订单、发一条消息。所以一律记 DesktopControl，并且必填回执字段
+    // 用来核对「确实发出去了」而不是「函数返回了」。
+    CapabilityContract {
+        tool: "mouse_move",
+        side_effect: SideEffect::DesktopControl,
+        scope: "鼠标光标位置",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["x", "y"],
+    },
+    CapabilityContract {
+        tool: "mouse_click",
+        side_effect: SideEffect::DesktopControl,
+        scope: "屏幕坐标处的目标控件",
+        reversible: false,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["button", "count"],
+    },
+    CapabilityContract {
+        tool: "mouse_drag",
+        side_effect: SideEffect::DesktopControl,
+        scope: "拖拽起点到终点之间的目标",
+        reversible: false,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["from", "to", "button"],
+    },
+    CapabilityContract {
+        tool: "mouse_scroll",
+        side_effect: SideEffect::DesktopControl,
+        scope: "光标下的可滚动区域",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["delta"],
+    },
+    CapabilityContract {
+        tool: "keyboard_type",
+        side_effect: SideEffect::DesktopControl,
+        scope: "当前焦点输入框",
+        reversible: false,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["typed_chars"],
+    },
+    CapabilityContract {
+        tool: "keyboard_press",
+        side_effect: SideEffect::DesktopControl,
+        scope: "当前焦点窗口",
+        reversible: false,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["key", "parts"],
+    },
     CapabilityContract {
         tool: "get_system_context",
         side_effect: SideEffect::LocalRead,

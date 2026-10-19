@@ -323,6 +323,15 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(computer::windows::MinimizeWindowTool), ToolCategory::ProcessWindow);
         self.register_with_category(Arc::new(computer::windows::CloseWindowTool), ToolCategory::ProcessWindow);
 
+        // === Input 类（键鼠模拟）===
+        // 放在 ProcessWindow 分类下：它们服务的是同一个场景——操控别人的窗口。
+        self.register_with_category(Arc::new(computer::input::MouseMoveTool), ToolCategory::ProcessWindow);
+        self.register_with_category(Arc::new(computer::input::MouseClickTool), ToolCategory::ProcessWindow);
+        self.register_with_category(Arc::new(computer::input::MouseDragTool), ToolCategory::ProcessWindow);
+        self.register_with_category(Arc::new(computer::input::MouseScrollTool), ToolCategory::ProcessWindow);
+        self.register_with_category(Arc::new(computer::input::KeyboardTypeTool), ToolCategory::ProcessWindow);
+        self.register_with_category(Arc::new(computer::input::KeyboardPressTool), ToolCategory::ProcessWindow);
+
         // === System 类（系统信息）===
         self.register_with_category(Arc::new(computer::system_info::GetSystemContextTool), ToolCategory::System);
 

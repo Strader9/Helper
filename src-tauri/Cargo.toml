@@ -68,8 +68,15 @@ base64 = "0.22"
 # === V20 Skills: URL 编码 ===
 urlencoding = "2"
 
-# === Windows API: 浮窗拖动（WM_NCHITTEST 返回 HTCAPTION）===
-windows = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# === Windows API ===
+# Win32_UI_WindowsAndMessaging：浮窗拖动（WM_NCHITTEST 返回 HTCAPTION）+ 屏幕尺寸
+# Win32_UI_Input_KeyboardAndMouse：键鼠模拟（SendInput）。走 crate 而不是 PowerShell，
+#   因为一次点击起一个 PowerShell 进程要 150ms 以上，连续操作完全不可用。
+windows = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
 raw-window-handle = "0.6"
 
 [package.metadata.tauri]
