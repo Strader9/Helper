@@ -193,6 +193,8 @@ fn main() {
             pc_guardian_lib::commands::create_pairing_code,
             pc_guardian_lib::commands::revoke_paired_device,
             pc_guardian_lib::commands::get_gateway_status,
+            // 模型网关状态
+            pc_guardian_lib::commands::get_model_gateway_status,
             // V20: 技能管理命令
             pc_guardian_lib::commands::get_skills,
             pc_guardian_lib::commands::get_skill_details,

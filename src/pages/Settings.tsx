@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { listen, emit, UnlistenFn } from "@tauri-apps/api/event";
 import CyberIcon from "../components/CyberIcon";
+import SettingsAutomation from "./SettingsAutomation";
+import SettingsModel from "./SettingsModel";
 
 interface SettingItem {
   key: string;
@@ -81,7 +83,15 @@ interface SkillInfo {
   triggers: string[];
 }
 
-type TabType = "general" | "security" | "proactive" | "browser" | "skills" | "memory";
+type TabType =
+  | "general"
+  | "model"
+  | "security"
+  | "proactive"
+  | "automation"
+  | "browser"
+  | "skills"
+  | "memory";
 
 /**
  * 通用设置的分组定义。
@@ -97,7 +107,7 @@ const SETTING_GROUPS: { title: string; note: string; keys: string[] }[] = [
   {
     title: "模型连接",
     note: "服务地址与模型名在启动时确定，改动需重启应用；超时立即生效",
-    keys: ["ollama.base_url", "ollama.model", "ollama.timeout_ms"],
+    keys: ["ollama.base_url", "ollama.model", "ollama.timeout_ms", "sidecar.url"],
   },
   {
     title: "生成参数",
@@ -113,6 +123,27 @@ const SETTING_GROUPS: { title: string; note: string; keys: string[] }[] = [
     title: "主动助手",
     note: "均立即生效，下一轮巡检即按新频率执行",
     keys: ["agent.proactive_interval_sec", "agent.proactive_cooldown_sec"],
+  },
+  {
+    title: "常驻调度",
+    note: "定时任务到点自动执行；间隔与超时改动下一轮生效",
+    keys: [
+      "agent.scheduler_enabled",
+      "agent.scheduler_tick_sec",
+      "agent.scheduler_job_timeout_sec",
+    ],
+  },
+  {
+    title: "多端访问",
+    note:
+      "默认只允许本机（127.0.0.1）。要手机/平板连，把绑定地址改成 0.0.0.0，" +
+      "并确保局域网可信——配对码等同于授权凭据，别截图外发",
+    keys: [
+      "agent.gateway_enabled",
+      "agent.gateway_bind",
+      "agent.gateway_port",
+      "agent.gateway_reply_timeout_sec",
+    ],
   },
   {
     title: "外观",
@@ -140,12 +171,20 @@ const SETTING_LABELS: Record<string, string> = {
   "ollama.base_url": "服务地址",
   "ollama.model": "模型名称",
   "ollama.timeout_ms": "请求超时",
+  "sidecar.url": "模型网关地址",
   "agent.max_iterations": "最大执行轮次",
   "agent.temperature": "模型温度",
   "agent.num_ctx": "上下文窗口",
   "agent.num_predict": "单次回复上限",
   "agent.proactive_interval_sec": "检查间隔",
   "agent.proactive_cooldown_sec": "触发冷却期",
+  "agent.scheduler_enabled": "启用定时任务",
+  "agent.scheduler_tick_sec": "调度检查间隔",
+  "agent.scheduler_job_timeout_sec": "单个任务超时",
+  "agent.gateway_enabled": "启用多端网关",
+  "agent.gateway_bind": "绑定地址",
+  "agent.gateway_port": "网关端口",
+  "agent.gateway_reply_timeout_sec": "远端回复超时",
   "ui.theme": "界面主题",
   "tray.minimize_on_close": "关闭按钮最小化到托盘",
   "startup.auto_launch": "开机自动启动",
@@ -1065,10 +1104,22 @@ function Settings() {
           通用设置
         </button>
         <button
+          className={`settings-tab ${activeTab === "model" ? "active" : ""}`}
+          onClick={() => setActiveTab("model")}
+        >
+          模型服务
+        </button>
+        <button
           className={`settings-tab ${activeTab === "security" ? "active" : ""}`}
           onClick={() => setActiveTab("security")}
         >
           安全
+        </button>
+        <button
+          className={`settings-tab ${activeTab === "automation" ? "active" : ""}`}
+          onClick={() => setActiveTab("automation")}
+        >
+          自动化
         </button>
         <button
           className={`settings-tab ${activeTab === "proactive" ? "active" : ""}`}
@@ -1105,6 +1156,12 @@ function Settings() {
           </div>
         </div>
       )}
+
+      {/* 模型服务 Tab（sidecar 多 provider 诊断） */}
+      {activeTab === "model" && <SettingsModel />}
+
+      {/* 自动化 Tab（定时任务 + 多端设备） */}
+      {activeTab === "automation" && <SettingsAutomation />}
 
       {/* 通用设置 Tab */}
       {activeTab === "general" && (

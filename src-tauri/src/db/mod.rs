@@ -272,11 +272,13 @@ impl Database {
     ///
     /// 元组含义：(key, 默认值, 类型, 说明, 最小值, 最大值, 单位)
     fn seed_default_settings(&self) -> AppResult<()> {
-        let defaults: [(&str, &str, &str, &str, Option<f64>, Option<f64>, Option<&str>); 27] = [
+        let defaults: [(&str, &str, &str, &str, Option<f64>, Option<f64>, Option<&str>); 28] = [
             // ---- 模型连接 ----
             ("ollama.base_url", "http://localhost:11434", "string", "Ollama 服务地址", None, None, None),
             ("ollama.model", "qwen3:8b", "string", "默认模型名称", None, None, None),
             ("ollama.timeout_ms", "60000", "number", "请求超时（毫秒）", Some(5000.0), Some(300000.0), Some("ms")),
+            // sidecar 多 provider 网关（模型层扩容）的地址；MCP 转发也走这里
+            ("sidecar.url", "http://127.0.0.1:4770", "string", "模型网关（sidecar）地址", None, None, None),
             // ---- Agent 行为 ----
             ("agent.max_iterations", "10", "number", "Agent Loop 最大轮次", Some(1.0), Some(50.0), Some("轮")),
             ("agent.temperature", "0.7", "number", "模型温度（越高越发散）", Some(0.0), Some(2.0), None),

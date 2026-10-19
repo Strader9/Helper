@@ -3077,6 +3077,65 @@ pub mod commands {
     }
 
     // ============================================================
+    // 模型网关（sidecar）状态
+    // ============================================================
+
+    /// 查 sidecar 的多 provider 健康状态。
+    ///
+    /// 前端不直接 fetch 本地端口：Tauri 的 CSP 与 webview 源都不同，
+    /// 走 IPC 让 Rust 发这一次请求，顺带能把超时压到 3 秒，
+    /// 不至于让设置页因为 sidecar 没起来而长时间转圈。
+    #[tauri::command]
+    pub async fn get_model_gateway_status(
+        state: State<'_, AppState>,
+    ) -> Result<serde_json::Value, String> {
+        let base = {
+            let db = state.db.lock().await;
+            db.get_setting("sidecar.url")
+                .ok()
+                .flatten()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "http://127.0.0.1:4770".to_string())
+        };
+        let endpoint = format!("{}/health", base.trim_end_matches('/'));
+
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .no_proxy()
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(serde_json::json!({
+                    "reachable": false,
+                    "base_url": base,
+                    "error": format!("创建 HTTP 客户端失败：{}", e),
+                }))
+            }
+        };
+
+        match client.get(&endpoint).send().await {
+            Ok(response) => {
+                let status = response.status();
+                let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+                Ok(serde_json::json!({
+                    "reachable": status.is_success(),
+                    "base_url": base,
+                    "http_status": status.as_u16(),
+                    "providers": body.get("providers").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+                    "models": body.get("data").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+                    "error": if status.is_success() { serde_json::Value::Null } else { serde_json::json!(format!("网关返回 {}", status.as_u16())) },
+                }))
+            }
+            Err(e) => Ok(serde_json::json!({
+                "reachable": false,
+                "base_url": base,
+                "error": e.to_string(),
+            })),
+        }
+    }
+
+    // ============================================================
     // V20: 技能管理命令
     // ============================================================
 
