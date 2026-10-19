@@ -124,6 +124,10 @@ impl ToolExecutor {
         let session_id = request.session_id.clone().unwrap_or_else(|| "unknown".to_string());
         let run_id = request.run_id.clone();
 
+        // 工具只能拿到 args，拿不到会话。任务编排类工具必须知道当前指令
+        // 属于哪个会话，否则不同对话的计划会挤进同一个列表。
+        crate::tools::set_current_session(&session_id);
+
         // 1. 查找工具
         let tool = self
             .tool_registry

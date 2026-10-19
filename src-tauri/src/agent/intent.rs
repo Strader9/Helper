@@ -252,6 +252,40 @@ fn keyword_to_category(keyword: &str) -> Option<ToolCategory> {
         return Some(ToolCategory::Office);
     }
 
+    // 自省类前置：问"你会什么"时，"会"字不命中任何分支，模型只能空口回答。
+    if k.contains("你会什么") || k.contains("你能做什么") || k.contains("有什么能力")
+        || k.contains("能力清单") || k.contains("你的版本") || k.contains("自检")
+        || k.contains("健康检查") || k.contains("capabilit")
+    {
+        return Some(ToolCategory::Client);
+    }
+
+    // 邮件前置：说"把报告发邮件给张三"时，"发"会命中 Program 分支。
+    if k.contains("邮件") || k.contains("邮箱") || k.contains("email") || k.contains("mail")
+        || k.contains("smtp") || k.contains("发信")
+    {
+        return Some(ToolCategory::Messaging);
+    }
+
+    // 图像前置：说"把这张图缩小一半"时，"图"会先命中 File 分支，
+    // 而能干活的是 Media 类。
+    if k.contains("图片") || k.contains("图像") || k.contains("照片") || k.contains("截图")
+        || k.contains("缩放") || k.contains("裁剪") || k.contains("旋转") || k.contains("翻转")
+        || k.contains("分辨率") || k.contains("转格式") || k.contains("格式转换")
+        || k.contains("视频") || k.contains("音频") || k.contains("ffmpeg")
+        || k.contains("image") || k.contains("photo") || k.contains("resize")
+    {
+        return Some(ToolCategory::Media);
+    }
+
+    // 计划类也要前置：说"把这件事拆成几步"时，"拆"不在任何分支里，
+    // 而"做/干"会命中 Program 分支，模型拿到的是应用管理工具。
+    if k.contains("计划") || k.contains("步骤") || k.contains("拆解") || k.contains("待办")
+        || k.contains("进度") || k.contains("几步") || k.contains("plan") || k.contains("todo")
+    {
+        return Some(ToolCategory::Agents);
+    }
+
     // Program 类：打开/启动/运行/关闭/退出/安装/卸载/播放等
     if k.contains("打开") || k.contains("启动") || k.contains("运行") || k.contains("开启")
         || k.contains("launch") || k.contains("open") || k.contains("run") || k.contains("start")
@@ -404,4 +438,60 @@ pub fn strip_need_tool_marker(content: &str) -> String {
         .unwrap_or(content)
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 路由必须优先命中"更具体的域"。
+    ///
+    /// 这些断言防的是同一类退化：后加的分支被前面的大词（"打开""文件""做"）
+    /// 抢走，模型拿到的是错类别的工具，然后开始瞎编。
+    #[test]
+    fn routing_prefers_the_more_specific_domain() {
+        assert_eq!(
+            keyword_to_category("帮我发邮件给张三"),
+            Some(ToolCategory::Messaging),
+            "「发」会先命中 Program，邮件必须前置"
+        );
+        assert_eq!(
+            keyword_to_category("把这张图片缩小一半"),
+            Some(ToolCategory::Media),
+            "「图」会先命中 File，图像必须前置"
+        );
+        assert_eq!(
+            keyword_to_category("你会什么"),
+            Some(ToolCategory::Client)
+        );
+        assert_eq!(
+            keyword_to_category("把这件事拆成几步"),
+            Some(ToolCategory::Agents)
+        );
+        assert_eq!(
+            keyword_to_category("读一下这个 docx"),
+            Some(ToolCategory::Office),
+            "「读」会先命中 File，Office 必须前置"
+        );
+        assert_eq!(
+            keyword_to_category("打开这个链接"),
+            Some(ToolCategory::System),
+            "「打开」会先命中 Program，URL 必须前置"
+        );
+    }
+
+    #[test]
+    fn unrelated_keyword_falls_through_without_guessing() {
+        // 认不出就别硬猜到一个类别上：宁可返回 None 让上层走通用注入
+        assert_eq!(keyword_to_category("嗯"), None);
+    }
+
+    #[test]
+    fn need_tool_marker_is_detected_and_stripped() {
+        assert!(detect_need_tool("[NEED_TOOL] 需要查一下文件"));
+        assert!(!detect_need_tool("需要查一下文件"));
+        assert_eq!(strip_need_tool_marker("[NEED_TOOL] 需要查文件"), "需要查文件");
+        // 没有标记时原样返回，不能吞掉首字符
+        assert_eq!(strip_need_tool_marker("普通回复"), "普通回复");
+    }
 }

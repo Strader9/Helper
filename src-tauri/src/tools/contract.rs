@@ -548,6 +548,165 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["total", "by_type"],
     },
+    // ============ Messaging ============
+    CapabilityContract {
+        tool: "send_email",
+        side_effect: SideEffect::ExternalCommunication,
+        scope: "外部邮箱",
+        // 邮件发出去就收不回来：不可撤销
+        reversible: false,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["sent", "to", "smtp_code"],
+    },
+    CapabilityContract {
+        tool: "compose_mail",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "默认邮件客户端",
+        reversible: true,
+        // 只证明了"客户端进程起来了"，草稿是否真被填入由客户端决定
+        verification: VerificationStrategy::None,
+        required_fields: &["opened"],
+    },
+    CapabilityContract {
+        tool: "check_mail_config",
+        side_effect: SideEffect::NetworkRead,
+        scope: "SMTP 服务器",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["configured"],
+    },
+    // ============ Media ============
+    CapabilityContract {
+        tool: "image_info",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地图片",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "width", "height", "bytes"],
+    },
+    CapabilityContract {
+        tool: "image_resize",
+        side_effect: SideEffect::LocalWrite,
+        scope: "输出目录",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        // 判据是重新打开输出文件读尺寸，不是内存里那个 Bitmap 对象
+        required_fields: &["output.path", "output.width", "output.height", "output.dimensions_match"],
+    },
+    CapabilityContract {
+        tool: "image_crop",
+        side_effect: SideEffect::LocalWrite,
+        scope: "输出目录",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["output.path", "output.width", "output.height", "output.dimensions_match"],
+    },
+    CapabilityContract {
+        tool: "image_convert",
+        side_effect: SideEffect::LocalWrite,
+        scope: "输出目录",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["output.path", "output.bytes"],
+    },
+    CapabilityContract {
+        tool: "image_rotate",
+        side_effect: SideEffect::LocalWrite,
+        scope: "输出目录",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["output.path", "output.dimensions_match"],
+    },
+    CapabilityContract {
+        tool: "media_tools_status",
+        side_effect: SideEffect::LocalRead,
+        scope: "本机可执行文件",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["image", "video", "audio"],
+    },
+    // ============ Client ============
+    CapabilityContract {
+        tool: "client_state",
+        side_effect: SideEffect::LocalRead,
+        scope: "自身运行状态",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["version", "db_path", "capabilities"],
+    },
+    CapabilityContract {
+        tool: "client_capability_manifest",
+        side_effect: SideEffect::LocalRead,
+        scope: "能力契约表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "items"],
+    },
+    CapabilityContract {
+        tool: "client_health_check",
+        side_effect: SideEffect::LocalRead,
+        scope: "自身运行状态",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["status", "integrity", "findings"],
+    },
+    CapabilityContract {
+        tool: "client_usage_stats",
+        side_effect: SideEffect::LocalRead,
+        scope: "回执账本",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["total_receipts", "by_status"],
+    },
+    // ============ Agents ============
+    CapabilityContract {
+        tool: "create_task_plan",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地任务表",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["task_id", "step_count", "persisted"],
+    },
+    CapabilityContract {
+        tool: "list_agent_tasks",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地任务表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "tasks"],
+    },
+    CapabilityContract {
+        tool: "get_agent_task",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地任务表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["task_id", "steps"],
+    },
+    CapabilityContract {
+        tool: "update_task_step",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地任务表",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["task_id", "step_id", "persisted_status"],
+    },
+    CapabilityContract {
+        tool: "cancel_agent_task",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地任务表",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["task_id", "status"],
+    },
+    CapabilityContract {
+        tool: "resume_task_context",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地任务表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["found"],
+    },
     // ============ Office ============
     CapabilityContract {
         tool: "read_docx",
@@ -768,6 +927,10 @@ pub const VERIFICATION_DEBT: &[(&str, &str)] = &[
         "open_url",
         "链接由默认浏览器承接，工具只拿到 shell 受理结果，无法确认页面已打开",
     ),
+    (
+        "compose_mail",
+        "只能确认客户端进程已启动；草稿是否真被填入由邮件客户端决定，无法回读",
+    ),
 ];
 
 /// 查某个工具的验证欠账理由
@@ -776,6 +939,11 @@ pub fn verification_debt(tool: &str) -> Option<&'static str> {
         .iter()
         .find(|(name, _)| *name == tool)
         .map(|(_, reason)| *reason)
+}
+
+/// 全部契约（自省类工具用它生成能力清单）。
+pub fn contracts() -> &'static [CapabilityContract] {
+    CONTRACTS
 }
 
 /// 按工具名查契约

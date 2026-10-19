@@ -96,6 +96,8 @@ impl AppState {
 
         // V17: 设置全局数据库路径（供 MemoryEngine 工具层使用）
         crate::memory::set_db_path(db_path.clone());
+        // 自省工具要能回答"这个助手跑了多久"
+        crate::tools::executors::client::mark_startup();
 
         // 启动自愈：清理所有崩溃遗留的非终态任务，防止重启后卡在 executing
         {

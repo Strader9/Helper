@@ -7,12 +7,16 @@
 //! - 系统设置：剪贴板、通知、网络、磁盘、环境变量、锁屏、开链接（`os_extra`）
 
 pub mod browser;
+pub mod client;
 pub mod file_ops;
 pub mod fs_extra;
 pub mod github;
 pub mod knowledge;
 pub mod office;
+pub mod media;
 pub mod memory;
+pub mod messaging;
 pub mod os_extra;
 pub mod program;
 pub mod system;
+pub mod tasks;

@@ -57,6 +57,24 @@ impl TaskStatus {
     pub fn is_active(&self) -> bool {
         !self.is_terminal()
     }
+
+    /// 从数据库里存的字符串解析回来。
+    ///
+    /// 只认大写形式（表里存的就是 'PENDING' 这种），大小写混了按未知处理——
+    /// 与其猜"pending"是不是 Pending，不如让调用方看见解析失败。
+    pub fn from_str(value: &str) -> Option<TaskStatus> {
+        match value {
+            "PENDING" => Some(TaskStatus::Pending),
+            "ANALYZING" => Some(TaskStatus::Analyzing),
+            "PLANNING" => Some(TaskStatus::Planning),
+            "EXECUTING" => Some(TaskStatus::Executing),
+            "VERIFYING" => Some(TaskStatus::Verifying),
+            "COMPLETED" => Some(TaskStatus::Completed),
+            "FAILED" => Some(TaskStatus::Failed),
+            "CANCELLED" => Some(TaskStatus::Cancelled),
+            _ => None,
+        }
+    }
 }
 
 impl std::str::FromStr for TaskStatus {
@@ -427,6 +445,49 @@ impl<'a> TaskManager<'a> {
             Ok(Some(self.row_to_task(row)?))
         } else {
             Ok(None)
+        }
+    }
+
+    /// 跨会话列出最近的计划任务。
+    ///
+    /// 与 `list_by_session` 分开：工具层拿到的是"这个助手排过哪些计划"，
+    /// 用户问"你手上还有什么没做完"时不该被当前会话边界挡住。
+    pub fn list_recent(&self, status: Option<&str>, limit: i64) -> AppResult<Vec<Task>> {
+        let limit = limit.clamp(1, 200);
+        let map_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<Task> {
+            self.row_to_task(row).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })
+        };
+
+        match status {
+            Some(status) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, session_id, goal, status, plan_json, current_step,
+                            observations_json, errors_json, completed_steps_json,
+                            is_simple, summary, created_at, updated_at
+                     FROM agent_tasks
+                     WHERE status = ?1
+                     ORDER BY created_at DESC LIMIT ?2",
+                )?;
+                let rows = stmt.query_map(params![status, limit], map_row)?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            }
+            None => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, session_id, goal, status, plan_json, current_step,
+                            observations_json, errors_json, completed_steps_json,
+                            is_simple, summary, created_at, updated_at
+                     FROM agent_tasks
+                     ORDER BY created_at DESC LIMIT ?1",
+                )?;
+                let rows = stmt.query_map(params![limit], map_row)?;
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
+            }
         }
     }
 

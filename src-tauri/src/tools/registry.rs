@@ -35,6 +35,14 @@ pub enum ToolCategory {
     Knowledge,
     /// Office 文档读写
     Office,
+    /// 任务编排（计划、步骤、断点）
+    Agents,
+    /// 对外消息（邮件）
+    Messaging,
+    /// 图像与音视频
+    Media,
+    /// 自身状态 / 能力清单 / 自检
+    Client,
     /// 动态技能
     Skill,
     /// 通用工具（始终加载）
@@ -52,6 +60,10 @@ impl ToolCategory {
             ToolCategory::Memory => "memory",
             ToolCategory::Knowledge => "knowledge",
             ToolCategory::Office => "office",
+            ToolCategory::Agents => "agents",
+            ToolCategory::Messaging => "messaging",
+            ToolCategory::Media => "media",
+            ToolCategory::Client => "client",
             ToolCategory::Skill => "skill",
             ToolCategory::General => "general",
         }
@@ -153,6 +165,24 @@ pub trait AgentTool: Send + Sync {
 ///
 /// 所有工具的注册表，提供按名称查找工具的能力。
 /// V21: 支持工具分类，按需注入相关类别工具。
+/// 实际注册名快照。工具层拿不到 registry 实例，只能读这里。
+static REGISTERED_NAMES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+/// 启动时由 `ToolRegistry::new` 调用一次。
+///
+/// 存的是 (工具名, 类别) 对：自省清单要按类别分组，只存名字就分不出来。
+pub fn publish_registry_snapshot(entries: Vec<(String, String)>) {
+    let _ = REGISTERED_NAMES.set(entries);
+}
+
+/// 读注册快照；未初始化时返回空切片（而不是 panic）。
+pub fn registry_snapshot() -> &'static [(String, String)] {
+    REGISTERED_NAMES
+        .get()
+        .map(|entries| entries.as_slice())
+        .unwrap_or(&[])
+}
+
 pub struct ToolRegistry {
     tools: HashMap<String, Arc<dyn AgentTool>>,
     /// 工具名 → 类别映射（V21）
@@ -211,6 +241,22 @@ impl ToolRegistry {
                 report.material_with_verification_debt.join(", ")
             );
         }
+
+        // 把"实际注册了什么"固定下来：自省类工具（client_*）拿不到 registry
+        // 实例，只能读这份快照。少这一步，界面上的能力清单就只能靠猜。
+        let snapshot: Vec<(String, String)> = registry
+            .tools
+            .keys()
+            .map(|name| {
+                let category = registry
+                    .categories
+                    .get(name)
+                    .map(|c| c.as_str().to_string())
+                    .unwrap_or_else(|| "general".to_string());
+                (name.clone(), category)
+            })
+            .collect();
+        publish_registry_snapshot(snapshot);
 
         registry
     }
@@ -284,6 +330,33 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::memory::ListMemoriesTool), ToolCategory::Memory);
         self.register_with_category(Arc::new(executors::memory::UpdateMemoryTool), ToolCategory::Memory);
         self.register_with_category(Arc::new(executors::memory::MemoryStatsTool), ToolCategory::Memory);
+
+        // === Client 类（自身状态 / 能力清单 / 自检 / 使用统计）===
+        self.register_with_category(Arc::new(executors::client::ClientStateTool), ToolCategory::Client);
+        self.register_with_category(Arc::new(executors::client::CapabilityManifestTool), ToolCategory::Client);
+        self.register_with_category(Arc::new(executors::client::ClientHealthCheckTool), ToolCategory::Client);
+        self.register_with_category(Arc::new(executors::client::ClientUsageStatsTool), ToolCategory::Client);
+
+        // === Media 类（图像处理 + 音视频能力探测）===
+        self.register_with_category(Arc::new(executors::media::ImageInfoTool), ToolCategory::Media);
+        self.register_with_category(Arc::new(executors::media::ImageResizeTool), ToolCategory::Media);
+        self.register_with_category(Arc::new(executors::media::ImageCropTool), ToolCategory::Media);
+        self.register_with_category(Arc::new(executors::media::ImageConvertTool), ToolCategory::Media);
+        self.register_with_category(Arc::new(executors::media::ImageRotateTool), ToolCategory::Media);
+        self.register_with_category(Arc::new(executors::media::MediaToolsStatusTool), ToolCategory::Media);
+
+        // === Messaging 类（邮件：发送 / 草稿 / 配置体检）===
+        self.register_with_category(Arc::new(executors::messaging::SendEmailTool), ToolCategory::Messaging);
+        self.register_with_category(Arc::new(executors::messaging::ComposeMailTool), ToolCategory::Messaging);
+        self.register_with_category(Arc::new(executors::messaging::CheckMailConfigTool), ToolCategory::Messaging);
+
+        // === Agents 类（任务编排：计划 / 步骤 / 断点）===
+        self.register_with_category(Arc::new(executors::tasks::CreateTaskPlanTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::tasks::ListAgentTasksTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::tasks::GetAgentTaskTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::tasks::UpdateTaskStepTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::tasks::CancelAgentTaskTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::tasks::ResumeTaskContextTool), ToolCategory::Agents);
 
         // === Office 类（Word / Excel / PowerPoint 读取）===
         self.register_with_category(Arc::new(executors::office::ReadDocxTool), ToolCategory::Office);

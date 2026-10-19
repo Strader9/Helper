@@ -50,6 +50,10 @@ dunce = "1"           # Windows 路径规范化（去除 UNC 前缀）
 # blocking 仅供 examples/ 下的端到端验证探针使用（一次性工具，不进产品链路）。
 reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
 
+# === 邮件（SMTP 发送）===
+# 只开 SMTP 传输 + rustls：不走 native-tls，避免不同机器上 OpenSSL/SChannel 行为差异。
+# 不带 pool：这里一次只发一封信，连接池只会多留线程。
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "rustls-tls", "builder", "hostname"] }
 # === 流处理 ===
 # tokio::sync::mpsc 的 Stream 包装
 tokio-stream = { version = "0.1", features = ["sync"] }
