@@ -401,6 +401,56 @@ CREATE INDEX IF NOT EXISTS idx_trusted_tools_name ON trusted_tools(tool_name);
 UPDATE allowed_directories SET access_level = 'TRUSTED' WHERE is_default = 0;
 "#;
 
+/// 常驻调度迁移 SQL：定时作业 + 每次运行的记录。
+///
+/// 与 `proactive_rules` 的分工：
+/// - `proactive_rules` 回答"系统指标越线了要不要提醒我"，动作是通知/开机/开程序；
+/// - `scheduled_jobs` 回答"每天早上九点帮我把这件事做完"，动作是一次完整的
+///   Agent 循环（规划 → 调工具 → 给结论）。后者需要目标、次数上限、运行历史，
+///   前者只需要触发条件。
+///
+/// 时间一律存**本地时间**字符串（`%Y-%m-%d %H:%M:%S`），因为定时是给人看的：
+/// 用户说"每天九点"指的就是本地九点。UTC 会在跨时区/夏令时上骗人。
+pub const MIGRATION_SCHEDULER_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS scheduled_jobs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    schedule TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    next_run_at TEXT,
+    last_run_at TEXT,
+    run_count INTEGER NOT NULL DEFAULT 0,
+    max_runs INTEGER,
+    last_status TEXT,
+    last_summary TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_due ON scheduled_jobs(enabled, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_created ON scheduled_jobs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS scheduled_job_runs (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    session_id TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    summary TEXT,
+    error TEXT,
+    steps INTEGER NOT NULL DEFAULT 0,
+    tools_used TEXT,
+    FOREIGN KEY (job_id) REFERENCES scheduled_jobs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_runs_job ON scheduled_job_runs(job_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_job_runs_status ON scheduled_job_runs(status);
+"#;
+
 /// 本地知识库迁移 SQL
 ///
 /// 与记忆表的区别：`memory_items` 存"助手记住的事实"，会被注入 System Prompt；

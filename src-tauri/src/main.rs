@@ -49,6 +49,15 @@ fn main() {
                 });
             }
 
+            // 启动常驻调度器（定时作业）
+            {
+                let state = app.state::<AppState>();
+                let scheduler = state.scheduler.clone();
+                tauri::async_runtime::spawn(async move {
+                    scheduler.start();
+                });
+            }
+
             // V20: 初始化技能管理器（后台异步）
             {
                 tauri::async_runtime::spawn(async move {
@@ -162,6 +171,14 @@ fn main() {
             pc_guardian_lib::commands::delete_proactive_rule,
             pc_guardian_lib::commands::toggle_proactive_rule,
             pc_guardian_lib::commands::get_proactive_status,
+            // 常驻调度命令
+            pc_guardian_lib::commands::list_scheduled_jobs,
+            pc_guardian_lib::commands::create_scheduled_job,
+            pc_guardian_lib::commands::delete_scheduled_job,
+            pc_guardian_lib::commands::set_scheduled_job_enabled,
+            pc_guardian_lib::commands::run_scheduled_job_now,
+            pc_guardian_lib::commands::get_scheduled_job_runs,
+            pc_guardian_lib::commands::get_scheduler_status,
             // V20: 技能管理命令
             pc_guardian_lib::commands::get_skills,
             pc_guardian_lib::commands::get_skill_details,

@@ -286,6 +286,28 @@ fn keyword_to_category(keyword: &str) -> Option<ToolCategory> {
         return Some(ToolCategory::Agents);
     }
 
+    // 定时任务前置：说「每天早上九点帮我汇总」时，「每天」不命中任何分支，
+    // 而「任务/计划」会命中 Agents（会话内计划）或 System，模型拿到的工具
+    // 只能排一次性的步骤，做不出跨重启的常驻任务。
+    //
+    // 只认「时间词 + 动作词」组合：「每天用的软件」不是要建定时任务，
+    // 而「每天 9 点自动检查」是。
+    let recurring_time_word = ["每天", "每日", "每周", "每月", "每小时", "每隔"]
+        .iter()
+        .any(|w| k.contains(w));
+    let scheduling_intent = k.contains("定时")
+        || k.contains("cron")
+        || k.contains("常驻")
+        || k.contains("无人值守")
+        || k.contains("schedule")
+        || (recurring_time_word
+            && ["帮", "提醒", "自动", "跑", "执行", "检查", "汇总", "生成", "发"]
+                .iter()
+                .any(|v| k.contains(v)));
+    if scheduling_intent {
+        return Some(ToolCategory::Automation);
+    }
+
     // Program 类：打开/启动/运行/关闭/退出/安装/卸载/播放等
     if k.contains("打开") || k.contains("启动") || k.contains("运行") || k.contains("开启")
         || k.contains("launch") || k.contains("open") || k.contains("run") || k.contains("start")

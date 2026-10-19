@@ -83,6 +83,7 @@ impl Database {
         self.ensure_session_summary_columns()?;
         self.ensure_receipt_evidence_column()?;
         self.run_knowledge_migration()?;
+        self.run_scheduler_migration()?;
         self.ensure_memory_tier_columns()?;
         Ok(())
     }
@@ -219,6 +220,12 @@ impl Database {
         Ok(())
     }
 
+    /// 建常驻调度的两张表（已有库靠 IF NOT EXISTS 平滑升级）。
+    fn run_scheduler_migration(&self) -> AppResult<()> {
+        self.conn.execute_batch(schema::MIGRATION_SCHEDULER_SQL)?;
+        Ok(())
+    }
+
     /// 给已存在的 memory_items 表补上记忆分层两列（tier / consolidated_into）。
     ///
     /// 老库没有这两列时补上；`tier` 给默认 'episodic'，`consolidated_into` 为 NULL——
@@ -258,7 +265,7 @@ impl Database {
     ///
     /// 元组含义：(key, 默认值, 类型, 说明, 最小值, 最大值, 单位)
     fn seed_default_settings(&self) -> AppResult<()> {
-        let defaults: [(&str, &str, &str, &str, Option<f64>, Option<f64>, Option<&str>); 20] = [
+        let defaults: [(&str, &str, &str, &str, Option<f64>, Option<f64>, Option<&str>); 23] = [
             // ---- 模型连接 ----
             ("ollama.base_url", "http://localhost:11434", "string", "Ollama 服务地址", None, None, None),
             ("ollama.model", "qwen3:8b", "string", "默认模型名称", None, None, None),
@@ -273,6 +280,10 @@ impl Database {
             // ---- 主动助手 ----
             ("agent.proactive_interval_sec", "15", "number", "主动引擎检查间隔", Some(5.0), Some(300.0), Some("s")),
             ("agent.proactive_cooldown_sec", "300", "number", "同一规则触发冷却期", Some(30.0), Some(3600.0), Some("s")),
+            // ---- 常驻调度 ----
+            ("agent.scheduler_enabled", "true", "boolean", "启用常驻定时任务调度", None, None, None),
+            ("agent.scheduler_tick_sec", "30", "number", "调度器检查间隔", Some(5.0), Some(300.0), Some("s")),
+            ("agent.scheduler_job_timeout_sec", "600", "number", "单个定时任务执行超时", Some(60.0), Some(1800.0), Some("s")),
             // ---- 界面 ----
             ("ui.theme", "dark", "string", "主题（dark/light）", None, None, None),
             // ---- 安全 ----

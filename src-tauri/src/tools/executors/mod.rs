@@ -21,5 +21,6 @@ pub mod memory;
 pub mod messaging;
 pub mod os_extra;
 pub mod program;
+pub mod scheduler;
 pub mod system;
 pub mod tasks;

@@ -735,6 +735,59 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::ProviderAck,
         required_fields: &["server", "tool", "isError"],
     },
+    // ============ Automation（常驻定时任务）============
+    CapabilityContract {
+        // 建作业不改外部世界，只在本机写一条"未来要做什么"的授权记录。
+        // 它真正的副作用发生在到点之后（那时每次工具调用仍走各自契约）。
+        tool: "schedule_job",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本机 scheduled_jobs 表",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["created", "id", "next_run_at"],
+    },
+    CapabilityContract {
+        tool: "list_scheduled_jobs",
+        side_effect: SideEffect::LocalRead,
+        scope: "本机 scheduled_jobs 表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "jobs"],
+    },
+    CapabilityContract {
+        tool: "cancel_scheduled_job",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本机 scheduled_jobs 表（连带运行历史）",
+        reversible: false,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["deleted", "id"],
+    },
+    CapabilityContract {
+        tool: "set_job_enabled",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本机 scheduled_jobs.enabled",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["id", "enabled"],
+    },
+    CapabilityContract {
+        // 立刻执行 = 把 next_run_at 提前到现在。作业本身由调度器异步接手，
+        // 所以这里的终态只能是"已标记到期"，执行结果要另查 job_run_history。
+        tool: "run_job_now",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "本机调度队列",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["triggered", "id"],
+    },
+    CapabilityContract {
+        tool: "job_run_history",
+        side_effect: SideEffect::LocalRead,
+        scope: "本机 scheduled_job_runs 表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "runs"],
+    },
     // ============ Client ============
     CapabilityContract {
         tool: "client_state",

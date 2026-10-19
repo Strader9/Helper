@@ -15,6 +15,7 @@ pub mod llm;
 pub mod memory;
 pub mod monitoring;
 pub mod proactive;
+pub mod scheduler;
 pub mod security;
 pub mod shortcut;
 pub mod skills;
@@ -62,6 +63,8 @@ pub struct AppState {
     pub pending_permissions: Arc<Mutex<HashMap<String, PendingPermission>>>,
     /// V18: Proactive 主动监控引擎
     pub proactive_engine: Arc<ProactiveEngine>,
+    /// 常驻调度器：到点自动执行定时作业
+    pub scheduler: Arc<crate::scheduler::Scheduler>,
     /// V21: 关闭按钮最小化到托盘（同步原子变量，供窗口事件回调读取）
     pub minimize_to_tray: Arc<AtomicBool>,
 }
@@ -267,6 +270,9 @@ impl AppState {
         // V18: 创建 Proactive Engine（在 main.rs setup 中启动）
         let proactive_engine = Arc::new(ProactiveEngine::new(app.handle().clone()));
 
+        // 常驻调度器（同样在 main.rs setup 中启动）
+        let scheduler = Arc::new(crate::scheduler::Scheduler::new(app.handle().clone()));
+
         Ok(Self {
             db: db_arc,
             tool_registry,
@@ -278,6 +284,7 @@ impl AppState {
             global_shortcut: Arc::new(Mutex::new(global_shortcut)),
             pending_permissions,
             proactive_engine,
+            scheduler,
             minimize_to_tray,
         })
     }
@@ -2903,6 +2910,109 @@ pub mod commands {
             checks_count: engine_status.checks_count,
             triggers_count: engine_status.triggers_count,
         })
+    }
+
+    // ============================================================
+    // 常驻调度命令
+    // ============================================================
+    //
+    // 与工具层（`schedule_job` 等）共用同一套 schema 与校验函数：前端建的任务
+    // 和模型建的任务必须是同一种东西，否则两边的边界校验会各说各话。
+
+    /// 列出所有定时任务
+    #[tauri::command]
+    pub async fn list_scheduled_jobs(
+        state: State<'_, AppState>,
+    ) -> Result<Vec<crate::scheduler::ScheduledJob>, String> {
+        let db = state.db.lock().await;
+        crate::scheduler::list_jobs(db.connection())
+    }
+
+    /// 新建定时任务
+    #[tauri::command]
+    pub async fn create_scheduled_job(
+        state: State<'_, AppState>,
+        name: String,
+        kind: String,
+        schedule: String,
+        goal: String,
+        max_runs: Option<i64>,
+    ) -> Result<crate::scheduler::ScheduledJob, String> {
+        let kind_enum = crate::scheduler::JobKind::from_str(&kind)
+            .ok_or_else(|| format!("未知的调度类型：{}", kind))?;
+        let normalized = crate::scheduler::normalize_schedule(kind_enum, &schedule)?;
+
+        let db = state.db.lock().await;
+        crate::scheduler::insert_job(
+            db.connection(),
+            crate::scheduler::NewJob {
+                name: name.trim(),
+                kind: kind_enum,
+                schedule: &normalized,
+                goal: goal.trim(),
+                enabled: true,
+                max_runs: max_runs.filter(|v| *v > 0),
+            },
+        )
+    }
+
+    /// 删除定时任务（连带运行历史）
+    #[tauri::command]
+    pub async fn delete_scheduled_job(
+        state: State<'_, AppState>,
+        id: String,
+    ) -> Result<bool, String> {
+        let db = state.db.lock().await;
+        crate::scheduler::delete_job(db.connection(), &id)
+    }
+
+    /// 启用/暂停定时任务
+    #[tauri::command]
+    pub async fn set_scheduled_job_enabled(
+        state: State<'_, AppState>,
+        id: String,
+        enabled: bool,
+    ) -> Result<(), String> {
+        let db = state.db.lock().await;
+        crate::scheduler::set_enabled(db.connection(), &id, enabled)
+    }
+
+    /// 立刻执行一次（标记到期，调度器下一轮接手）
+    #[tauri::command]
+    pub async fn run_scheduled_job_now(
+        state: State<'_, AppState>,
+        id: String,
+    ) -> Result<(), String> {
+        let db = state.db.lock().await;
+        let job = crate::scheduler::get_job(db.connection(), &id)?
+            .ok_or_else(|| format!("任务不存在：{}", id))?;
+        if !job.enabled {
+            return Err("任务已暂停，请先启用".to_string());
+        }
+        crate::scheduler::mark_due_now(db.connection(), &job)
+    }
+
+    /// 查执行历史
+    #[tauri::command]
+    pub async fn get_scheduled_job_runs(
+        state: State<'_, AppState>,
+        id: Option<String>,
+        limit: Option<i64>,
+    ) -> Result<Vec<crate::scheduler::JobRun>, String> {
+        let db = state.db.lock().await;
+        crate::scheduler::recent_runs(
+            db.connection(),
+            id.as_deref(),
+            limit.unwrap_or(20),
+        )
+    }
+
+    /// 调度器运行状态
+    #[tauri::command]
+    pub async fn get_scheduler_status(
+        state: State<'_, AppState>,
+    ) -> Result<crate::scheduler::SchedulerStatus, String> {
+        Ok(state.scheduler.status().await)
     }
 
     // ============================================================

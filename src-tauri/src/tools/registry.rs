@@ -37,6 +37,8 @@ pub enum ToolCategory {
     Office,
     /// 任务编排（计划、步骤、断点）
     Agents,
+    /// 常驻定时任务（到点自动执行）
+    Automation,
     /// 对外消息（邮件）
     Messaging,
     /// 图像与音视频
@@ -67,6 +69,7 @@ impl ToolCategory {
             ToolCategory::Knowledge => "knowledge",
             ToolCategory::Office => "office",
             ToolCategory::Agents => "agents",
+            ToolCategory::Automation => "automation",
             ToolCategory::Messaging => "messaging",
             ToolCategory::Media => "media",
             ToolCategory::Client => "client",
@@ -385,6 +388,14 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::tasks::UpdateTaskStepTool), ToolCategory::Agents);
         self.register_with_category(Arc::new(executors::tasks::CancelAgentTaskTool), ToolCategory::Agents);
         self.register_with_category(Arc::new(executors::tasks::ResumeTaskContextTool), ToolCategory::Agents);
+
+        // === Automation 类（常驻定时任务：到点自动跑一次完整 Agent 循环）===
+        self.register_with_category(Arc::new(executors::scheduler::ScheduleJobTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::scheduler::ListScheduledJobsTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::scheduler::CancelScheduledJobTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::scheduler::SetJobEnabledTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::scheduler::RunJobNowTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::scheduler::JobRunHistoryTool), ToolCategory::Automation);
 
         // === Office 类（Word / Excel / PowerPoint 读写）===
         self.register_with_category(Arc::new(executors::office::ReadDocxTool), ToolCategory::Office);

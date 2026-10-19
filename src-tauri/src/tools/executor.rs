@@ -197,6 +197,44 @@ impl ToolExecutor {
                 });
             }
             PermissionResult::ConfirmationRequired => {
+                // 无人值守会话（定时任务）没人能点确认按钮。
+                //
+                // 不特判的话，这里会发一条没人看的确认事件、干等 60 秒再超时拒绝——
+                // 一次作业可能撞上好几个需要确认的工具，几分钟就这么耗掉了，
+                // 而模型还一直以为自己只是在等一个会来的答复。直接拒绝更快，
+                // 也把"为什么不行"讲清楚，模型能立刻换路。
+                if is_unattended_session(&session_id) {
+                    let reason = format!(
+                        "无人值守模式下「{}」需要用户确认，已跳过。请改用不需要确认的方式完成任务。",
+                        request.tool_name
+                    );
+                    let denied_result = ToolResult::err("UNATTENDED_REQUIRES_CONFIRMATION", &reason);
+                    let permission_str = "DENIED: UNATTENDED".to_string();
+                    self.write_audit(
+                        &session_id, &request.tool_name, &risk_str,
+                        Some(&request.arguments.to_string()),
+                        &permission_str, false,
+                        Some("UNATTENDED_REQUIRES_CONFIRMATION"), Some(&reason), 0,
+                        Some(&format!("无人值守跳过: {}", reason)),
+                    ).await;
+                    let (verification, receipt_id) = self
+                        .persist_receipt(
+                            contract, &request.tool_name, &session_id, run_id.as_deref(),
+                            &request.arguments, &denied_result, &permission_str, 0, &risk_str,
+                            None,
+                        )
+                        .await;
+                    return Ok(ToolExecutionResult {
+                        tool_name: request.tool_name,
+                        success: false,
+                        result: denied_result,
+                        permission_result: permission_str,
+                        duration_ms: 0,
+                        verification,
+                        receipt_id,
+                    });
+                }
+
                 let decision = match self.request_permission_confirmation(
                     &request.tool_name,
                     &request.arguments,
@@ -560,6 +598,15 @@ impl ToolExecutor {
 // 辅助函数
 // ============================================================
 
+/// 这个会话是不是无人值守（定时任务）跑起来的？
+///
+/// 判定只看前缀，是刻意的：调度器给作业会话起名 `autonomous:<job_id>`，
+/// 而普通对话的 session id 是 uuid。前缀是这条边界唯一的凭据，
+/// 所以单独抽出来测——一旦有人把前缀改掉，权限语义就跟着变了。
+fn is_unattended_session(session_id: &str) -> bool {
+    session_id.starts_with(crate::scheduler::AUTONOMOUS_SESSION_PREFIX)
+}
+
 /// 从工具参数中提取路径参数
 /// 从工具参数中提取路径参数，并解析环境变量（如 %USERPROFILE%）
 fn extract_path_from_args(args: &serde_json::Value, tool_name: &str) -> Option<String> {
@@ -745,7 +792,18 @@ impl ToolExecutionResult {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_path_from_args, is_explicit_program_path};
+    use super::{extract_path_from_args, is_explicit_program_path, is_unattended_session};
+
+    #[test]
+    fn unattended_session_is_recognised_by_its_prefix() {
+        // 调度器的作业会话以 autonomous: 开头；只有这种会话跳过确认。
+        assert!(is_unattended_session("autonomous:job-abc"));
+        assert!(is_unattended_session("autonomous:"));
+        // 普通会话（含名字里恰好带 autonomous 的）都走正常确认流程
+        assert!(!is_unattended_session("sess-autonomous"));
+        assert!(!is_unattended_session("autonomousjob"));
+        assert!(!is_unattended_session(""));
+    }
 
     #[test]
     fn application_name_is_not_misclassified_as_a_file_path() {
