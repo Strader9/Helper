@@ -1092,11 +1092,10 @@ fn notify_failure(app_handle: &AppHandle, job: &ScheduledJob, outcome: &RunOutco
 ///
 /// 超时是必须的：无人值守的循环没人点"取消"，一个卡住的调用会让作业永远占着
 /// in_flight，后续每轮都被跳过，看起来像是"调度器挂了"。
-async fn drain_agent_run(
+pub(crate) async fn drain_agent_run(
     mut events: tokio::sync::mpsc::Receiver<ChatEvent>,
     timeout_secs: u64,
-) -> RunOutcome {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+) -> RunOutcome {    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
     let mut text = String::new();
     let mut tools: Vec<String> = Vec::new();
     let mut error: Option<String> = None;
@@ -1152,7 +1151,7 @@ async fn drain_agent_run(
     }
 }
 
-fn truncate_chars(text: &str, limit: usize) -> String {
+pub(crate) fn truncate_chars(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
         return text.to_string();
     }

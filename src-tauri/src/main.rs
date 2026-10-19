@@ -58,6 +58,15 @@ fn main() {
                 });
             }
 
+            // 启动多端网关（设备配对 + 带鉴权的本地 HTTP 服务）
+            {
+                let state = app.state::<AppState>();
+                let gateway = state.gateway.clone();
+                tauri::async_runtime::spawn(async move {
+                    gateway.start();
+                });
+            }
+
             // V20: 初始化技能管理器（后台异步）
             {
                 tauri::async_runtime::spawn(async move {
@@ -179,6 +188,11 @@ fn main() {
             pc_guardian_lib::commands::run_scheduled_job_now,
             pc_guardian_lib::commands::get_scheduled_job_runs,
             pc_guardian_lib::commands::get_scheduler_status,
+            // 多端设备命令
+            pc_guardian_lib::commands::list_paired_devices,
+            pc_guardian_lib::commands::create_pairing_code,
+            pc_guardian_lib::commands::revoke_paired_device,
+            pc_guardian_lib::commands::get_gateway_status,
             // V20: 技能管理命令
             pc_guardian_lib::commands::get_skills,
             pc_guardian_lib::commands::get_skill_details,

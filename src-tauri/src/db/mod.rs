@@ -84,6 +84,7 @@ impl Database {
         self.ensure_receipt_evidence_column()?;
         self.run_knowledge_migration()?;
         self.run_scheduler_migration()?;
+        self.run_devices_migration()?;
         self.ensure_memory_tier_columns()?;
         Ok(())
     }
@@ -226,6 +227,12 @@ impl Database {
         Ok(())
     }
 
+    /// 建多端（设备）两张表。
+    fn run_devices_migration(&self) -> AppResult<()> {
+        self.conn.execute_batch(schema::MIGRATION_DEVICES_SQL)?;
+        Ok(())
+    }
+
     /// 给已存在的 memory_items 表补上记忆分层两列（tier / consolidated_into）。
     ///
     /// 老库没有这两列时补上；`tier` 给默认 'episodic'，`consolidated_into` 为 NULL——
@@ -265,7 +272,7 @@ impl Database {
     ///
     /// 元组含义：(key, 默认值, 类型, 说明, 最小值, 最大值, 单位)
     fn seed_default_settings(&self) -> AppResult<()> {
-        let defaults: [(&str, &str, &str, &str, Option<f64>, Option<f64>, Option<&str>); 23] = [
+        let defaults: [(&str, &str, &str, &str, Option<f64>, Option<f64>, Option<&str>); 27] = [
             // ---- 模型连接 ----
             ("ollama.base_url", "http://localhost:11434", "string", "Ollama 服务地址", None, None, None),
             ("ollama.model", "qwen3:8b", "string", "默认模型名称", None, None, None),
@@ -284,6 +291,13 @@ impl Database {
             ("agent.scheduler_enabled", "true", "boolean", "启用常驻定时任务调度", None, None, None),
             ("agent.scheduler_tick_sec", "30", "number", "调度器检查间隔", Some(5.0), Some(300.0), Some("s")),
             ("agent.scheduler_job_timeout_sec", "600", "number", "单个定时任务执行超时", Some(60.0), Some(1800.0), Some("s")),
+            // ---- 多端网关 ----
+            // 默认只绑 127.0.0.1：手机要连必须由用户主动改成 0.0.0.0，
+            // 默认就把助手暴露到局域网是危险设计。
+            ("agent.gateway_enabled", "true", "boolean", "启用多端设备网关", None, None, None),
+            ("agent.gateway_bind", "127.0.0.1", "string", "网关绑定地址（0.0.0.0 才允许局域网/手机访问）", None, None, None),
+            ("agent.gateway_port", "4769", "number", "网关端口", Some(1024.0), Some(65535.0), None),
+            ("agent.gateway_reply_timeout_sec", "180", "number", "远端消息等待回复超时", Some(30.0), Some(600.0), Some("s")),
             // ---- 界面 ----
             ("ui.theme", "dark", "string", "主题（dark/light）", None, None, None),
             // ---- 安全 ----

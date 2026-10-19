@@ -451,6 +451,33 @@ CREATE INDEX IF NOT EXISTS idx_job_runs_job ON scheduled_job_runs(job_id, starte
 CREATE INDEX IF NOT EXISTS idx_job_runs_status ON scheduled_job_runs(status);
 "#;
 
+/// 多端（设备）迁移 SQL：已配对设备 + 一次性配对码。
+///
+/// 只存令牌的 SHA-256，不存明文：数据库文件在用户目录下，能读到库的人不该
+/// 因此拿到一台已配对设备的访问权。`token_hint` 存末 4 位，仅用于让人
+/// 分辨"这条设备记录对应我手机上的哪个令牌"。
+pub const MIGRATION_DEVICES_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS devices (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    platform TEXT,
+    token_hash TEXT NOT NULL,
+    token_hint TEXT,
+    paired_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at TEXT,
+    revoked INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_devices_active ON devices(revoked);
+
+CREATE TABLE IF NOT EXISTS device_pairing_codes (
+    code TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0
+);
+"#;
+
 /// 本地知识库迁移 SQL
 ///
 /// 与记忆表的区别：`memory_items` 存"助手记住的事实"，会被注入 System Prompt；

@@ -8,6 +8,7 @@ pub mod autostart;
 pub mod browser;
 pub mod computer;
 pub mod db;
+pub mod devices;
 pub mod error;
 pub mod evidence;
 pub mod knowledge;
@@ -65,6 +66,8 @@ pub struct AppState {
     pub proactive_engine: Arc<ProactiveEngine>,
     /// 常驻调度器：到点自动执行定时作业
     pub scheduler: Arc<crate::scheduler::Scheduler>,
+    /// 多端设备网关（本地带鉴权的 HTTP 服务）
+    pub gateway: Arc<crate::devices::DeviceGateway>,
     /// V21: 关闭按钮最小化到托盘（同步原子变量，供窗口事件回调读取）
     pub minimize_to_tray: Arc<AtomicBool>,
 }
@@ -273,6 +276,9 @@ impl AppState {
         // 常驻调度器（同样在 main.rs setup 中启动）
         let scheduler = Arc::new(crate::scheduler::Scheduler::new(app.handle().clone()));
 
+        // 多端网关（同样在 main.rs setup 中启动）
+        let gateway = Arc::new(crate::devices::DeviceGateway::new(app.handle().clone()));
+
         Ok(Self {
             db: db_arc,
             tool_registry,
@@ -285,6 +291,7 @@ impl AppState {
             pending_permissions,
             proactive_engine,
             scheduler,
+            gateway,
             minimize_to_tray,
         })
     }
@@ -3013,6 +3020,60 @@ pub mod commands {
         state: State<'_, AppState>,
     ) -> Result<crate::scheduler::SchedulerStatus, String> {
         Ok(state.scheduler.status().await)
+    }
+
+    // ============================================================
+    // 多端（设备）命令
+    // ============================================================
+
+    /// 已配对设备列表（含 revoked，便于界面灰显）
+    #[tauri::command]
+    pub async fn list_paired_devices(
+        state: State<'_, AppState>,
+    ) -> Result<Vec<crate::devices::Device>, String> {
+        let db = state.db.lock().await;
+        crate::devices::list_devices(db.connection())
+    }
+
+    /// 生成一次性配对码（默认 10 分钟有效）
+    ///
+    /// 返回值里含配对码明文——它是授权凭据，只应展示给用户，
+    /// 不要写进日志、不要放进通知正文。
+    #[tauri::command]
+    pub async fn create_pairing_code(
+        state: State<'_, AppState>,
+    ) -> Result<serde_json::Value, String> {
+        let db = state.db.lock().await;
+        // 顺手清掉过期码，表不会无限增长
+        let _ = crate::devices::prune_pairing_codes(db.connection());
+        let (code, expires_at) =
+            crate::devices::issue_pairing_code(db.connection(), crate::devices::PAIRING_CODE_TTL_SECS)?;
+        let status = state.gateway.status().await;
+
+        Ok(serde_json::json!({
+            "code": code,
+            "expires_at": expires_at,
+            "gateway_running": status.running,
+            "endpoint": status.bound,
+        }))
+    }
+
+    /// 撤销设备（令牌立即失效，不删记录，便于审计）
+    #[tauri::command]
+    pub async fn revoke_paired_device(
+        state: State<'_, AppState>,
+        id: String,
+    ) -> Result<bool, String> {
+        let db = state.db.lock().await;
+        crate::devices::revoke_device(db.connection(), &id)
+    }
+
+    /// 网关运行状态
+    #[tauri::command]
+    pub async fn get_gateway_status(
+        state: State<'_, AppState>,
+    ) -> Result<crate::devices::GatewayStatus, String> {
+        Ok(state.gateway.status().await)
     }
 
     // ============================================================

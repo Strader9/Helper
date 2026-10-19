@@ -31,7 +31,9 @@ serde_json = "1"
 
 # === 异步运行时 ===
 # 最小 feature 集：多线程运行时、宏、同步原语、时间
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# net / io-util 给多端网关（本地带鉴权的 HTTP 服务）用：只开这两项，
+# 不引入 hyper/axum 这类整套框架——网关只有 4 个端点，手写 HTTP 报文更小更可控。
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 
 # === 工具库 ===
 thiserror = "1"       # 错误类型定义（零运行时开销，仅编译期宏）
