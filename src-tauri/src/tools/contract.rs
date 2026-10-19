@@ -649,6 +649,38 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["image", "video", "audio"],
     },
+    CapabilityContract {
+        tool: "video_info",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地视频",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "duration_seconds"],
+    },
+    CapabilityContract {
+        tool: "audio_info",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地音频",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "duration_seconds"],
+    },
+    CapabilityContract {
+        tool: "extract_audio",
+        side_effect: SideEffect::LocalWrite,
+        scope: "输出音频文件",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["source", "output", "size_bytes"],
+    },
+    CapabilityContract {
+        tool: "video_trim",
+        side_effect: SideEffect::LocalWrite,
+        scope: "输出视频文件",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["source", "output", "size_bytes"],
+    },
     // ============ Client ============
     CapabilityContract {
         tool: "client_state",

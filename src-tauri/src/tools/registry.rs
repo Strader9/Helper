@@ -344,6 +344,10 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::media::ImageConvertTool), ToolCategory::Media);
         self.register_with_category(Arc::new(executors::media::ImageRotateTool), ToolCategory::Media);
         self.register_with_category(Arc::new(executors::media::MediaToolsStatusTool), ToolCategory::Media);
+        self.register_with_category(Arc::new(executors::media::VideoInfoTool), ToolCategory::Media);
+        self.register_with_category(Arc::new(executors::media::AudioInfoTool), ToolCategory::Media);
+        self.register_with_category(Arc::new(executors::media::ExtractAudioTool), ToolCategory::Media);
+        self.register_with_category(Arc::new(executors::media::VideoTrimTool), ToolCategory::Media);
 
         // === Messaging 类（邮件：发送 / 草稿 / 配置体检）===
         self.register_with_category(Arc::new(executors::messaging::SendEmailTool), ToolCategory::Messaging);

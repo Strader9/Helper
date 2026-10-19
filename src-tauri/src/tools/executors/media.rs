@@ -772,6 +772,425 @@ fn probe_binary(name: &str) -> Option<String> {
     }
 }
 
+/// 读一条 settings（与 messaging 域同款）；读不到返回 None。
+fn setting(key: &str) -> Option<String> {
+    let conn = crate::memory::open_connection()?;
+    let value: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .ok();
+    value.filter(|v| !v.trim().is_empty())
+}
+
+/// 解析 ffmpeg 可执行文件路径，顺序：settings 显式配置 → PATH → 默认位置。
+fn resolve_binary(name: &str, setting_key: &str, default_rel: &str) -> Option<String> {
+    if let Some(p) = setting(setting_key) {
+        let path = std::path::Path::new(&p);
+        if path.is_file() {
+            return Some(p);
+        }
+    }
+    if let Some(p) = probe_binary(name) {
+        return Some(p);
+    }
+    let default = std::path::Path::new("D:\\ffmpeg\\bin").join(default_rel);
+    if default.is_file() {
+        return Some(default.to_string_lossy().to_string());
+    }
+    None
+}
+
+fn resolve_ffmpeg() -> Option<String> {
+    resolve_binary("ffmpeg", "media.ffmpeg_path", "ffmpeg.exe")
+}
+
+fn resolve_ffprobe() -> Option<String> {
+    resolve_binary("ffprobe", "media.ffprobe_path", "ffprobe.exe")
+}
+
+/// 缺 ffmpeg/ffprobe 时的统一回话。
+fn no_ffmpeg_result(what: &str) -> ToolResult {
+    ToolResult::err(
+        "FFMPEG_NOT_FOUND",
+        &format!(
+            "本机没有可用的 {what}。请在设置里配置 media.ffmpeg_path / media.ffprobe_path，或把 ffmpeg 放进 PATH。助手不会静默下载二进制。",
+            what = what
+        ),
+    )
+}
+
+/// 执行 ffprobe 并返回解析好的 JSON。`args` 是传给 ffprobe 的参数（不含程序名）。
+fn run_ffprobe_json(args: &[&str]) -> Result<Value, String> {
+    let bin = resolve_ffprobe().ok_or_else(|| "ffprobe 不可用".to_string())?;
+    let output = std::process::Command::new(&bin)
+        .args(args)
+        .output()
+        .map_err(|e| format!("调用 ffprobe 失败：{}", e))?;
+    if !output.status.success() {
+        return Err(format!(
+            "ffprobe 失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(stdout.trim()).map_err(|e| format!("解析 ffprobe 输出失败：{}", e))
+}
+
+/// 执行 ffmpeg，返回 (是否成功, stderr)。
+fn run_ffmpeg(args: &[&str]) -> Result<(bool, String), String> {
+    let bin = resolve_ffmpeg().ok_or_else(|| "ffmpeg 不可用".to_string())?;
+    let output = std::process::Command::new(&bin)
+        .args(args)
+        .output()
+        .map_err(|e| format!("调用 ffmpeg 失败：{}", e))?;
+    Ok((
+        output.status.success(),
+        String::from_utf8_lossy(&output.stderr).to_string(),
+    ))
+}
+
+// ============================================================
+// video_info
+// ============================================================
+
+pub struct VideoInfoTool;
+
+#[async_trait]
+impl AgentTool for VideoInfoTool {
+    fn name(&self) -> &'static str {
+        "video_info"
+    }
+
+    fn description(&self) -> &'static str {
+        "读取视频文件的元信息：时长、宽高、帧率、视频/音频编码、码率、大小。回答「这个视频多长」「什么分辨率」时用。依赖 ffmpeg。"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "视频文件绝对路径" }
+            },
+            "required": ["path"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    async fn execute(&self, args: Value) -> AppResult<ToolResult> {
+        let path = args["path"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::InvalidArgument("path is required".to_string()))?;
+        if !std::path::Path::new(path).is_file() {
+            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在：{}", path)));
+        }
+
+        let probe = match run_ffprobe_json(&[
+            "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path,
+        ]) {
+            Ok(j) => j,
+            Err(e) => {
+                if e.contains("ffprobe 不可用") {
+                    return Ok(no_ffmpeg_result("ffprobe"));
+                }
+                return Ok(ToolResult::err("PROBE_FAILED", &e));
+            }
+        };
+
+        let video = probe["streams"]
+            .as_array()
+            .and_then(|s| s.iter().find(|st| st["codec_type"] == "video"));
+        let audio = probe["streams"]
+            .as_array()
+            .and_then(|s| s.iter().find(|st| st["codec_type"] == "audio"));
+
+        let duration = probe["format"]["duration"]
+            .as_str()
+            .and_then(|d| d.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        Ok(ToolResult::ok(json!({
+            "path": path,
+            "duration_seconds": duration,
+            "video": video.map(|v| json!({
+                "codec": v["codec_name"],
+                "width": v["width"],
+                "height": v["height"],
+                "frame_rate": v["r_frame_rate"],
+                "pixel_format": v["pix_fmt"],
+            })).unwrap_or(json!(null)),
+            "audio": audio.map(|a| json!({
+                "codec": a["codec_name"],
+                "sample_rate": a["sample_rate"],
+                "channels": a["channels"],
+            })).unwrap_or(json!(null)),
+            "size_bytes": std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+        })))
+    }
+}
+
+// ============================================================
+// audio_info
+// ============================================================
+
+pub struct AudioInfoTool;
+
+#[async_trait]
+impl AgentTool for AudioInfoTool {
+    fn name(&self) -> &'static str {
+        "audio_info"
+    }
+
+    fn description(&self) -> &'static str {
+        "读取音频文件的元信息：时长、编码、采样率、声道、码率、大小。回答「这个音频多长」「什么格式」时用。依赖 ffmpeg。"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "音频文件绝对路径" }
+            },
+            "required": ["path"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    async fn execute(&self, args: Value) -> AppResult<ToolResult> {
+        let path = args["path"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::InvalidArgument("path is required".to_string()))?;
+        if !std::path::Path::new(path).is_file() {
+            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在：{}", path)));
+        }
+
+        let probe = match run_ffprobe_json(&[
+            "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path,
+        ]) {
+            Ok(j) => j,
+            Err(e) => {
+                if e.contains("ffprobe 不可用") {
+                    return Ok(no_ffmpeg_result("ffprobe"));
+                }
+                return Ok(ToolResult::err("PROBE_FAILED", &e));
+            }
+        };
+
+        let audio = probe["streams"]
+            .as_array()
+            .and_then(|s| s.iter().find(|st| st["codec_type"] == "audio"));
+        let duration = probe["format"]["duration"]
+            .as_str()
+            .and_then(|d| d.parse::<f64>().ok())
+            .unwrap_or(0.0);
+
+        Ok(ToolResult::ok(json!({
+            "path": path,
+            "duration_seconds": duration,
+            "audio": audio.map(|a| json!({
+                "codec": a["codec_name"],
+                "sample_rate": a["sample_rate"],
+                "channels": a["channels"],
+                "bit_rate": a["bit_rate"],
+            })).unwrap_or(json!(null)),
+            "size_bytes": std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+        })))
+    }
+}
+
+// ============================================================
+// extract_audio
+// ============================================================
+
+pub struct ExtractAudioTool;
+
+#[async_trait]
+impl AgentTool for ExtractAudioTool {
+    fn name(&self) -> &'static str {
+        "extract_audio"
+    }
+
+    fn description(&self) -> &'static str {
+        "从视频里提取音轨，另存为音频文件。输出格式由 output 扩展名决定（mp3 / m4a / wav / aac）。不覆盖已有文件，除非 overwrite=true。依赖 ffmpeg。"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "源视频路径" },
+                "output": { "type": "string", "description": "输出音频路径（扩展名决定格式，必填）" },
+                "overwrite": { "type": "boolean", "description": "允许覆盖（默认 false）" }
+            },
+            "required": ["path", "output"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Medium
+    }
+
+    async fn execute(&self, args: Value) -> AppResult<ToolResult> {
+        let path = args["path"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::InvalidArgument("path is required".to_string()))?;
+        let output = args["output"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::InvalidArgument("output is required".to_string()))?;
+
+        if !std::path::Path::new(path).is_file() {
+            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在：{}", path)));
+        }
+        if let Some(rejection) = output_guard(output, args["overwrite"].as_bool().unwrap_or(false)) {
+            return Ok(rejection);
+        }
+
+        if resolve_ffmpeg().is_none() {
+            return Ok(no_ffmpeg_result("ffmpeg"));
+        }
+
+        // -vn 去掉视频轨，-c:a 指定编码（按扩展名），-y 避免交互式询问
+        let ext = std::path::Path::new(output)
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_else(|| "mp3".to_string());
+        let codec = match ext.as_str() {
+            "mp3" => "libmp3lame",
+            "m4a" | "aac" => "aac",
+            "wav" => "pcm_s16le",
+            "ogg" | "opus" => "libopus",
+            other => {
+                return Ok(ToolResult::err(
+                    "UNSUPPORTED_AUDIO_FORMAT",
+                    &format!("不支持的音频输出格式：{}（支持 mp3/m4a/aac/wav/ogg）", other),
+                ))
+            }
+        };
+
+        let (ok, stderr) = run_ffmpeg(&[
+            "-y", "-i", path, "-vn", "-c:a", codec, output,
+        ])
+        .map_err(AppError::ToolExecution)?;
+
+        // 判据：重开输出文件，确认落盘且非空，而不是只看进程退出码
+        let size = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+        if !ok || size == 0 {
+            return Ok(ToolResult::err(
+                "EXTRACT_FAILED",
+                &format!("提取音频失败：{}", stderr.trim()),
+            ));
+        }
+
+        Ok(ToolResult::ok(json!({
+            "source": path,
+            "output": output,
+            "size_bytes": size,
+            "codec": codec,
+        })))
+    }
+}
+
+// ============================================================
+// video_trim
+// ============================================================
+
+pub struct VideoTrimTool;
+
+#[async_trait]
+impl AgentTool for VideoTrimTool {
+    fn name(&self) -> &'static str {
+        "video_trim"
+    }
+
+    fn description(&self) -> &'static str {
+        "裁剪视频的一段，另存为新文件。start/end 支持「秒数」或「HH:MM:SS」格式。用流复制（不重新编码），速度快、无画质损失，但关键帧对齐可能导致起点略有偏移。依赖 ffmpeg。"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "源视频路径" },
+                "start": { "type": "string", "description": "起点（秒数或 HH:MM:SS）" },
+                "end": { "type": "string", "description": "终点（秒数或 HH:MM:SS，可选，默认到结尾）" },
+                "output": { "type": "string", "description": "输出路径（必填）" },
+                "overwrite": { "type": "boolean", "description": "允许覆盖（默认 false）" }
+            },
+            "required": ["path", "start", "output"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Medium
+    }
+
+    async fn execute(&self, args: Value) -> AppResult<ToolResult> {
+        let path = args["path"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::InvalidArgument("path is required".to_string()))?;
+        let start = args["start"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::InvalidArgument("start is required".to_string()))?;
+        let output = args["output"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::InvalidArgument("output is required".to_string()))?;
+
+        if !std::path::Path::new(path).is_file() {
+            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在：{}", path)));
+        }
+        if let Some(rejection) = output_guard(output, args["overwrite"].as_bool().unwrap_or(false)) {
+            return Ok(rejection);
+        }
+        if resolve_ffmpeg().is_none() {
+            return Ok(no_ffmpeg_result("ffmpeg"));
+        }
+
+        let mut args_vec = vec!["-y", "-i", path, "-ss", start, "-c", "copy"];
+        if let Some(end) = args["end"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            args_vec.push("-to");
+            args_vec.push(end);
+        }
+        args_vec.push(output);
+
+        let (ok, stderr) = run_ffmpeg(&args_vec).map_err(AppError::ToolExecution)?;
+        let size = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+        if !ok || size == 0 {
+            return Ok(ToolResult::err(
+                "TRIM_FAILED",
+                &format!("裁剪失败：{}", stderr.trim()),
+            ));
+        }
+
+        Ok(ToolResult::ok(json!({
+            "source": path,
+            "start": start,
+            "end": args["end"].as_str().unwrap_or(""),
+            "output": output,
+            "size_bytes": size,
+        })))
+    }
+}
+
 // ============================================================
 // 测试
 // ============================================================
