@@ -1214,6 +1214,65 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["count", "evidence"],
     },
+    // ============ Skill（技能管理 + 市场）============
+    CapabilityContract {
+        tool: "skill_list",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地技能目录",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "skills"],
+    },
+    CapabilityContract {
+        tool: "skill_get",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地技能目录",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["skill"],
+    },
+    CapabilityContract {
+        tool: "skill_toggle",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地技能启用状态",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "id", "enabled"],
+    },
+    CapabilityContract {
+        // 安装引入新代码；skill 回读证明它已落盘并被加载
+        tool: "skill_install",
+        side_effect: SideEffect::Installation,
+        scope: "本地技能目录",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "status", "skill"],
+    },
+    CapabilityContract {
+        tool: "skill_uninstall",
+        side_effect: SideEffect::Installation,
+        scope: "本地技能目录",
+        reversible: false,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "status", "id"],
+    },
+    CapabilityContract {
+        tool: "skill_marketplace_search",
+        side_effect: SideEffect::LocalRead,
+        scope: "内置官方技能目录",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["query", "count", "skills"],
+    },
+    CapabilityContract {
+        // 只接受官方目录里存在的 skillId，不接受任意目录
+        tool: "skill_marketplace_install",
+        side_effect: SideEffect::Installation,
+        scope: "本地技能目录",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "status", "skill_id", "skill"],
+    },
     // ============ Office 增量修改 ============
     CapabilityContract {
         // paragraphs_after 与 text_preview 都是写回后重新打开文件得出的：

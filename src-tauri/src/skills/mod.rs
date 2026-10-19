@@ -17,6 +17,8 @@ use std::sync::{Arc, OnceLock};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+pub mod marketplace;
+
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -217,6 +219,25 @@ impl SkillLoader {
                 .map_err(|e| AppError::Internal(format!("删除技能目录失败: {}", e)))?;
         }
         Ok(())
+    }
+
+    /// 从打包定义 + 入口脚本内容安装技能（技能市场使用）。
+    ///
+    /// 把 `skill.json` 与入口脚本物化到本地技能目录，再回读校验。
+    pub fn install_bundled(def: SkillDefinition, script: &str) -> AppResult<SkillDefinition> {
+        let root = Self::ensure_dir()?;
+        let target = root.join(&def.id);
+        if target.exists() {
+            return Err(AppError::InvalidArgument(format!("技能 {} 已存在", def.id)));
+        }
+        std::fs::create_dir_all(&target)?;
+        let manifest = serde_json::to_string_pretty(&def)?;
+        std::fs::write(target.join("skill.json"), manifest)?;
+        std::fs::write(target.join(&def.entry_point), script)?;
+
+        let mut installed = Self::load_from_dir(&target)?;
+        installed.installed_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        Ok(installed)
     }
 }
 
@@ -837,6 +858,14 @@ impl SkillManager {
     /// 安装技能
     pub async fn install_skill(&self, source_dir: &str) -> AppResult<SkillDefinition> {
         let skill = SkillLoader::install_from_dir(Path::new(source_dir))?;
+        let mut skills = self.skills.lock().await;
+        skills.push(skill.clone());
+        Ok(skill)
+    }
+
+    /// 安装打包技能（技能市场使用）
+    pub async fn install_bundled_skill(&self, def: SkillDefinition, script: &str) -> AppResult<SkillDefinition> {
+        let skill = SkillLoader::install_bundled(def, script)?;
         let mut skills = self.skills.lock().await;
         skills.push(skill.clone());
         Ok(skill)

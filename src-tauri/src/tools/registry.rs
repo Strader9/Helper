@@ -430,6 +430,15 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverEvidencePromoteTool), ToolCategory::Agents);
         self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverEvidenceListTool), ToolCategory::Agents);
 
+        // === Skill 类（技能管理 + 技能市场）===
+        self.register_with_category(Arc::new(executors::skill::SkillListTool), ToolCategory::Skill);
+        self.register_with_category(Arc::new(executors::skill::SkillGetTool), ToolCategory::Skill);
+        self.register_with_category(Arc::new(executors::skill::SkillToggleTool), ToolCategory::Skill);
+        self.register_with_category(Arc::new(executors::skill::SkillInstallTool), ToolCategory::Skill);
+        self.register_with_category(Arc::new(executors::skill::SkillUninstallTool), ToolCategory::Skill);
+        self.register_with_category(Arc::new(executors::skill::SkillMarketplaceSearchTool), ToolCategory::Skill);
+        self.register_with_category(Arc::new(executors::skill::SkillMarketplaceInstallTool), ToolCategory::Skill);
+
         // === Automation 类（常驻定时任务：到点自动跑一次完整 Agent 循环）===
         self.register_with_category(Arc::new(executors::scheduler::ScheduleJobTool), ToolCategory::Automation);
         self.register_with_category(Arc::new(executors::scheduler::ListScheduledJobsTool), ToolCategory::Automation);

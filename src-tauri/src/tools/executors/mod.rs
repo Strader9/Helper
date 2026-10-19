@@ -25,6 +25,7 @@ pub mod os_extra;
 pub mod pdf;
 pub mod program;
 pub mod scheduler;
+pub mod skill;
 pub mod system;
 pub mod web;
 pub mod workflow;
