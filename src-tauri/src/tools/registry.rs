@@ -288,6 +288,7 @@ impl ToolRegistry {
         use crate::tools::executors;
         self.register_with_category(Arc::new(executors::file_ops::OpenFileTool), ToolCategory::File);
         self.register_with_category(Arc::new(executors::file_ops::ReadFileTool), ToolCategory::File);
+        self.register_with_category(Arc::new(executors::file_ops::ReadFilesBatchTool), ToolCategory::File);
         self.register_with_category(Arc::new(executors::file_ops::WriteFileTool), ToolCategory::File);
         self.register_with_category(Arc::new(executors::file_ops::ListDirectoryTool), ToolCategory::File);
 

@@ -188,6 +188,14 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         required_fields: &["path", "content"],
     },
     CapabilityContract {
+        tool: "read_files_batch",
+        side_effect: SideEffect::LocalRead,
+        scope: "可信目录",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["file_count", "files"],
+    },
+    CapabilityContract {
         tool: "write_file",
         side_effect: SideEffect::LocalWrite,
         scope: "可信目录",

@@ -146,6 +146,91 @@ impl AgentTool for ReadFileTool {
 }
 
 // ============================================================
+// read_files_batch
+// ============================================================
+
+/// 批量读取多个文本文件
+pub struct ReadFilesBatchTool;
+
+#[async_trait]
+impl AgentTool for ReadFilesBatchTool {
+    fn name(&self) -> &'static str {
+        "read_files_batch"
+    }
+
+    fn description(&self) -> &'static str {
+        "一次读取多个文本文件，返回每个文件的内容（单文件超 10240 字符截断）。适合同时对照多份日志、配置、文档。"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "文件路径列表"
+                },
+                "max_files": { "type": "integer", "description": "最多读几个，默认 20" }
+            },
+            "required": ["paths"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
+        let max_files = args["max_files"].as_u64().unwrap_or(20).min(50) as usize;
+        let paths: Vec<String> = args["paths"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        if paths.is_empty() {
+            return Ok(ToolResult::err("NO_PATHS", "paths 不能为空"));
+        }
+
+        let mut files: Vec<serde_json::Value> = Vec::new();
+        let mut errors: Vec<serde_json::Value> = Vec::new();
+        for path in paths.iter().take(max_files) {
+            if !Path::new(path).exists() {
+                errors.push(serde_json::json!({ "path": path, "error": "文件不存在" }));
+                continue;
+            }
+            match fs::read_to_string(path) {
+                Ok(content) => {
+                    let total_chars = content.chars().count();
+                    let truncated = total_chars > 10240;
+                    let shown = if truncated {
+                        content.chars().take(10240).collect::<String>()
+                    } else {
+                        content
+                    };
+                    files.push(serde_json::json!({
+                        "path": path,
+                        "chars": total_chars,
+                        "truncated": truncated,
+                        "content": shown,
+                    }));
+                }
+                Err(e) => {
+                    errors.push(serde_json::json!({ "path": path, "error": e.to_string() }));
+                }
+            }
+        }
+
+        Ok(ToolResult::ok(serde_json::json!({
+            "file_count": files.len(),
+            "error_count": errors.len(),
+            "files": files,
+            "errors": errors,
+        })))
+    }
+}
+
+// ============================================================
 // 写入文件工具
 // ============================================================
 
