@@ -687,3 +687,37 @@ CREATE TABLE IF NOT EXISTS industry_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_industry_snapshots_line ON industry_snapshots(product_line, snapshot_kind);
 "#;
+
+/// 媒体生成台账（image / video 共用）。
+///
+/// 为什么要落库：图像是一次同步请求，结果落了盘就行；视频是**异步任务**，
+/// 提交与完成之间可能隔几分钟，甚至跨进程重启。没有台账就没法回答
+/// "刚才那个任务跑到哪了"——把 task_id 只放在一次工具返回值里，
+/// 等于要求模型自己记住，那是不可靠的。
+///
+/// `status` 存远端状态的原样字符串（queued / in_progress / completed /
+/// failed / cancelled）+ 本地状态（submitted / downloaded）。产物路径只有在
+/// 下载并校验通过后才写，绝不提前填一个"预计的路径"。
+pub const MIGRATION_MEDIA_GENERATION_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS media_generations (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'image',
+    provider TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    task_id TEXT,
+    prompt TEXT NOT NULL DEFAULT '',
+    size TEXT,
+    duration_sec INTEGER,
+    status TEXT NOT NULL DEFAULT 'submitted',
+    remote_status TEXT,
+    artifact_path TEXT,
+    artifact_bytes INTEGER,
+    error TEXT,
+    request_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_media_generations_kind ON media_generations(kind, created_at);
+CREATE INDEX IF NOT EXISTS idx_media_generations_task ON media_generations(task_id);
+"#;

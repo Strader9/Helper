@@ -14,6 +14,7 @@ pub mod evidence;
 pub mod extensions;
 pub mod knowledge;
 pub mod llm;
+pub mod mail_mime;
 pub mod memory;
 pub mod monitoring;
 pub mod proactive;

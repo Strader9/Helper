@@ -619,6 +619,31 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         required_fields: &["sent", "to", "smtp_code"],
     },
     CapabilityContract {
+        tool: "recent_emails",
+        side_effect: SideEffect::NetworkRead,
+        scope: "外部邮箱（IMAP，只读头部）",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "emails"],
+    },
+    CapabilityContract {
+        tool: "read_email",
+        side_effect: SideEffect::NetworkRead,
+        scope: "外部邮箱（IMAP，只读单封）",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["uid", "subject", "body"],
+    },
+    CapabilityContract {
+        // 附件字节落盘后要重新核对大小，saved 里带的是磁盘实际字节数
+        tool: "read_email_attachments",
+        side_effect: SideEffect::LocalWrite,
+        scope: "外部邮箱附件 → 本地下载目录",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["count", "saved"],
+    },
+    CapabilityContract {
         tool: "compose_mail",
         side_effect: SideEffect::LocalStateChange,
         scope: "默认邮件客户端",
@@ -740,6 +765,45 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         reversible: true,
         verification: VerificationStrategy::StateDiff,
         required_fields: &["source", "output", "size_bytes"],
+    },
+    CapabilityContract {
+        // required_fields 里是落盘后重新读回的真实尺寸，不是请求参数：
+        // 服务商返回 200 但写下的不是一张能打开的图，就不算完成。
+        tool: "image_generate",
+        side_effect: SideEffect::LocalWrite,
+        scope: "外部图像服务商 + 本地图片目录",
+        // 已经花掉的生成费用收不回来
+        reversible: false,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["image_count", "images"],
+    },
+    CapabilityContract {
+        // 视频是异步的：wait=false 时这一步的终态是"服务商受理了"，
+        // 拿 task_id 作为回执。产物是否存在要等 video_generation_status 才判。
+        tool: "video_generate",
+        side_effect: SideEffect::LocalWrite,
+        scope: "外部视频服务商 + 本地视频目录",
+        reversible: false,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["task_id", "status"],
+    },
+    CapabilityContract {
+        tool: "video_generation_status",
+        side_effect: SideEffect::LocalWrite,
+        scope: "媒体生成台账 + 本地视频目录",
+        reversible: false,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["task_id", "status"],
+    },
+    CapabilityContract {
+        // probe=true 会真的去连一次服务商（只读），因此按 NetworkRead 声明，
+        // 而不是 None；只读不算实质副作用，不需要弹窗。
+        tool: "media_provider_status",
+        side_effect: SideEffect::NetworkRead,
+        scope: "本地设置（凭据只回显掩码）+ 可选的服务商只读探活",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
     },
     // ============ Cad ============
     CapabilityContract {

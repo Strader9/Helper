@@ -465,7 +465,7 @@ impl AgentTool for CheckMailConfigTool {
     }
 
     fn description(&self) -> &'static str {
-        "检查邮件配置是否齐全、SMTP 端口能否连通。回答「能不能发邮件」「为什么发不出去」时先调这个。只做连通性探测，不发送任何邮件、不回显密码。"
+        "检查邮件配置是否齐全、SMTP/IMAP 端口能否连通。回答「能不能发邮件」「为什么发不出去」「能不能看收件箱」时先调这个。只做连通性探测，不发送任何邮件、不回显密码。"
     }
 
     fn parameters(&self) -> Value {
@@ -477,12 +477,34 @@ impl AgentTool for CheckMailConfigTool {
     }
 
     async fn execute(&self, _args: Value) -> AppResult<ToolResult> {
+        // 收件（IMAP）与发件（SMTP）是两条独立链路，任一条缺失都不该让
+        // 整个体检提前返回——用户经常只配了发信，然后来问"为什么看不到邮件"。
+        let imap = crate::tools::executors::media_provider::load_mail_read_config();
+        let imap_report = match imap {
+            Ok(cfg) => {
+                let reachable = tcp_reachable(&cfg.host, cfg.port, 4);
+                json!({
+                    "configured": true,
+                    "host": cfg.host,
+                    "port": cfg.port,
+                    "security": cfg.security,
+                    "user": cfg.user,
+                    "tcp_reachable": reachable,
+                })
+            }
+            Err(missing) => json!({
+                "configured": false,
+                "missing": missing,
+            }),
+        };
+
         let config = match load_config() {
             Ok(config) => config,
             Err(missing) => {
                 return Ok(ToolResult::ok(json!({
                     "configured": false,
                     "missing": missing,
+                    "imap": imap_report,
                     "hint": "在设置里补齐 mail.* 配置项后才能发信",
                 })))
             }
@@ -490,18 +512,7 @@ impl AgentTool for CheckMailConfigTool {
 
         // 只测 TCP 是否可达：这一步能区分"地址写错了/被墙了"和
         // "账号密码不对"，两者排查方向完全不同。
-        let address = format!("{}:{}", config.host, config.port);
-        let reachable = {
-            use std::net::{TcpStream, ToSocketAddrs};
-            use std::time::Duration;
-            match address.to_socket_addrs() {
-                Ok(mut addrs) => match addrs.next() {
-                    Some(addr) => TcpStream::connect_timeout(&addr, Duration::from_secs(4)).is_ok(),
-                    None => false,
-                },
-                Err(_) => false,
-            }
-        };
+        let reachable = tcp_reachable(&config.host, config.port, 4);
 
         Ok(ToolResult::ok(json!({
             "configured": true,
@@ -512,12 +523,29 @@ impl AgentTool for CheckMailConfigTool {
             "from": config.from,
             "has_from_name": config.from_name.is_some(),
             "tcp_reachable": reachable,
+            "imap": imap_report,
             "note": if reachable {
                 "端口可达；账号密码是否正确只有发一次才知道"
             } else {
                 "端口连不上：检查地址/端口/网络，或换 security 类型"
             },
         })))
+    }
+}
+
+/// TCP 可达性探测（只建连不发数据，不触发认证）。
+fn tcp_reachable(host: &str, port: u16, timeout_secs: u64) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+    let address = format!("{host}:{port}");
+    match address.to_socket_addrs() {
+        Ok(mut addrs) => match addrs.next() {
+            Some(addr) => {
+                TcpStream::connect_timeout(&addr, Duration::from_secs(timeout_secs)).is_ok()
+            }
+            None => false,
+        },
+        Err(_) => false,
     }
 }
 

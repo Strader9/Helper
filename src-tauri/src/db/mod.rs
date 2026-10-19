@@ -90,6 +90,7 @@ impl Database {
         self.run_extension_migration()?;
         self.run_calendar_migration()?;
         self.run_industry_migration()?;
+        self.run_media_generation_migration()?;
         self.ensure_memory_tier_columns()?;
         Ok(())
     }
@@ -268,6 +269,12 @@ impl Database {
         Ok(())
     }
 
+    /// 建媒体生成台账表（image / video 生成任务）。
+    fn run_media_generation_migration(&self) -> AppResult<()> {
+        self.conn.execute_batch(schema::MIGRATION_MEDIA_GENERATION_SQL)?;
+        Ok(())
+    }
+
     /// 给已存在的 memory_items 表补上记忆分层两列（tier / consolidated_into）。
     ///
     /// 老库没有这两列时补上；`tier` 给默认 'episodic'，`consolidated_into` 为 NULL——
@@ -307,7 +314,7 @@ impl Database {
     ///
     /// 元组含义：(key, 默认值, 类型, 说明, 最小值, 最大值, 单位)
     fn seed_default_settings(&self) -> AppResult<()> {
-        let defaults: [(&str, &str, &str, &str, Option<f64>, Option<f64>, Option<&str>); 28] = [
+        let defaults: [(&str, &str, &str, &str, Option<f64>, Option<f64>, Option<&str>); 51] = [
             // ---- 模型连接 ----
             ("ollama.base_url", "http://localhost:11434", "string", "Ollama 服务地址", None, None, None),
             ("ollama.model", "qwen3:8b", "string", "默认模型名称", None, None, None),
@@ -351,6 +358,43 @@ impl Database {
             ("publish.github_repo", "", "string", "GitHub Pages 仓库名", None, None, None),
             ("publish.netlify_token", "", "string", "Netlify 备用发布通道令牌", None, None, None),
             ("publish.proxy", "", "string", "发布用代理地址（留空自动）", None, None, None),
+            // ---- 图像生成 ----
+            // 走 OpenAI 兼容的 POST {base_url}/images/generations，所以 base_url
+            // 换成任意兼容服务（官方 / 中转 / 硅基流动 / 智谱 / 火山方舟兼容端点）
+            // 都成立。api_key 留空即"未配置"，工具会明确报缺哪个键，不会静默降级。
+            ("image.base_url", "https://api.openai.com/v1", "string", "图像生成服务地址（OpenAI 兼容，含 /v1）", None, None, None),
+            ("image.api_key", "", "string", "图像生成服务 API Key（留空则未启用）", None, None, None),
+            ("image.model", "gpt-image-1", "string", "图像生成模型名", None, None, None),
+            ("image.size", "1024x1024", "string", "默认出图尺寸（如 1024x1024 / 1792x1024）", None, None, None),
+            ("image.timeout_ms", "180000", "number", "出图请求超时（毫秒）", Some(10000.0), Some(600000.0), Some("ms")),
+            // ---- 视频生成 ----
+            // 同样是 OpenAI 兼容的异步任务协议：POST {base_url}/videos 提交、
+            // GET {base_url}/videos/{id} 查状态、GET .../content 取文件。
+            ("video.base_url", "https://api.openai.com/v1", "string", "视频生成服务地址（OpenAI 兼容，含 /v1）", None, None, None),
+            ("video.api_key", "", "string", "视频生成服务 API Key（留空则未启用）", None, None, None),
+            ("video.model", "sora-2", "string", "视频生成模型名", None, None, None),
+            ("video.size", "1280x720", "string", "默认视频分辨率", None, None, None),
+            ("video.duration_sec", "4", "number", "默认视频时长（秒）", Some(1.0), Some(60.0), Some("s")),
+            ("video.poll_timeout_ms", "600000", "number", "等待视频完成的最长时间（毫秒）", Some(30000.0), Some(3600000.0), Some("ms")),
+            // ---- 邮件发信（SMTP）----
+            // 这几项此前只在 messaging.rs 里被读取，却从未写进默认配置表，
+            // 结果是设置页根本看不到它们——用户没有任何地方能填发信账号。
+            // 补齐后"发信 / 收信"两条链路的凭据都落在同一张表里，可统一切换。
+            ("mail.smtp_host", "", "string", "发件服务器地址（如 smtp.qq.com）", None, None, None),
+            ("mail.smtp_port", "587", "number", "发件服务器端口", Some(1.0), Some(65535.0), None),
+            ("mail.smtp_security", "starttls", "string", "发件加密方式（tls / starttls / none）", None, None, None),
+            ("mail.smtp_user", "", "string", "发件账号（通常是完整邮箱地址）", None, None, None),
+            ("mail.smtp_password", "", "string", "发件密码/授权码", None, None, None),
+            ("mail.from", "", "string", "发件人地址（多数服务商要求与账号一致）", None, None, None),
+            ("mail.from_name", "", "string", "发件人显示名（可留空）", None, None, None),
+            // ---- 邮件收件（IMAP）----
+            // 发信走 mail.smtp_*，收信必须另配 IMAP。user / password 留空时
+            // 自动复用 SMTP 那组（同一邮箱的授权码通常通用），减少一处重复填写。
+            ("mail.imap_host", "", "string", "收件服务器地址（如 imap.qq.com）", None, None, None),
+            ("mail.imap_port", "993", "number", "收件服务器端口", Some(1.0), Some(65535.0), None),
+            ("mail.imap_security", "tls", "string", "收件加密方式（tls / starttls / none）", None, None, None),
+            ("mail.imap_user", "", "string", "收件账号（留空复用 mail.smtp_user）", None, None, None),
+            ("mail.imap_password", "", "string", "收件密码/授权码（留空复用 mail.smtp_password）", None, None, None),
         ];
 
         let mut stmt = self.conn.prepare(

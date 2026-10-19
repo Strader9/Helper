@@ -418,6 +418,12 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::media::ExtractAudioTool), ToolCategory::Media);
         self.register_with_category(Arc::new(executors::media::VideoTrimTool), ToolCategory::Media);
 
+        // === Media 类（AI 生成：真调用外部服务商，凭据来自设置）===
+        self.register_with_category(Arc::new(executors::media_provider::MediaProviderStatusTool), ToolCategory::Media);
+        self.register_with_category(Arc::new(executors::image_gen::ImageGenerateTool), ToolCategory::Media);
+        self.register_with_category(Arc::new(executors::video_gen::VideoGenerateTool), ToolCategory::Media);
+        self.register_with_category(Arc::new(executors::video_gen::VideoGenerationStatusTool), ToolCategory::Media);
+
         // === Messaging 类（邮件：发送 / 草稿 / 配置体检）===
         self.register_with_category(Arc::new(executors::messaging::SendEmailTool), ToolCategory::Messaging);
         self.register_with_category(Arc::new(executors::messaging::ComposeMailTool), ToolCategory::Messaging);
@@ -425,6 +431,11 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::messaging::CreateCalendarEventTool), ToolCategory::Messaging);
         self.register_with_category(Arc::new(executors::messaging::SendWebhookTool), ToolCategory::Messaging);
         self.register_with_category(Arc::new(executors::messaging::SendSmsTool), ToolCategory::Messaging);
+
+        // === Messaging 类（邮件收件：IMAP，与 SMTP 发信互补）===
+        self.register_with_category(Arc::new(executors::mail_read::RecentEmailsTool), ToolCategory::Messaging);
+        self.register_with_category(Arc::new(executors::mail_read::ReadEmailTool), ToolCategory::Messaging);
+        self.register_with_category(Arc::new(executors::mail_read::ReadEmailAttachmentsTool), ToolCategory::Messaging);
 
         // === Cad 类（DXF 图纸生成与读取）===
         self.register_with_category(Arc::new(executors::cad::CadGenerateDxfTool), ToolCategory::Cad);

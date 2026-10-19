@@ -821,7 +821,10 @@ fn no_ffmpeg_result(what: &str) -> ToolResult {
 }
 
 /// 执行 ffprobe 并返回解析好的 JSON。`args` 是传给 ffprobe 的参数（不含程序名）。
-fn run_ffprobe_json(args: &[&str]) -> Result<Value, String> {
+///
+/// `pub(crate)`：视频生成工具落盘后要用它核对真实时长与分辨率——
+/// "服务商说完成了"和"本地文件确实是 1280x720 / 4 秒"是两件事。
+pub(crate) fn run_ffprobe_json(args: &[&str]) -> Result<Value, String> {
     let bin = resolve_ffprobe().ok_or_else(|| "ffprobe 不可用".to_string())?;
     let output = std::process::Command::new(&bin)
         .args(args)

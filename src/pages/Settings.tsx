@@ -160,6 +160,51 @@ const SETTING_GROUPS: { title: string; note: string; keys: string[] }[] = [
     ],
   },
   {
+    title: "AI 图像生成",
+    note:
+      "走 OpenAI 兼容的 /images/generations。换服务商=改这三行 + 填 API Key，" +
+      "改完立即生效，不用重启",
+    keys: ["image.base_url", "image.model", "image.size", "image.timeout_ms"],
+  },
+  {
+    title: "AI 视频生成",
+    note:
+      "走 OpenAI 兼容的 /videos 异步任务接口，提交与查询共用这组配置；" +
+      "等待上限决定单次调用最多等多久",
+    keys: [
+      "video.base_url",
+      "video.model",
+      "video.size",
+      "video.duration_sec",
+      "video.poll_timeout_ms",
+    ],
+  },
+  {
+    title: "邮件 · 发信（SMTP）",
+    note:
+      "多数邮箱要先用「授权码」而不是登录密码，并在网页端开启 SMTP；" +
+      "填完可以在对话里让它发一封测试信",
+    keys: [
+      "mail.smtp_host",
+      "mail.smtp_port",
+      "mail.smtp_security",
+      "mail.smtp_user",
+      "mail.from",
+      "mail.from_name",
+    ],
+  },
+  {
+    title: "邮件 · 收件（IMAP）",
+    note:
+      "收件是独立协议，必须单独填服务器；账号与授权码留空时自动复用上面的发信配置",
+    keys: [
+      "mail.imap_host",
+      "mail.imap_port",
+      "mail.imap_security",
+      "mail.imap_user",
+    ],
+  },
+  {
     title: "安全",
     note: "立即生效，下一条待确认的操作即按新策略处理",
     keys: ["security.confirm_medium_risk"],
@@ -190,6 +235,27 @@ const SETTING_LABELS: Record<string, string> = {
   "startup.auto_launch": "开机自动启动",
   "global_shortcut": "全局快捷键",
   "security.confirm_medium_risk": "MEDIUM 风险弹窗确认",
+  // ---- AI 图像 / 视频生成 ----
+  "image.base_url": "图像服务地址",
+  "image.model": "图像模型",
+  "image.size": "默认出图尺寸",
+  "image.timeout_ms": "出图请求超时",
+  "video.base_url": "视频服务地址",
+  "video.model": "视频模型",
+  "video.size": "默认分辨率",
+  "video.duration_sec": "默认时长",
+  "video.poll_timeout_ms": "最长等待时间",
+  // ---- 邮件 ----
+  "mail.smtp_host": "发件服务器",
+  "mail.smtp_port": "发件端口",
+  "mail.smtp_security": "发件加密方式",
+  "mail.smtp_user": "发件账号",
+  "mail.from": "发件人地址",
+  "mail.from_name": "发件人显示名",
+  "mail.imap_host": "收件服务器",
+  "mail.imap_port": "收件端口",
+  "mail.imap_security": "收件加密方式",
+  "mail.imap_user": "收件账号",
 };
 
 /** 含密钥的发布配置：用密码框渲染，避免明文暴露 */
@@ -226,6 +292,48 @@ const PUBLISH_SECRET_KEYS = [
       "生成时报「连接 GitHub 失败」时填这里。留空则自动使用系统代理；填了就以它为准，" +
       "例如 Clash 的 http://127.0.0.1:7890。只影响发布，不影响本机模型。",
     placeholder: "http://127.0.0.1:7890",
+  },
+];
+
+/**
+ * AI 能力与邮箱的凭据。渲染方式与发布凭据完全一致（密码框 + 掩码状态），
+ * 因为它们同属"后端只下发掩码、绝不下发明文"的一类。
+ *
+ * 这也是**切换服务商的唯一入口**：换一家图像/视频服务，只需要把
+ * base_url、model、api_key 三行改掉，工具侧不用动任何代码。
+ */
+const AI_SECRET_KEYS = [
+  {
+    key: "image.api_key",
+    label: "图像生成 · API Key",
+    desc:
+      "填了才启用 image_generate。任何 OpenAI 兼容的图像服务都行（官方、中转、" +
+      "国内平台的兼容端点），把它的 Key 粘到这里即可。留空则图像工具会直说未配置。",
+    placeholder: "粘贴图像服务 API Key",
+  },
+  {
+    key: "video.api_key",
+    label: "视频生成 · API Key",
+    desc:
+      "填了才启用 video_generate。服务需兼容 OpenAI 的异步任务形状：" +
+      "POST /videos 提交、GET /videos/{id} 查状态、GET /videos/{id}/content 取文件。",
+    placeholder: "粘贴视频服务 API Key",
+  },
+  {
+    key: "mail.smtp_password",
+    label: "邮件发信 · 密码 / 授权码",
+    desc:
+      "多数邮箱（QQ、163、Gmail、Outlook）不接受登录密码，要在网页端开启 SMTP 后" +
+      "生成「授权码」填在这里。只用于发信，不会出现在工具返回值里。",
+    placeholder: "粘贴 SMTP 授权码",
+  },
+  {
+    key: "mail.imap_password",
+    label: "邮件收件 · 密码 / 授权码",
+    desc:
+      "用于 recent_emails / read_email / read_email_attachments。留空会自动复用上面的" +
+      "发信授权码（同一邮箱通常通用）；只有收发用不同凭据时才需要单独填。",
+    placeholder: "留空则复用发信授权码",
   },
 ];
 
@@ -1207,7 +1315,7 @@ function Settings() {
                     发布会拿着掩码去调用 API 然后静默失败；
                   - 也不能显示明文，那等于把凭据摊在 DOM 里。
                   想知道"填没填过"，看输入框下方的状态提示即可。 */}
-              {PUBLISH_SECRET_KEYS.map(({ key, label, desc, placeholder }) => {
+              {[...PUBLISH_SECRET_KEYS, ...AI_SECRET_KEYS].map(({ key, label, desc, placeholder }) => {
                 const current = getSettingValue(key, "");
                 const configured = isConfiguredSecret(current);
                 return (

@@ -50,12 +50,24 @@ dunce = "1"           # Windows 路径规范化（去除 UNC 前缀）
 # 注意：reqwest 默认会读取 HTTP_PROXY / HTTPS_PROXY 环境变量。发布通道那边已显式
 #       no_proxy()，否则一旦进程继承了别处注入的代理变量，就会连到不存在的代理上。
 # blocking 仅供 examples/ 下的端到端验证探针使用（一次性工具，不进产品链路）。
-reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
+reqwest = { version = "0.12", features = ["json", "stream", "blocking", "multipart"] }
 
 # === 邮件（SMTP 发送）===
 # 只开 SMTP 传输 + rustls：不走 native-tls，避免不同机器上 OpenSSL/SChannel 行为差异。
 # 不带 pool：这里一次只发一封信，连接池只会多留线程。
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "rustls-tls", "builder", "hostname"] }
+# === 邮件（IMAP 收件）===
+# SMTP 只能发不能收，收件必须走 IMAP——这是唯一一个"换服务商只改 host/密码"
+# 就能通吃 Gmail/Outlook/QQ/163/自建 Dovecot 的标准协议。
+# 用 imap 2.x + native-tls（Windows 上走 SChannel，不碰 OpenSSL，不会重演
+# STATUS_ENTRYPOINT_NOT_FOUND 那类原生符号问题），并显式引入 native-tls
+# 以拿到 TlsConnector（imap 不 re-export 它）。
+imap = "2.4.1"
+native-tls = "0.2"
+# 邮件头里的 GBK/GB2312 编码主题需要转码；encoding_rs 已在 reqwest 依赖树里，
+# 提升为直接依赖不会新增下载量。
+encoding_rs = "0.8"
+
 # === 流处理 ===
 # tokio::sync::mpsc 的 Stream 包装
 tokio-stream = { version = "0.1", features = ["sync"] }
