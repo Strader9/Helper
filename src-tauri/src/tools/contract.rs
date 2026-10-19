@@ -787,6 +787,23 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::ProviderAck,
         required_fields: &["server", "tool", "isError"],
     },
+    // ============ Web（联网检索）============
+    CapabilityContract {
+        tool: "web_search",
+        side_effect: SideEffect::NetworkRead,
+        scope: "公共搜索引擎",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["query", "results"],
+    },
+    CapabilityContract {
+        tool: "url_fetch",
+        side_effect: SideEffect::NetworkRead,
+        scope: "用户指定的远端 URL",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["url", "status", "text"],
+    },
     // ============ Automation（常驻定时任务）============
     CapabilityContract {
         // 建作业不改外部世界，只在本机写一条"未来要做什么"的授权记录。

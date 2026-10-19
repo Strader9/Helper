@@ -53,6 +53,8 @@ pub enum ToolCategory {
     Industry,
     /// MCP（Model Context Protocol）外部工具转发
     Mcp,
+    /// 联网检索（搜索、抓网页）
+    Web,
     /// 通用工具（始终加载）
     General,
 }
@@ -77,6 +79,7 @@ impl ToolCategory {
             ToolCategory::Cad => "cad",
             ToolCategory::Industry => "industry",
             ToolCategory::Mcp => "mcp",
+            ToolCategory::Web => "web",
             ToolCategory::General => "general",
         }
     }
@@ -389,6 +392,10 @@ impl ToolRegistry {
         // === Mcp 类（Model Context Protocol 外部工具转发）===
         self.register_with_category(Arc::new(executors::mcp::McpListToolsTool), ToolCategory::Mcp);
         self.register_with_category(Arc::new(executors::mcp::McpCallTool), ToolCategory::Mcp);
+
+        // === Web 类（联网检索）===
+        self.register_with_category(Arc::new(executors::web::WebSearchTool), ToolCategory::Web);
+        self.register_with_category(Arc::new(executors::web::UrlFetchTool), ToolCategory::Web);
 
         // === Agents 类（任务编排：计划 / 步骤 / 断点）===
         self.register_with_category(Arc::new(executors::tasks::CreateTaskPlanTool), ToolCategory::Agents);
