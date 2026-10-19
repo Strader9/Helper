@@ -88,6 +88,7 @@ impl Database {
         self.run_workflow_migration()?;
         self.run_work_takeover_migration()?;
         self.run_extension_migration()?;
+        self.run_calendar_migration()?;
         self.ensure_memory_tier_columns()?;
         Ok(())
     }
@@ -251,6 +252,12 @@ impl Database {
     /// 建扩展注册表两张表（扩展清单 / 生命周期回执）。
     fn run_extension_migration(&self) -> AppResult<()> {
         self.conn.execute_batch(schema::MIGRATION_EXTENSION_SQL)?;
+        Ok(())
+    }
+
+    /// 建本地日历事件表（助手自己的提醒台账，非 Outlook/系统日历）。
+    fn run_calendar_migration(&self) -> AppResult<()> {
+        self.conn.execute_batch(schema::MIGRATION_CALENDAR_SQL)?;
         Ok(())
     }
 

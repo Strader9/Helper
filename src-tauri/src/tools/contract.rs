@@ -1729,6 +1729,64 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["last_run"],
     },
+    // ============ P3 本地日历台账 ============
+    CapabilityContract {
+        tool: "calendar_create",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 calendar_events 表",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "id", "start_at"],
+    },
+    CapabilityContract {
+        tool: "calendar_today",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 calendar_events 表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "items"],
+    },
+    CapabilityContract {
+        tool: "upcoming_events",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 calendar_events 表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["days", "count", "items"],
+    },
+    CapabilityContract {
+        tool: "calendar_modify",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 calendar_events 表",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "affected"],
+    },
+    CapabilityContract {
+        tool: "calendar_delete",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 calendar_events 表",
+        reversible: false,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "affected"],
+    },
+    // ============ P3 自治策略 ============
+    CapabilityContract {
+        tool: "autonomy_get_policy",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 settings 表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["policy"],
+    },
+    CapabilityContract {
+        tool: "autonomy_update_policy",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 settings 表",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "policy"],
+    },
 ];
 
 /// 验证欠账表 —— 有实质副作用、但没有可靠机器判据的能力，以及为什么没有。

@@ -381,6 +381,17 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::ops::KnowledgeFileStatsTool), ToolCategory::Knowledge);
         self.register_with_category(Arc::new(executors::ops::KnowledgeCoverageReportTool), ToolCategory::Knowledge);
 
+        // === Messaging 类（P3 本地日历事件台账）===
+        self.register_with_category(Arc::new(executors::calendar::CalendarCreateTool), ToolCategory::Messaging);
+        self.register_with_category(Arc::new(executors::calendar::CalendarTodayTool), ToolCategory::Messaging);
+        self.register_with_category(Arc::new(executors::calendar::UpcomingEventsTool), ToolCategory::Messaging);
+        self.register_with_category(Arc::new(executors::calendar::CalendarModifyTool), ToolCategory::Messaging);
+        self.register_with_category(Arc::new(executors::calendar::CalendarDeleteTool), ToolCategory::Messaging);
+
+        // === Client 类（P3 自治策略）===
+        self.register_with_category(Arc::new(executors::autonomy::AutonomyGetPolicyTool), ToolCategory::Client);
+        self.register_with_category(Arc::new(executors::autonomy::AutonomyUpdatePolicyTool), ToolCategory::Client);
+
         // === Media 类（图像处理 + 音视频能力探测）===
         self.register_with_category(Arc::new(executors::media::ImageInfoTool), ToolCategory::Media);
         self.register_with_category(Arc::new(executors::media::ImageResizeTool), ToolCategory::Media);

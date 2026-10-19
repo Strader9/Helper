@@ -654,3 +654,20 @@ CREATE TABLE IF NOT EXISTS extension_receipts (
 
 CREATE INDEX IF NOT EXISTS idx_extension_receipts_ext ON extension_receipts(extension_id);
 "#;
+
+pub const MIGRATION_CALENDAR_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS calendar_events (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    start_at TEXT NOT NULL,
+    end_at TEXT,
+    location TEXT,
+    description TEXT,
+    reminder_minutes INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_at);
+"#;
