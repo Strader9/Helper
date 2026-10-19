@@ -349,6 +349,9 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::messaging::SendEmailTool), ToolCategory::Messaging);
         self.register_with_category(Arc::new(executors::messaging::ComposeMailTool), ToolCategory::Messaging);
         self.register_with_category(Arc::new(executors::messaging::CheckMailConfigTool), ToolCategory::Messaging);
+        self.register_with_category(Arc::new(executors::messaging::CreateCalendarEventTool), ToolCategory::Messaging);
+        self.register_with_category(Arc::new(executors::messaging::SendWebhookTool), ToolCategory::Messaging);
+        self.register_with_category(Arc::new(executors::messaging::SendSmsTool), ToolCategory::Messaging);
 
         // === Agents 类（任务编排：计划 / 步骤 / 断点）===
         self.register_with_category(Arc::new(executors::tasks::CreateTaskPlanTool), ToolCategory::Agents);

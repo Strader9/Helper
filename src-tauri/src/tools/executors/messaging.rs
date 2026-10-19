@@ -522,6 +522,398 @@ impl AgentTool for CheckMailConfigTool {
 }
 
 // ============================================================
+// create_calendar_event — 生成 .ics 日历事件
+// ============================================================
+
+/// iCalendar 文本字段转义：反斜杠、分号、逗号、换行都要转义，
+/// 否则会被解析器当成字段分隔符。
+fn escape_ics(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace(';', "\\;")
+        .replace(',', "\\,")
+        .replace("\r\n", "\\n")
+        .replace('\n', "\\n")
+}
+
+/// 解析本地日期时间。接受 `YYYY-MM-DD HH:MM[:SS]` 或 ISO 的 `T` 分隔形式。
+fn parse_local_dt(s: &str) -> Option<chrono::NaiveDateTime> {
+    let s = s.trim();
+    for fmt in [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M",
+    ] {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(dt);
+        }
+    }
+    None
+}
+
+/// 本地时间 → iCalendar 的 UTC 时间戳（`YYYYMMDDTHHMMSSZ`）。
+fn to_utc_ics(dt: chrono::NaiveDateTime) -> String {
+    use chrono::TimeZone;
+    let utc = chrono::Local
+        .from_local_datetime(&dt)
+        .single()
+        .unwrap_or_else(|| chrono::Local.from_utc_datetime(&dt))
+        .with_timezone(&chrono::Utc);
+    utc.format("%Y%m%dT%H%M%SZ").to_string()
+}
+
+/// 生成一份最小可用的 iCalendar（RFC 5545）文本。
+///
+/// 纯函数，方便在无日历客户端、无真实时间的情况下测试。
+/// `reminder_minutes > 0` 时附带一个 `VALARM` 提前提醒。
+fn build_ics(
+    title: &str,
+    start_local: chrono::NaiveDateTime,
+    end_local: chrono::NaiveDateTime,
+    location: Option<&str>,
+    description: Option<&str>,
+    reminder_minutes: u32,
+) -> String {
+    let uid = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let start = to_utc_ics(start_local);
+    let end = to_utc_ics(end_local);
+
+    let mut out = String::new();
+    out.push_str("BEGIN:VCALENDAR\r\n");
+    out.push_str("VERSION:2.0\r\n");
+    out.push_str("PRODID:-//pc-guardian//Calendar//CN\r\n");
+    out.push_str("BEGIN:VEVENT\r\n");
+    out.push_str(&format!("UID:{}\r\n", uid));
+    out.push_str(&format!("DTSTAMP:{}\r\n", now));
+    out.push_str(&format!("DTSTART:{}\r\n", start));
+    out.push_str(&format!("DTEND:{}\r\n", end));
+    out.push_str(&format!("SUMMARY:{}\r\n", escape_ics(title)));
+    if let Some(loc) = location.filter(|s| !s.trim().is_empty()) {
+        out.push_str(&format!("LOCATION:{}\r\n", escape_ics(loc)));
+    }
+    if let Some(desc) = description.filter(|s| !s.trim().is_empty()) {
+        out.push_str(&format!("DESCRIPTION:{}\r\n", escape_ics(desc)));
+    }
+    if reminder_minutes > 0 {
+        out.push_str("BEGIN:VALARM\r\n");
+        out.push_str("ACTION:DISPLAY\r\n");
+        out.push_str(&format!("DESCRIPTION:{}\r\n", escape_ics(title)));
+        out.push_str(&format!("TRIGGER:-PT{}M\r\n", reminder_minutes));
+        out.push_str("END:VALARM\r\n");
+    }
+    out.push_str("END:VEVENT\r\n");
+    out.push_str("END:VCALENDAR\r\n");
+    out
+}
+
+pub struct CreateCalendarEventTool;
+
+#[async_trait]
+impl AgentTool for CreateCalendarEventTool {
+    fn name(&self) -> &'static str {
+        "create_calendar_event"
+    }
+
+    fn description(&self) -> &'static str {
+        "生成一个 .ics 日历事件文件（可被 Outlook / 系统日历导入），并可选地在默认日历里打开。适合「提醒我明天下午 3 点开会」这类需求。时间按本机时区理解。"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string", "description": "事件标题" },
+                "start_at": { "type": "string", "description": "开始时间，如 2026-10-20 15:00" },
+                "end_at": { "type": "string", "description": "结束时间（可选，默认开始后 1 小时）" },
+                "location": { "type": "string", "description": "地点（可选）" },
+                "description": { "type": "string", "description": "备注（可选）" },
+                "reminder_minutes": { "type": "integer", "description": "提前多少分钟提醒，0 表示不提醒，默认 0" },
+                "path": { "type": "string", "description": "输出 .ics 路径（可选，不填则写到临时目录并打开默认日历）" }
+            },
+            "required": ["title", "start_at"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
+
+    async fn execute(&self, args: Value) -> AppResult<ToolResult> {
+        let title = args["title"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::InvalidArgument("title is required".to_string()))?;
+
+        let start_str = args["start_at"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("start_at is required".to_string()))?;
+        let start = parse_local_dt(start_str)
+            .ok_or_else(|| AppError::InvalidArgument(format!("start_at 时间格式无法解析：{}", start_str)))?;
+
+        let end = match args["end_at"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => parse_local_dt(s).ok_or_else(|| {
+                AppError::InvalidArgument(format!("end_at 时间格式无法解析：{}", s))
+            })?,
+            None => start + chrono::Duration::hours(1),
+        };
+        if end <= start {
+            return Ok(ToolResult::err(
+                "INVALID_TIME_RANGE",
+                "结束时间必须晚于开始时间",
+            ));
+        }
+
+        let reminder_minutes = args["reminder_minutes"].as_u64().unwrap_or(0).min(7 * 24 * 60) as u32;
+        let location = args["location"].as_str().map(str::trim);
+        let description = args["description"].as_str().map(str::trim);
+
+        let ics = build_ics(title, start, end, location, description, reminder_minutes);
+
+        // 用户给了路径就用它；没给就落到临时目录，并打开默认日历导入。
+        let (path, open_after) = match args["path"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(p) => (std::path::PathBuf::from(p), false),
+            None => {
+                let mut p = std::env::temp_dir();
+                p.push(format!("pcg-event-{}.ics", uuid::Uuid::new_v4()));
+                (p, true)
+            }
+        };
+
+        std::fs::write(&path, &ics).map_err(|e| {
+            AppError::ToolExecution(format!("写入 .ics 失败：{}", e))
+        })?;
+
+        if open_after {
+            let mut command = std::process::Command::new("rundll32");
+            command.args(["url.dll,FileProtocolHandler", &path.to_string_lossy()]);
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x08000000);
+            }
+            let _ = command.spawn();
+        }
+
+        Ok(ToolResult::ok(json!({
+            "created": true,
+            "path": path.to_string_lossy(),
+            "title": title,
+            "start_utc": to_utc_ics(start),
+            "end_utc": to_utc_ics(end),
+            "reminder_minutes": reminder_minutes,
+            "opened_in_calendar": open_after,
+        })))
+    }
+}
+
+// ============================================================
+// send_webhook — 群机器人 webhook（IM 通道）
+// ============================================================
+
+/// 按机器人类型构造 webhook 请求体。
+///
+/// 企业微信与钉钉的 text 消息 JSON 结构相同；飞书不同；`generic` 直接发纯文本。
+/// 返回 (JSON 字符串, 错误消息)。纯函数，方便测试。
+fn webhook_body(kind: &str, text: &str) -> Result<String, String> {
+    match kind {
+        "wecom" | "dingtalk" => Ok(json!({
+            "msgtype": "text",
+            "text": { "content": text }
+        })
+        .to_string()),
+        "feishu" => Ok(json!({
+            "msg_type": "text",
+            "content": { "text": text }
+        })
+        .to_string()),
+        "generic" => Ok(json!({ "text": text }).to_string()),
+        other => Err(format!(
+            "不认识的 im.webhook_type={}，只接受 wecom / dingtalk / feishu / generic",
+            other
+        )),
+    }
+}
+
+pub struct SendWebhookTool;
+
+#[async_trait]
+impl AgentTool for SendWebhookTool {
+    fn name(&self) -> &'static str {
+        "send_webhook"
+    }
+
+    fn description(&self) -> &'static str {
+        "通过已配置的群机器人 webhook 发送一条消息（企业微信 / 钉钉 / 飞书群机器人）。这是对外发送、发出后无法撤回的动作：只有在用户明确要求「发到群里」「通知到群」时才用。未配置 webhook 地址时会明确报错，不会猜测。"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "text": { "type": "string", "description": "要发送的消息内容" }
+            },
+            "required": ["text"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::High
+    }
+
+    async fn execute(&self, args: Value) -> AppResult<ToolResult> {
+        let text = args["text"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::InvalidArgument("text is required".to_string()))?;
+
+        let url = match setting("im.webhook_url") {
+            Some(u) => u,
+            None => {
+                return Ok(ToolResult::err(
+                    "WEBHOOK_NOT_CONFIGURED",
+                    "未配置群机器人 webhook 地址（im.webhook_url）。请在设置里填上企业微信/钉钉/飞书群机器人的完整 webhook URL，不要猜测。",
+                ))
+            }
+        };
+        let kind = setting("im.webhook_type").unwrap_or_else(|| "wecom".to_string());
+        let body = match webhook_body(&kind, text) {
+            Ok(b) => b,
+            Err(e) => return Ok(ToolResult::err("INVALID_WEBHOOK_TYPE", &e)),
+        };
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await;
+
+        match resp {
+            Ok(r) => {
+                let status = r.status().as_u16();
+                let body_text = r.text().await.unwrap_or_default();
+                if (200..300).contains(&status) {
+                    Ok(ToolResult::ok(json!({
+                        "sent": true,
+                        "status": status,
+                        "response": body_text,
+                    })))
+                } else {
+                    Ok(ToolResult::err(
+                        "WEBHOOK_FAILED",
+                        &format!("webhook 返回 {}：{}", status, body_text),
+                    ))
+                }
+            }
+            Err(e) => Ok(ToolResult::err(
+                "WEBHOOK_FAILED",
+                &format!("请求 webhook 失败：{}", e),
+            )),
+        }
+    }
+}
+
+// ============================================================
+// send_sms — 短信网关（URL 模板）
+// ============================================================
+
+pub struct SendSmsTool;
+
+#[async_trait]
+impl AgentTool for SendSmsTool {
+    fn name(&self) -> &'static str {
+        "send_sms"
+    }
+
+    fn description(&self) -> &'static str {
+        "通过已配置的短信网关发送一条短信。网关地址用 URL 模板（含 {to} 与 {text} 占位符）配置。这是对外发送、产生费用的动作：只有在用户明确要求「发短信给某某」时才用。未配置网关地址时明确报错。"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "to": { "type": "string", "description": "接收手机号（多个用逗号分隔）" },
+                "text": { "type": "string", "description": "短信内容" }
+            },
+            "required": ["to", "text"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::High
+    }
+
+    async fn execute(&self, args: Value) -> AppResult<ToolResult> {
+        let to = args["to"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::InvalidArgument("to is required".to_string()))?;
+        let text = args["text"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::InvalidArgument("text is required".to_string()))?;
+
+        let template = match setting("sms.gateway_url") {
+            Some(u) => u,
+            None => {
+                return Ok(ToolResult::err(
+                    "SMS_NOT_CONFIGURED",
+                    "未配置短信网关地址（sms.gateway_url）。请在设置里填上含 {to} 与 {text} 占位符的网关 URL（各服务商格式不同），不要猜测。",
+                ))
+            }
+        };
+        if !template.contains("{to}") || !template.contains("{text}") {
+            return Ok(ToolResult::err(
+                "SMS_URL_INVALID",
+                "sms.gateway_url 必须包含 {to} 和 {text} 两个占位符，例如 https://example.com/sms?phone={to}&msg={text}",
+            ));
+        }
+
+        let url = template
+            .replace("{to}", &urlencoding::encode(to))
+            .replace("{text}", &urlencoding::encode(text));
+        let method = setting("sms.method").unwrap_or_else(|| "GET".to_string());
+
+        let client = reqwest::Client::new();
+        let resp = if method.eq_ignore_ascii_case("POST") {
+            client.post(&url).send().await
+        } else {
+            client.get(&url).send().await
+        };
+
+        match resp {
+            Ok(r) => {
+                let status = r.status().as_u16();
+                let body_text = r.text().await.unwrap_or_default();
+                if (200..300).contains(&status) {
+                    Ok(ToolResult::ok(json!({
+                        "sent": true,
+                        "status": status,
+                        "response": body_text,
+                        "note": "网关已接受请求；不代表运营商已送达",
+                    })))
+                } else {
+                    Ok(ToolResult::err(
+                        "SMS_FAILED",
+                        &format!("短信网关返回 {}：{}", status, body_text),
+                    ))
+                }
+            }
+            Err(e) => Ok(ToolResult::err(
+                "SMS_FAILED",
+                &format!("请求短信网关失败：{}", e),
+            )),
+        }
+    }
+}
+
+// ============================================================
 // 测试
 // ============================================================
 
@@ -551,5 +943,49 @@ mod tests {
         assert!(message.contains("mail.smtp_host"));
         assert!(message.contains("mail.from"));
         assert!(message.contains("未配置"));
+    }
+
+    #[test]
+    fn ics_escapes_commas_semicolons_and_newlines() {
+        assert_eq!(escape_ics("a,b;c\\d"), "a\\,b\\;c\\\\d");
+        assert_eq!(escape_ics("第一行\n第二行"), "第一行\\n第二行");
+    }
+
+    #[test]
+    fn parse_local_dt_accepts_space_and_t_forms() {
+        assert!(parse_local_dt("2026-10-20 15:00").is_some());
+        assert!(parse_local_dt("2026-10-20T15:00:30").is_some());
+        assert!(parse_local_dt("garbage").is_none());
+    }
+
+    #[test]
+    fn build_ics_contains_required_fields_and_valarm() {
+        let start = parse_local_dt("2026-10-20 15:00").unwrap();
+        let end = parse_local_dt("2026-10-20 16:00").unwrap();
+        let ics = build_ics("开会", start, end, Some("会议室A"), Some("讨论进度"), 15);
+        assert!(ics.contains("BEGIN:VCALENDAR"));
+        assert!(ics.contains("BEGIN:VEVENT"));
+        assert!(ics.contains("SUMMARY:开会"));
+        assert!(ics.contains("LOCATION:会议室A"));
+        assert!(ics.contains("DTSTART:20261020"), "时间应转成 UTC 的 YYYYMMDD");
+        assert!(ics.contains("BEGIN:VALARM"), "reminder>0 应带提醒");
+        assert!(ics.contains("TRIGGER:-PT15M"));
+        assert!(ics.contains("END:VCALENDAR"));
+    }
+
+    #[test]
+    fn build_ics_omits_valarm_when_reminder_is_zero() {
+        let start = parse_local_dt("2026-10-20 15:00").unwrap();
+        let ics = build_ics("无提醒", start, start, None, None, 0);
+        assert!(!ics.contains("VALARM"));
+    }
+
+    #[test]
+    fn webhook_body_matches_each_platform() {
+        let wecom = webhook_body("wecom", "hi").unwrap();
+        assert!(wecom.contains("\"msgtype\":\"text\""));
+        let feishu = webhook_body("feishu", "hi").unwrap();
+        assert!(feishu.contains("\"msg_type\":\"text\""));
+        assert!(webhook_body("unknown", "hi").is_err());
     }
 }

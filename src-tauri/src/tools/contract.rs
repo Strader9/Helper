@@ -575,6 +575,30 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["configured"],
     },
+    CapabilityContract {
+        tool: "create_calendar_event",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 .ics 文件",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["created", "path", "title"],
+    },
+    CapabilityContract {
+        tool: "send_webhook",
+        side_effect: SideEffect::ExternalCommunication,
+        scope: "外部群机器人",
+        reversible: false,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["sent", "status"],
+    },
+    CapabilityContract {
+        tool: "send_sms",
+        side_effect: SideEffect::ExternalCommunication,
+        scope: "短信网关",
+        reversible: false,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["sent", "status"],
+    },
     // ============ Media ============
     CapabilityContract {
         tool: "image_info",
