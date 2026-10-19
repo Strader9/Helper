@@ -398,9 +398,12 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::autonomy::AutonomyGetPolicyTool), ToolCategory::Client);
         self.register_with_category(Arc::new(executors::autonomy::AutonomyUpdatePolicyTool), ToolCategory::Client);
 
-        // === Office 类（P3 文档工具：拆分 / 差异对比）===
+        // === Office 类（P3 文档工具：拆分 / 差异对比 / 表格 / 转 CSV / 区域 OCR）===
         self.register_with_category(Arc::new(executors::pdf::SplitPdfTool), ToolCategory::Office);
         self.register_with_category(Arc::new(executors::diff::DiffDocumentsTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::pdf::ExtractPdfTablesTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::office::XlsxToCsvTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::ocr::OcrRegionTool), ToolCategory::Office);
 
         // === Media 类（图像处理 + 音视频能力探测）===
         self.register_with_category(Arc::new(executors::media::ImageInfoTool), ToolCategory::Media);

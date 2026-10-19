@@ -1314,6 +1314,143 @@ fn bolds(text: &str) -> String {
     out
 }
 
+// ============================================================
+// extract_pdf_tables
+// ============================================================
+
+/// 把一行文本按「2+ 连续空格 / 制表符」切分成列。
+/// lopdf 抽文本不保留表格边框，只能靠列间空隙做启发式切分。
+fn split_table_row(line: &str) -> Vec<String> {
+    let mut cols: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut run = 0usize;
+    let mut prev_space = false;
+
+    let flush = |cols: &mut Vec<String>, cur: &mut String| {
+        let s = cur.trim().to_string();
+        if !s.is_empty() {
+            cols.push(s);
+        }
+        cur.clear();
+    };
+
+    for c in line.chars() {
+        if c == '\t' {
+            flush(&mut cols, &mut cur);
+            run = 0;
+            prev_space = false;
+            continue;
+        }
+        if c == ' ' {
+            run += 1;
+            prev_space = true;
+            continue;
+        }
+        // 非空格：若之前累计了 2+ 空格则切列，否则把单个空格补回词间
+        if run >= 2 && !cur.is_empty() {
+            flush(&mut cols, &mut cur);
+        } else if prev_space && !cur.is_empty() {
+            cur.push(' ');
+        }
+        run = 0;
+        prev_space = false;
+        cur.push(c);
+    }
+    flush(&mut cols, &mut cur);
+    cols
+}
+
+/// 从文本里检测「疑似表格块」：连续出现 2 行及以上多列行，聚成一块。
+fn detect_tables(text: &str) -> Vec<Vec<Vec<String>>> {
+    let mut tables: Vec<Vec<Vec<String>>> = Vec::new();
+    let mut current: Vec<Vec<String>> = Vec::new();
+    for line in text.lines() {
+        let cols = split_table_row(line);
+        if cols.len() >= 2 {
+            current.push(cols);
+        } else if current.len() >= 2 {
+            tables.push(std::mem::take(&mut current));
+        } else {
+            current.clear();
+        }
+    }
+    if current.len() >= 2 {
+        tables.push(current);
+    }
+    tables
+}
+
+/// 从 PDF 提取「疑似表格」
+pub struct ExtractPdfTablesTool;
+
+#[async_trait]
+impl AgentTool for ExtractPdfTablesTool {
+    fn name(&self) -> &'static str {
+        "extract_pdf_tables"
+    }
+
+    fn description(&self) -> &'static str {
+        "从 PDF 提取疑似表格结构（按列间空隙启发式切分，非精确表格）。适合文字型 PDF；复杂边框、合并单元格、扫描件可能不准或为空。"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "pages": { "type": "string", "description": "页码范围，如 \"1-5\"；省略全部" },
+                "max_tables": { "type": "integer", "description": "最多返回几个表，默认 20" }
+            },
+            "required": ["path"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    async fn execute(&self, args: Value) -> AppResult<ToolResult> {
+        let path = require_str(&args, "path")?;
+        ensure_ext(path, "pdf")?;
+        let doc = load_pdf(path)?;
+        let total = doc.get_pages().len() as u32;
+        let wanted = match args["pages"].as_str().filter(|s| !s.trim().is_empty()) {
+            Some(spec) => parse_pages(spec, total)?,
+            None => (1..=total).collect(),
+        };
+        let max_tables = args["max_tables"].as_u64().unwrap_or(20).min(200) as usize;
+
+        let mut tables: Vec<Value> = Vec::new();
+        let mut table_index = 0usize;
+        'outer: for page in &wanted {
+            let single = doc.clone();
+            let text = single.extract_text(&[*page]).unwrap_or_default();
+            for t in detect_tables(&text) {
+                if tables.len() >= max_tables {
+                    break 'outer;
+                }
+                table_index += 1;
+                tables.push(json!({
+                    "index": table_index,
+                    "page": page,
+                    "row_count": t.len(),
+                    "column_count": t.iter().map(|r| r.len()).max().unwrap_or(0),
+                    "rows": t,
+                }));
+            }
+        }
+
+        Ok(ToolResult::ok(json!({
+            "path": path,
+            "total_pages": total,
+            "pages_scanned": wanted.len(),
+            "table_count": tables.len(),
+            "tables": tables,
+            "note": "表格结构是启发式识别（按列间 2+ 空格/制表符切分），非精确提取；边框/合并单元格可能不准。",
+        })))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

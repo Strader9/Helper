@@ -1915,6 +1915,32 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["added", "removed", "diff"],
     },
+    CapabilityContract {
+        tool: "xlsx_to_csv",
+        side_effect: SideEffect::LocalWrite,
+        scope: "输出 CSV 文件",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["output_path", "row_count", "size_bytes"],
+    },
+    CapabilityContract {
+        // 启发式表格识别，非精确提取
+        tool: "extract_pdf_tables",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 PDF 文件",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["table_count", "tables"],
+    },
+    CapabilityContract {
+        // 截区域落临时 png，屏幕内容属隐私
+        tool: "ocr_region",
+        side_effect: SideEffect::LocalWrite,
+        scope: "屏幕指定区域 + 临时 png",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["region", "chars", "text"],
+    },
 ];
 
 /// 验证欠账表 —— 有实质副作用、但没有可靠机器判据的能力，以及为什么没有。

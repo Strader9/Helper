@@ -371,6 +371,25 @@ fn rows_to_tsv(rows: &[Vec<String>]) -> String {
         .join("\n")
 }
 
+/// 把二维表渲染成标准 CSV（逗号分隔，含引号与逗号的字段用双引号包裹并转义）。
+fn rows_to_csv(rows: &[Vec<String>]) -> String {
+    rows.iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| {
+                    if cell.contains(',') || cell.contains('"') || cell.contains('\n') {
+                        format!("\"{}\"", cell.replace('"', "\"\""))
+                    } else {
+                        cell.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 // ============================================================
 // read_docx
 // ============================================================
@@ -621,6 +640,110 @@ impl AgentTool for ReadXlsxTool {
             "rows": rows.iter().take(max_rows).collect::<Vec<_>>(),
             "row_count": rows.len(),
             "text": rows_to_tsv(&rows),
+        })))
+    }
+}
+
+// ============================================================
+// xlsx_to_csv
+// ============================================================
+
+/// 把 .xlsx 转成 .csv 文件
+pub struct XlsxToCsvTool;
+
+#[async_trait]
+impl AgentTool for XlsxToCsvTool {
+    fn name(&self) -> &'static str {
+        "xlsx_to_csv"
+    }
+
+    fn description(&self) -> &'static str {
+        "把 .xlsx 工作表转成 .csv 文件（逗号分隔，含引号转义）。默认转第一张表，可用 sheet_index 指定，产出写到 output_path。"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": ".xlsx 文件路径" },
+                "output_path": { "type": "string", "description": "输出 .csv 路径；省略则与源文件同目录同名换 .csv 后缀" },
+                "sheet_index": { "type": "integer", "description": "第几张表，从 1 开始，默认 1" },
+                "max_rows": { "type": "integer", "description": "最多转多少行，默认 100000" }
+            },
+            "required": ["path"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
+        let path = require_str(&args, "path")?;
+        ensure_ext(path, &["xlsx"])?;
+        if !Path::new(path).is_file() {
+            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在: {}", path)));
+        }
+        let sheet_index = args["sheet_index"].as_u64().unwrap_or(1).max(1) as usize;
+        let max_rows = args["max_rows"].as_u64().unwrap_or(100_000).min(1_000_000) as usize;
+
+        let mut entries = read_zip_entries(
+            path,
+            &[
+                "xl/sharedStrings.xml".to_string(),
+                "xl/worksheets/sheet*.xml".to_string(),
+            ],
+        )?;
+        let shared = entries
+            .iter()
+            .find(|(name, _)| name.ends_with("sharedStrings.xml"))
+            .map(|(_, xml)| xlsx_shared_strings(xml))
+            .unwrap_or_default();
+        let mut sheets: Vec<(u32, String)> = entries
+            .iter()
+            .filter(|(name, _)| name.contains("/worksheets/"))
+            .map(|(name, xml)| {
+                let number = name
+                    .rsplit('/')
+                    .next()
+                    .and_then(|f| f.trim_start_matches("sheet").trim_end_matches(".xml").parse::<u32>().ok())
+                    .unwrap_or(0);
+                (number, xml.clone())
+            })
+            .collect();
+        sheets.sort_by_key(|(n, _)| *n);
+        entries.clear();
+
+        if sheets.is_empty() {
+            return Ok(ToolResult::err("NOT_A_XLSX", "压缩包里没有工作表，可能不是 .xlsx"));
+        }
+        if sheet_index > sheets.len() {
+            return Ok(ToolResult::err("SHEET_NOT_FOUND", &format!("只有 {} 张工作表", sheets.len())));
+        }
+
+        let (_, xml) = &sheets[sheet_index - 1];
+        let rows = xlsx_sheet_rows(xml, &shared, max_rows);
+        let csv = rows_to_csv(&rows);
+
+        let output_path = match args["output_path"].as_str() {
+            Some(p) if !p.is_empty() => p.to_string(),
+            _ => {
+                let p = Path::new(path);
+                let mut out = p.to_path_buf();
+                out.set_extension("csv");
+                out.to_string_lossy().to_string()
+            }
+        };
+        std::fs::write(&output_path, csv.as_bytes())
+            .map_err(|e| AppError::Internal(format!("写入 CSV 失败: {}", e)))?;
+
+        Ok(ToolResult::ok(serde_json::json!({
+            "ok": true,
+            "path": path,
+            "output_path": output_path,
+            "sheet_index": sheet_index,
+            "row_count": rows.len(),
+            "size_bytes": csv.len(),
         })))
     }
 }

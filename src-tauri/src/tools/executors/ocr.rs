@@ -178,6 +178,39 @@ $bitmap.Dispose()
     Ok(path_str)
 }
 
+/// 截取屏幕指定矩形区域存成 png，返回路径。
+pub(crate) fn capture_region_to_png(x: i32, y: i32, width: i32, height: i32) -> AppResult<String> {
+    let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S_%3f");
+    let path = std::env::temp_dir().join(format!("pcg_ocr_region_{}.png", stamp));
+    let path_str = path.to_string_lossy().to_string();
+    let escaped = path_str.replace('\'', "''");
+
+    let script = format!(
+        r#"Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$bitmap = New-Object System.Drawing.Bitmap({width}, {height})
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen({x}, {y}, 0, 0, (New-Object System.Drawing.Size({width}, {height})))
+$bitmap.Save('{escaped}', [System.Drawing.Imaging.ImageFormat]::Png)
+$graphics.Dispose()
+$bitmap.Dispose()
+'ok'"#,
+        width = width,
+        height = height,
+        x = x,
+        y = y,
+        escaped = escaped
+    );
+    let (ok, _stdout, stderr) = run_powershell(&script)?;
+    if !ok || !Path::new(&path_str).is_file() {
+        return Err(AppError::ToolExecution(format!(
+            "区域截屏失败: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(path_str)
+}
+
 // ============================================================
 // ocr_image_file
 // ============================================================
@@ -355,6 +388,101 @@ impl AgentTool for OcrScreenTool {
 
         Ok(ToolResult::ok(json!({
             "screenshot": if keep { Value::String(screenshot) } else { Value::Null },
+            "language": output.language,
+            "line_count": output.lines.len(),
+            "chars": output.text.chars().count(),
+            "truncated": truncated,
+            "empty": output.text.trim().is_empty(),
+            "lines": output.lines,
+            "text": text,
+        })))
+    }
+}
+
+// ============================================================
+// ocr_region
+// ============================================================
+
+/// 识别屏幕指定区域里的文字
+pub struct OcrRegionTool;
+
+#[async_trait]
+impl AgentTool for OcrRegionTool {
+    fn name(&self) -> &'static str {
+        "ocr_region"
+    }
+
+    fn description(&self) -> &'static str {
+        "识别屏幕指定矩形区域里的文字（x/y/width/height 为像素坐标）。适合只读某一块弹窗、表格、代码区域，而不是整屏。"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "x": { "type": "integer" },
+                "y": { "type": "integer" },
+                "width": { "type": "integer" },
+                "height": { "type": "integer" },
+                "language": { "type": "string", "description": "语言标识，如 zh-Hans；省略用系统语言" },
+                "max_chars": { "type": "integer", "description": "最多返回多少字符，默认 20000" },
+                "keep_screenshot": { "type": "boolean", "description": "是否保留区域截图，默认 true" }
+            },
+            "required": ["x", "y", "width", "height"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Medium
+    }
+
+    async fn execute(&self, args: Value) -> AppResult<ToolResult> {
+        let x = args["x"].as_i64().unwrap_or(0) as i32;
+        let y = args["y"].as_i64().unwrap_or(0) as i32;
+        let width = args["width"].as_i64().unwrap_or(0) as i32;
+        let height = args["height"].as_i64().unwrap_or(0) as i32;
+        if width <= 0 || height <= 0 {
+            return Ok(ToolResult::err("INVALID_REGION", "width 与 height 必须为正整数"));
+        }
+        let language = args["language"].as_str().map(|s| s.to_string());
+        let keep = args["keep_screenshot"].as_bool().unwrap_or(true);
+        let max_chars = args["max_chars"].as_u64().unwrap_or(20_000).min(80_000) as usize;
+
+        let screenshot = capture_region_to_png(x, y, width, height)?;
+        let shot_for_task = screenshot.clone();
+        let lang_for_task = language.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            ocr_image_blocking(&shot_for_task, lang_for_task.as_deref())
+        })
+        .await
+        .map_err(|e| AppError::ToolExecution(format!("OCR 任务异常: {}", e)))?;
+
+        let output = match result {
+            Ok(o) => o,
+            Err(message) => {
+                return Ok(ToolResult::err(
+                    "OCR_FAILED",
+                    &format!("{}（截图已保存: {}）", message, screenshot),
+                ));
+            }
+        };
+
+        if !keep {
+            let _ = std::fs::remove_file(&screenshot);
+        }
+
+        let (text, truncated) = if output.text.chars().count() > max_chars {
+            (
+                output.text.chars().take(max_chars).collect::<String>(),
+                true,
+            )
+        } else {
+            (output.text.clone(), false)
+        };
+
+        Ok(ToolResult::ok(json!({
+            "screenshot": if keep { Value::String(screenshot) } else { Value::Null },
+            "region": { "x": x, "y": y, "width": width, "height": height },
             "language": output.language,
             "line_count": output.lines.len(),
             "chars": output.text.chars().count(),
