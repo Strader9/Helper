@@ -45,6 +45,10 @@ pub enum ToolCategory {
     Client,
     /// 动态技能
     Skill,
+    /// CAD 图纸生成（DXF 等）
+    Cad,
+    /// 行业场景模板
+    Industry,
     /// 通用工具（始终加载）
     General,
 }
@@ -65,6 +69,8 @@ impl ToolCategory {
             ToolCategory::Media => "media",
             ToolCategory::Client => "client",
             ToolCategory::Skill => "skill",
+            ToolCategory::Cad => "cad",
+            ToolCategory::Industry => "industry",
             ToolCategory::General => "general",
         }
     }
@@ -356,6 +362,14 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::messaging::CreateCalendarEventTool), ToolCategory::Messaging);
         self.register_with_category(Arc::new(executors::messaging::SendWebhookTool), ToolCategory::Messaging);
         self.register_with_category(Arc::new(executors::messaging::SendSmsTool), ToolCategory::Messaging);
+
+        // === Cad 类（DXF 图纸生成与读取）===
+        self.register_with_category(Arc::new(executors::cad::CadGenerateDxfTool), ToolCategory::Cad);
+        self.register_with_category(Arc::new(executors::cad::CadDxfInfoTool), ToolCategory::Cad);
+
+        // === Industry 类（行业场景模板）===
+        self.register_with_category(Arc::new(executors::industry::IndustryScenariosTool), ToolCategory::Industry);
+        self.register_with_category(Arc::new(executors::industry::IndustryGuideTool), ToolCategory::Industry);
 
         // === Agents 类（任务编排：计划 / 步骤 / 断点）===
         self.register_with_category(Arc::new(executors::tasks::CreateTaskPlanTool), ToolCategory::Agents);

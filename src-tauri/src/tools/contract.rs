@@ -681,6 +681,40 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::StateDiff,
         required_fields: &["source", "output", "size_bytes"],
     },
+    // ============ Cad ============
+    CapabilityContract {
+        tool: "cad_generate_dxf",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 dxf 文件",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["created", "path", "entity_count"],
+    },
+    CapabilityContract {
+        tool: "cad_dxf_info",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 dxf 文件",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "entity_count"],
+    },
+    // ============ Industry ============
+    CapabilityContract {
+        tool: "industry_scenarios",
+        side_effect: SideEffect::LocalRead,
+        scope: "内置行业场景表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "scenarios"],
+    },
+    CapabilityContract {
+        tool: "industry_guide",
+        side_effect: SideEffect::LocalRead,
+        scope: "内置行业场景表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["found", "query"],
+    },
     // ============ Client ============
     CapabilityContract {
         tool: "client_state",
