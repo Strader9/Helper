@@ -293,7 +293,9 @@ CREATE TABLE IF NOT EXISTS memory_items (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     last_accessed_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT,
-    source TEXT NOT NULL DEFAULT 'auto'
+    source TEXT NOT NULL DEFAULT 'auto',
+    tier TEXT NOT NULL DEFAULT 'episodic',
+    consolidated_into TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_type ON memory_items(memory_type);

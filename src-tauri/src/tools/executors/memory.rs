@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::json;
 
 use crate::error::{AppError, AppResult};
-use crate::memory::{MemoryEngine, MemoryType};
+use crate::memory::{evaluate_firewall, MemoryEngine, MemoryType};
 use crate::tools::{AgentTool, RiskLevel, ToolResult};
 
 // ============================================================
@@ -72,6 +72,12 @@ impl AgentTool for RememberTool {
 
         let conn = crate::memory::open_connection()
             .ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))?;
+
+        // 记忆防火墙：敏感内容（密钥/口令）拒绝写入长期记忆
+        let decision = evaluate_firewall(content, false);
+        if !decision.accepted {
+            return Ok(ToolResult::err("rejected", &decision.reason));
+        }
 
         let id = MemoryEngine::add_memory(&conn, memory_type, content, importance, "user_explicit")?;
 

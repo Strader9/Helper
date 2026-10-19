@@ -83,6 +83,7 @@ impl Database {
         self.ensure_session_summary_columns()?;
         self.ensure_receipt_evidence_column()?;
         self.run_knowledge_migration()?;
+        self.ensure_memory_tier_columns()?;
         Ok(())
     }
 
@@ -215,6 +216,36 @@ impl Database {
     /// 建本地知识库的两张表（已有库靠 IF NOT EXISTS 平滑升级）。
     fn run_knowledge_migration(&self) -> AppResult<()> {
         self.conn.execute_batch(schema::MIGRATION_KNOWLEDGE_SQL)?;
+        Ok(())
+    }
+
+    /// 给已存在的 memory_items 表补上记忆分层两列（tier / consolidated_into）。
+    ///
+    /// 老库没有这两列时补上；`tier` 给默认 'episodic'，`consolidated_into` 为 NULL——
+    /// 历史记忆尚未固化，语义正确（不能事后追认已经固化）。
+    fn ensure_memory_tier_columns(&self) -> AppResult<()> {
+        let existing: Vec<String> = {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(memory_items)")?;
+            let names: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            names
+        };
+
+        // 表可能还没建（首次启动由 SCHEMA_SQL 建好），此时无需迁移。
+        if existing.is_empty() {
+            return Ok(());
+        }
+
+        if !existing.iter().any(|c| c == "tier") {
+            self.conn
+                .execute_batch("ALTER TABLE memory_items ADD COLUMN tier TEXT NOT NULL DEFAULT 'episodic'")?;
+        }
+        if !existing.iter().any(|c| c == "consolidated_into") {
+            self.conn
+                .execute_batch("ALTER TABLE memory_items ADD COLUMN consolidated_into TEXT")?;
+        }
         Ok(())
     }
 

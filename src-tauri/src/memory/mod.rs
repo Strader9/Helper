@@ -10,6 +10,14 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+pub mod consolidator;
+pub mod decay;
+pub mod firewall;
+
+pub use consolidator::{consolidate, ConsolidateSummary};
+pub use decay::tier_decay_rate;
+pub use firewall::{evaluate_firewall, FirewallDecision};
+
 /// 全局数据库路径（在 AppState::new 时设置）
 static DB_PATH: OnceLock<PathBuf> = OnceLock::new();
 
@@ -74,6 +82,53 @@ impl MemoryType {
     }
 }
 
+/// 记忆层级（tier）：决定衰减速率与固化优先级。
+///
+/// 借鉴 LumiCore 的 MemoryTier 分层，用 Rust 重写：
+/// - `Episodic`：原始对话/任务记忆，快速衰减，是固化器的原料
+/// - `Internalized`：内化偏好（用户偏好、应用习惯），较稳定
+/// - `Growth`：固化器产出的凝练叙事记忆
+/// - `CoreIdentity`：核心身份，永不衰减
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemoryTier {
+    Episodic,
+    Internalized,
+    Growth,
+    CoreIdentity,
+}
+
+impl MemoryTier {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MemoryTier::Episodic => "episodic",
+            MemoryTier::Internalized => "internalized",
+            MemoryTier::Growth => "growth",
+            MemoryTier::CoreIdentity => "core_identity",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "episodic" => MemoryTier::Episodic,
+            "internalized" => MemoryTier::Internalized,
+            "growth" => MemoryTier::Growth,
+            "core_identity" => MemoryTier::CoreIdentity,
+            _ => MemoryTier::Episodic,
+        }
+    }
+}
+
+/// 由记忆类型推断默认层级。
+///
+/// 用户偏好与应用习惯是「内化」的稳定事实；任务历史与对话摘要是「短期」的原始经验。
+fn tier_for_type(memory_type: MemoryType) -> MemoryTier {
+    match memory_type {
+        MemoryType::UserPreference | MemoryType::AppUsage => MemoryTier::Internalized,
+        MemoryType::Knowledge => MemoryTier::Growth,
+        MemoryType::TaskHistory | MemoryType::ConversationSummary => MemoryTier::Episodic,
+    }
+}
+
 /// 记忆条目
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryItem {
@@ -87,6 +142,10 @@ pub struct MemoryItem {
     pub last_accessed_at: String,
     pub expires_at: Option<String>,
     pub source: String,
+    /// 记忆层级（决定衰减速率）
+    pub tier: MemoryTier,
+    /// 被固化器合并后，指向合并产物的 ID；`None` 表示尚未被固化。
+    pub consolidated_into: Option<String>,
 }
 
 impl MemoryItem {
@@ -110,6 +169,8 @@ impl MemoryItem {
             last_accessed_at: now,
             expires_at: None,
             source: source.to_string(),
+            tier: tier_for_type(memory_type),
+            consolidated_into: None,
         }
     }
 }
@@ -316,8 +377,8 @@ impl MemoryEngine {
         let keywords_json = serde_json::to_string(&item.keywords).unwrap_or_else(|_| "[]".to_string());
 
         conn.execute(
-            "INSERT INTO memory_items (id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO memory_items (id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source, tier, consolidated_into)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, NULL)",
             rusqlite::params![
                 item.id,
                 type_str,
@@ -329,10 +390,41 @@ impl MemoryEngine {
                 item.last_accessed_at,
                 item.expires_at,
                 item.source,
+                item.tier.as_str(),
             ],
         )?;
 
         Ok(item.id)
+    }
+
+    /// 插入一条已构造好的记忆（供固化器等内部流程使用）。
+    ///
+    /// 与 `add_memory` 的区别：不走去重、不过防火墙，原样写入完整条目。
+    /// 调用方须保证内容已经过防火墙或来自可信的内部生成。
+    pub fn insert_item(
+        conn: &rusqlite::Connection,
+        item: &MemoryItem,
+    ) -> rusqlite::Result<()> {
+        let keywords_json = serde_json::to_string(&item.keywords).unwrap_or_else(|_| "[]".to_string());
+        conn.execute(
+            "INSERT INTO memory_items (id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source, tier, consolidated_into)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            rusqlite::params![
+                item.id,
+                item.memory_type.as_str(),
+                item.content,
+                keywords_json,
+                item.importance as i64,
+                item.access_count as i64,
+                item.created_at,
+                item.last_accessed_at,
+                item.expires_at,
+                item.source,
+                item.tier.as_str(),
+                item.consolidated_into,
+            ],
+        )?;
+        Ok(())
     }
 
     /// 检索记忆（按关键词匹配 + 类型过滤 + 重要性排序 + 时间衰减）
@@ -347,11 +439,11 @@ impl MemoryEngine {
 
         // 先获取所有未过期记忆
         let sql = if type_filter.is_some() {
-            "SELECT id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source
+            "SELECT id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source, tier, consolidated_into
              FROM memory_items WHERE memory_type = ?1 AND (expires_at IS NULL OR expires_at > datetime('now'))
              ORDER BY importance DESC, created_at DESC LIMIT 200"
         } else {
-            "SELECT id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source
+            "SELECT id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source, tier, consolidated_into
              FROM memory_items WHERE expires_at IS NULL OR expires_at > datetime('now')
              ORDER BY importance DESC, created_at DESC LIMIT 200"
         };
@@ -423,10 +515,10 @@ impl MemoryEngine {
         limit: usize,
     ) -> rusqlite::Result<Vec<MemoryItem>> {
         let sql = if memory_type.is_some() {
-            "SELECT id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source
+            "SELECT id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source, tier, consolidated_into
              FROM memory_items WHERE memory_type = ?1 ORDER BY importance DESC, created_at DESC LIMIT ?2"
         } else {
-            "SELECT id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source
+            "SELECT id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source, tier, consolidated_into
              FROM memory_items ORDER BY importance DESC, created_at DESC LIMIT ?1"
         };
 
@@ -534,11 +626,13 @@ impl MemoryEngine {
 // ============================================================
 
 /// 从数据库行构建 MemoryItem
-fn row_to_memory_item(row: &rusqlite::Row) -> rusqlite::Result<MemoryItem> {
+pub fn row_to_memory_item(row: &rusqlite::Row) -> rusqlite::Result<MemoryItem> {
     let type_str: String = row.get(1)?;
     let keywords_str: String = row.get(3)?;
     let keywords: Vec<String> = serde_json::from_str(&keywords_str).unwrap_or_default();
     let expires_at: Option<String> = row.get(8)?;
+    let tier_str: String = row.get(10)?;
+    let consolidated_into: Option<String> = row.get(11)?;
 
     Ok(MemoryItem {
         id: row.get(0)?,
@@ -551,6 +645,8 @@ fn row_to_memory_item(row: &rusqlite::Row) -> rusqlite::Result<MemoryItem> {
         last_accessed_at: row.get(7)?,
         expires_at,
         source: row.get(9)?,
+        tier: MemoryTier::from_str(&tier_str),
+        consolidated_into,
     })
 }
 
@@ -571,9 +667,9 @@ fn row_to_memory_item(row: &rusqlite::Row) -> rusqlite::Result<MemoryItem> {
 fn compute_relevance_score(item: &MemoryItem, query_keywords: &[String]) -> f64 {
     let importance = item.importance as f64;
 
-    // 时间衰减：创建天数
+    // 时间衰减：按层级取衰减率（episodic 快、core_identity 不衰减）
     let days = days_since(&item.created_at);
-    let time_decay = 0.95_f64.powi(days.min(365) as i32);
+    let time_decay = tier_decay_rate(item.tier).powi(days.min(365) as i32);
 
     // 访问次数加成
     let access_factor = 1.0 + (item.access_count as f64 + 1.0).ln();
@@ -640,6 +736,8 @@ mod tests {
             last_accessed_at: chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             expires_at: None,
             source: "test".to_string(),
+            tier: MemoryTier::Internalized,
+            consolidated_into: None,
         }
     }
 
