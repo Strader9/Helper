@@ -144,6 +144,16 @@ export class OpenAiCompatBackend {
     const reader = resp.body.getReader();
     const textDecoder = new TextDecoder();
     let usage = TokenUsage.zero();
+    const pendingCalls = new Map(); // index -> { id, name, args }
+
+    const flushCalls = async function* () {
+      for (const [, c] of pendingCalls) {
+        if (c.name) {
+          yield { type: 'tool_call', call: { id: c.id, function: { name: c.name, arguments: c.args } } };
+        }
+      }
+      pendingCalls.clear();
+    };
 
     while (true) {
       const { value, done } = await reader.read();
@@ -155,17 +165,24 @@ export class OpenAiCompatBackend {
         const choice = chunk.choices?.[0];
         if (!choice) continue;
         const delta = choice.delta ?? {};
-        if (delta.content) yield { type: 'text', text: delta.content };
         if (delta.tool_calls?.length) {
           for (const tc of delta.tool_calls) {
-            yield { type: 'tool_call', call: { id: tc.id, function: tc.function } };
+            const idx = tc.index ?? 0;
+            if (!pendingCalls.has(idx)) pendingCalls.set(idx, { id: tc.id, name: '', args: '' });
+            const cur = pendingCalls.get(idx);
+            if (tc.id) cur.id = tc.id;
+            if (tc.function?.name) cur.name = tc.function.name;
+            if (tc.function?.arguments) cur.args += tc.function.arguments;
           }
         }
+        if (delta.content) yield { type: 'text', text: delta.content };
         if (choice.finish_reason) {
+          yield* flushCalls();
           yield { type: 'done', reason: choice.finish_reason, usage };
         }
       }
     }
+    yield* flushCalls();
     yield { type: 'done', reason: 'stop', usage };
   }
 
@@ -243,7 +260,14 @@ export class OllamaBackend {
         if (!msg) continue;
         if (msg.tool_calls?.length) {
           for (const tc of msg.tool_calls) {
-            yield { type: 'tool_call', call: { id: tc.id, function: tc.function } };
+            const fn = tc.function ?? {};
+            // Ollama 原生返回对象型 arguments，OpenAI 兼容语义要求字符串，统一 stringify。
+            let args = fn.arguments ?? '';
+            if (typeof args !== 'string') args = JSON.stringify(args);
+            yield {
+              type: 'tool_call',
+              call: { id: tc.id, function: { name: fn.name ?? '', arguments: args } },
+            };
           }
         }
         if (msg.content) yield { type: 'text', text: msg.content };

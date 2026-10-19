@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 
 use crate::error::{AppError, AppResult};
+use super::openai::{OpenAiChatRequest, OpenAiStreamParser};
 
 /// Ollama 聊天消息
 ///
@@ -231,6 +232,28 @@ struct TagsResponse {
     models: Vec<OllamaModel>,
 }
 
+/// OpenAI 兼容模型列表响应（`GET /models`）
+#[derive(Debug, Deserialize)]
+struct OpenAiModelsResponse {
+    #[serde(default)]
+    data: Vec<OpenAiModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiModelEntry {
+    id: String,
+}
+
+/// 模型端点协议。
+///
+/// `Ollama` 走原生 `/api/chat`；`OpenAiCompat` 走 `/chat/completions`，
+/// 可指向 sidecar（本地多 provider 网关）或任意 OpenAI 兼容服务。
+#[derive(Debug, Clone)]
+pub enum Endpoint {
+    Ollama,
+    OpenAiCompat { api_key: Option<String> },
+}
+
 /// Ollama 客户端
 ///
 /// 封装与 Ollama 本地服务的所有 HTTP 通信。
@@ -244,6 +267,8 @@ pub struct OllamaClient {
     /// 不必重启应用。`Client` 的 timeout 是构造时烘死的、改不动，
     /// 所以这里额外保留一份可变的超时值，由请求方每轮现取。
     timeout_ms: Arc<AtomicU64>,
+    /// 协议端点：Ollama 原生或 OpenAI 兼容。
+    endpoint: Endpoint,
 }
 
 impl OllamaClient {
@@ -257,7 +282,15 @@ impl OllamaClient {
             unlimited_client: Client::builder().build().unwrap_or_default(),
             base_url,
             timeout_ms: Arc::new(AtomicU64::new(timeout_ms)),
+            endpoint: Endpoint::Ollama,
         }
+    }
+
+    /// 创建指向 OpenAI 兼容端点（含 sidecar）的客户端。
+    pub fn openai_compat(base_url: String, api_key: Option<String>, timeout_ms: u64) -> Self {
+        let mut client = Self::new(base_url, timeout_ms);
+        client.endpoint = Endpoint::OpenAiCompat { api_key };
+        client
     }
 
     /// 热更新请求超时（毫秒）。供设置保存时调用。
@@ -273,30 +306,63 @@ impl OllamaClient {
         self.timeout_ms.load(Ordering::SeqCst)
     }
 
-    /// 检查 Ollama 服务是否可用
+    /// 检查模型服务是否可用
     pub async fn is_available(&self) -> bool {
-        let url = format!("{}/api/tags", self.base_url);
+        let url = match &self.endpoint {
+            Endpoint::Ollama => format!("{}/api/tags", self.base_url),
+            Endpoint::OpenAiCompat { .. } => format!("{}/models", self.base_url),
+        };
         self.client.get(&url).send().await.is_ok()
     }
 
-    /// 获取本地模型列表
+    /// 获取模型列表
     pub async fn list_models(&self) -> AppResult<Vec<OllamaModel>> {
-        let url = format!("{}/api/tags", self.base_url);
-        let resp = self.client.get(&url).send().await?;
-
-        if !resp.status().is_success() {
-            return Err(AppError::Ollama(format!(
-                "Ollama returned status {}",
-                resp.status()
-            )));
+        match &self.endpoint {
+            Endpoint::Ollama => {
+                let url = format!("{}/api/tags", self.base_url);
+                let resp = self.client.get(&url).send().await?;
+                if !resp.status().is_success() {
+                    return Err(AppError::Ollama(format!(
+                        "Ollama returned status {}",
+                        resp.status()
+                    )));
+                }
+                let data: TagsResponse = resp.json().await?;
+                Ok(data.models)
+            }
+            Endpoint::OpenAiCompat { .. } => {
+                let url = format!("{}/models", self.base_url);
+                let resp = self.client.get(&url).send().await?;
+                if !resp.status().is_success() {
+                    return Err(AppError::Ollama(format!(
+                        "provider returned status {}",
+                        resp.status()
+                    )));
+                }
+                let data: OpenAiModelsResponse = resp.json().await?;
+                Ok(data
+                    .data
+                    .into_iter()
+                    .map(|entry| OllamaModel {
+                        name: entry.id.clone(),
+                        model: entry.id,
+                        modified_at: None,
+                        size: None,
+                        digest: None,
+                        details: None,
+                    })
+                    .collect())
+            }
         }
-
-        let data: TagsResponse = resp.json().await?;
-        Ok(data.models)
     }
 
     /// 后台预热模型。空 prompt 只触发加载，不产生用户可见内容。
+    ///
+    /// OpenAI 兼容端点没有预热概念，直接返回 Ok。
     pub async fn warm_up(&self, model: &str) -> AppResult<()> {
+        if matches!(self.endpoint, Endpoint::OpenAiCompat { .. }) {
+            return Ok(());
+        }
         let url = format!("{}/api/generate", self.base_url);
         let response = self
             .client
@@ -411,6 +477,20 @@ impl OllamaClient {
         timeout_ms: Option<u64>,
         extra_options: Option<serde_json::Value>,
     ) -> AppResult<Pin<Box<dyn Stream<Item = ChatChunk> + Send>>> {
+        if let Endpoint::OpenAiCompat { api_key } = &self.endpoint {
+            return self
+                .chat_stream_openai(
+                    api_key.clone(),
+                    model,
+                    messages,
+                    tools,
+                    temperature,
+                    timeout_ms,
+                    extra_options,
+                )
+                .await;
+        }
+
         let (tx, rx) = mpsc::channel::<ChatChunk>(128);
 
         let url = format!("{}/api/chat", self.base_url);
@@ -502,6 +582,111 @@ impl OllamaClient {
         Ok(Box::pin(ReceiverStream::new(rx)))
     }
 
+    /// OpenAI 兼容协议流式聊天。
+    ///
+    /// 走 `POST {base}/chat/completions`，SSE 增量解析 + 工具调用分片聚合。
+    /// `extra_options` 仅对 Ollama 协议有意义，这里忽略。
+    #[allow(clippy::too_many_arguments)]
+    async fn chat_stream_openai(
+        &self,
+        api_key: Option<String>,
+        model: &str,
+        messages: Vec<OllamaMessage>,
+        tools: Option<Vec<serde_json::Value>>,
+        temperature: f32,
+        timeout_ms: Option<u64>,
+        extra_options: Option<serde_json::Value>,
+    ) -> AppResult<Pin<Box<dyn Stream<Item = ChatChunk> + Send>>> {
+        let _ = extra_options;
+        let (tx, rx) = mpsc::channel::<ChatChunk>(128);
+        let url = format!("{}/chat/completions", self.base_url);
+        let client = if timeout_ms.is_some() {
+            self.client.clone()
+        } else {
+            self.unlimited_client.clone()
+        };
+
+        let request_body = OpenAiChatRequest {
+            model: model.to_string(),
+            messages,
+            stream: true,
+            tools,
+            temperature,
+            stream_options: Some(serde_json::json!({"include_usage": true})),
+        };
+
+        tokio::spawn(async move {
+            let result = async {
+                let mut request = client.post(&url).json(&request_body);
+                if let Some(key) = api_key.as_ref().filter(|k| !k.is_empty()) {
+                    request = request.bearer_auth(key);
+                }
+                let request = match timeout_ms {
+                    Some(t) => request.timeout(std::time::Duration::from_millis(t)),
+                    None => request,
+                };
+                let resp = request.send().await.map_err(AppError::Network)?;
+
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(AppError::Ollama(format!(
+                        "provider returned {}: {}",
+                        status, body
+                    )));
+                }
+
+                let mut stream = resp.bytes_stream();
+                let mut pending_line = Vec::<u8>::new();
+                let mut parser = OpenAiStreamParser::new();
+                let mut finished = false;
+
+                while let Some(chunk_result) = stream.next().await {
+                    let chunk = chunk_result.map_err(AppError::Network)?;
+                    pending_line.extend_from_slice(&chunk);
+                    while let Some(newline) = pending_line.iter().position(|b| *b == b'\n') {
+                        let line_bytes = pending_line.drain(..=newline).collect::<Vec<_>>();
+                        let line = String::from_utf8_lossy(&line_bytes);
+                        let line = line.trim();
+                        if line.is_empty() || line == "data: [DONE]" {
+                            continue;
+                        }
+                        let json = line.strip_prefix("data: ").unwrap_or(line);
+                        if parser.process_line(json, &tx).await {
+                            finished = true;
+                        }
+                    }
+                }
+
+                if !pending_line.is_empty() {
+                    let line = String::from_utf8_lossy(&pending_line);
+                    let line = line.trim();
+                    if !line.is_empty() && line != "data: [DONE]" {
+                        let json = line.strip_prefix("data: ").unwrap_or(line);
+                        if parser.process_line(json, &tx).await {
+                            finished = true;
+                        }
+                    }
+                }
+
+                // 流结束但没有 finish_reason：兜底 flush 未完成工具调用并补 done。
+                if !finished {
+                    parser.flush_calls(&tx).await;
+                    let _ = tx.send(ChatChunk::Done(None, None)).await;
+                }
+
+                Ok(())
+            }
+            .await;
+
+            if let Err(e) = result {
+                let _ = tx.send(ChatChunk::Error(format!("{e:#}"))).await;
+            }
+        });
+
+        Ok(Box::pin(ReceiverStream::new(rx)))
+    }
+
     /// 非流式聊天（简单场景）
     pub async fn chat(
         &self,
@@ -510,6 +695,12 @@ impl OllamaClient {
         tools: Option<Vec<serde_json::Value>>,
         temperature: f32,
     ) -> AppResult<(String, Option<Vec<ToolCall>>)> {
+        if let Endpoint::OpenAiCompat { api_key } = &self.endpoint {
+            return self
+                .chat_openai(api_key.clone(), model, messages, tools, temperature)
+                .await;
+        }
+
         let url = format!("{}/api/chat", self.base_url);
 
         let request_body = ChatRequest {
@@ -539,6 +730,49 @@ impl OllamaClient {
             Ok((msg.content, msg.tool_calls))
         } else {
             Err(AppError::Ollama("Empty response from Ollama".to_string()))
+        }
+    }
+
+    /// OpenAI 兼容非流式聊天。
+    async fn chat_openai(
+        &self,
+        api_key: Option<String>,
+        model: &str,
+        messages: Vec<OllamaMessage>,
+        tools: Option<Vec<serde_json::Value>>,
+        temperature: f32,
+    ) -> AppResult<(String, Option<Vec<ToolCall>>)> {
+        use super::openai::OpenAiChatResponse;
+
+        let url = format!("{}/chat/completions", self.base_url);
+        let request_body = OpenAiChatRequest {
+            model: model.to_string(),
+            messages,
+            stream: false,
+            tools,
+            temperature,
+            stream_options: None,
+        };
+
+        let mut request = self.client.post(&url).json(&request_body);
+        if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+            request = request.bearer_auth(key);
+        }
+        let resp = request.send().await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::Ollama(format!(
+                "provider returned {}: {}",
+                status, body
+            )));
+        }
+
+        let data: OpenAiChatResponse = resp.json().await?;
+        match data.choices.into_iter().next() {
+            Some(choice) => Ok(choice.message.into_parts()),
+            None => Err(AppError::Ollama("Empty response from provider".to_string())),
         }
     }
 }
@@ -677,5 +911,35 @@ mod timeout_tests {
         // 模拟命令层通过另一个句柄写值
         handle.store(88_000, Ordering::SeqCst);
         assert_eq!(client.current_timeout(), 88_000);
+    }
+}
+
+#[cfg(test)]
+mod sidecar_probe_tests {
+    use super::*;
+
+    /// 实机探针：Rust → sidecar → Ollama 全链路。
+    ///
+    /// 前置：Ollama 运行于 11434，sidecar 运行于 4770 且默认 provider 指向 Ollama。
+    /// 手动跑：`cargo test --lib sidecar_probe -- --ignored`
+    #[tokio::test]
+    #[ignore]
+    async fn real_openai_sidecar_round_trip() {
+        let client = OllamaClient::openai_compat(
+            "http://127.0.0.1:4770/v1".to_string(),
+            None,
+            60_000,
+        );
+        let (content, calls) = client
+            .chat(
+                "qwen3:8b",
+                vec![OllamaMessage::user("只回答数字：1+1等于几？")],
+                None,
+                0.7,
+            )
+            .await
+            .expect("sidecar 对话应成功");
+        assert!(content.contains('2'), "模型应回答 2，实际：{content}");
+        assert!(calls.is_none(), "纯问答不应触发工具调用");
     }
 }

@@ -6,9 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { SseDecoder, normalizeUsage, TokenUsage, backendFor, OllamaBackend, OpenAiCompatBackend } from '../src/llm/backends.js';
-import { ModelRouter } from '../src/llm/router.js';
-
-test('SseDecoder 解析完整行', () => {
+import { ModelRouter } from '../src/llm/router.js';test('SseDecoder 解析完整行', () => {
   const d = new SseDecoder();
   const out = d.push('data: {"a":1}\n');
   assert.equal(out.length, 1);
@@ -122,4 +120,38 @@ test('ModelRouter 健康度：连续失败达阈值后不再候选', () => {
   const snap = router.health()[0];
   assert.equal(snap.hasApiKey, false);
   assert.equal(snap.healthy, false);
+});
+
+// OpenAiCompatBackend 工具调用聚合：mock fetch 返回分片 SSE。
+test('OpenAiCompatBackend 聚合分片的 tool_calls', async () => {
+  const sseLines = [
+    'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}\n',
+    'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"path\\":"}}]},"finish_reason":null}]}\n',
+    'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"/etc/hosts\\"}"}}]},"finish_reason":null}]}\n',
+    'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}\n',
+    'data: [DONE]\n',
+  ];
+  const body = new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      for (const line of sseLines) controller.enqueue(enc.encode(line));
+      controller.close();
+    },
+  });
+  globalThis.fetch = async () =>
+    new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+
+  const backend = new OpenAiCompatBackend({ baseUrl: 'http://x', apiKey: 'k' });
+  const chunks = [];
+  for await (const c of backend.stream('m', { messages: [{ role: 'user', content: 'hi' }] })) {
+    chunks.push(c);
+  }
+
+  const calls = chunks.filter((c) => c.type === 'tool_call');
+  assert.equal(calls.length, 1, '应聚合为一个完整 tool_call');
+  assert.equal(calls[0].call.function.name, 'read_file');
+  assert.equal(calls[0].call.function.arguments, '{"path":"/etc/hosts"}');
+
+  const done = chunks.find((c) => c.type === 'done');
+  assert.equal(done.usage.completionTokens, 5);
 });

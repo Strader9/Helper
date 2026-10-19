@@ -181,6 +181,16 @@ impl AppState {
             .map(|value| value.clamp(5_000, 300_000))
             .unwrap_or(60_000);
 
+        // 模型协议与凭据。protocol 为 "openai" 时走 OpenAI 兼容端点
+        // （可指向 sidecar 网关或任意云模型），否则走 Ollama 原生协议。
+        let protocol = db
+            .get_setting("llm.protocol")?
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "ollama".to_string());
+        let api_key = db
+            .get_setting("llm.api_key")?
+            .filter(|value| !value.trim().is_empty());
+
         // 浏览器自动化：把设置里的偏好注入 BrowserManager 单例。
         //
         // BrowserManager 是 OnceLock 单例，创建时机不确定（首次有浏览器工具
@@ -222,7 +232,11 @@ impl AppState {
             Arc::new(Mutex::new(pm))
         };
 
-        let ollama = Arc::new(OllamaClient::new(ollama_url, timeout_ms));
+        let ollama = if protocol == "openai" {
+            Arc::new(OllamaClient::openai_compat(ollama_url, api_key, timeout_ms))
+        } else {
+            Arc::new(OllamaClient::new(ollama_url, timeout_ms))
+        };
 
         let pending_permissions = Arc::new(Mutex::new(HashMap::<String, PendingPermission>::new()));
 
@@ -820,7 +834,21 @@ pub mod commands {
                 .and_then(|value| value.parse::<u64>().ok())
                 .map(|value| value.clamp(5_000, 300_000))
                 .unwrap_or(60_000);
-            (crate::llm::OllamaClient::new(base_url, timeout_ms), model)
+            let protocol = db
+                .get_setting("llm.protocol")
+                .map_err(|e| e.to_string())?
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "ollama".to_string());
+            let api_key = db
+                .get_setting("llm.api_key")
+                .map_err(|e| e.to_string())?
+                .filter(|value| !value.trim().is_empty());
+            let client = if protocol == "openai" {
+                crate::llm::OllamaClient::openai_compat(base_url, api_key, timeout_ms)
+            } else {
+                crate::llm::OllamaClient::new(base_url, timeout_ms)
+            };
+            (client, model)
         };
 
         // 点选出来的"改哪里"。截断到 600 字：这是给模型的定位提示，不是完整 DOM 导出，

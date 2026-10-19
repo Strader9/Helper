@@ -4,5 +4,6 @@
 //! 支持流式聊天、模型列表查询、结构化输出（tool calls）。
 
 pub mod ollama;
+pub mod openai;
 
 pub use ollama::{OllamaClient, OllamaMessage, OllamaModel, ChatChunk, ToolCall, FunctionCall};

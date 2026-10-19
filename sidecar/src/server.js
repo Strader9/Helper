@@ -7,6 +7,7 @@
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import { ModelRouter } from './llm/router.js';
+import { attachHttpApi } from './httpApi.js';
 
 const PORT = Number(process.env.SIDECAR_PORT ?? 4770);
 const HOST = process.env.SIDECAR_HOST ?? '127.0.0.1';
@@ -41,6 +42,7 @@ export function loadProviders() {
 function buildServer() {
   const router = new ModelRouter(loadProviders());
   const httpServer = createServer();
+  attachHttpApi(httpServer, router);
   const io = new Server(httpServer, {
     cors: { origin: '*', methods: ['GET', 'POST'] },
     maxHttpBufferSize: 1e7,
