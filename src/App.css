@@ -3232,3 +3232,44 @@ input, textarea {
   font-size: 11px;
   color: var(--neon-cyan);
 }
+
+/* === 执行结论配色（与证据面板同语义） ===
+ * green=已验证 / yellow=未能确认 / red=与事实不符或失败 / cyan=执行中
+ * 颜色只区分"有没有证据"，不区分"重不重要"。
+ */
+.tool-execution-card.unverified {
+  border-color: rgba(255, 170, 0, 0.35);
+}
+
+.tool-execution-card.contradicted {
+  border-color: rgba(255, 51, 85, 0.55);
+  box-shadow: 0 0 12px rgba(255, 51, 85, 0.12);
+}
+
+.tool-execution-card.unverified .tool-status-text {
+  color: var(--neon-yellow);
+}
+
+.tool-execution-card.contradicted .tool-status-text,
+.tool-execution-card.error .tool-status-text {
+  color: var(--neon-red);
+}
+
+.tool-execution-card.success .tool-status-text {
+  color: var(--neon-green);
+}
+
+.tool-code.unverified {
+  color: var(--neon-yellow);
+}
+
+.tool-verification-note {
+  margin: 0;
+  padding: 6px 8px;
+  border-left: 2px solid var(--border-color);
+  background: var(--bg-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  word-break: break-word;
+}

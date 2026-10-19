@@ -142,6 +142,10 @@ fn main() {
             pc_guardian_lib::commands::check_autostart_status,
             // 审计日志命令
             pc_guardian_lib::commands::get_audit_logs,
+            // 能力契约 / 工具回执命令
+            pc_guardian_lib::commands::get_tool_receipts,
+            pc_guardian_lib::commands::get_capability_coverage,
+            pc_guardian_lib::commands::get_task_truth,
             // 任务管理命令
             pc_guardian_lib::commands::get_tasks,
             pc_guardian_lib::commands::get_active_task,

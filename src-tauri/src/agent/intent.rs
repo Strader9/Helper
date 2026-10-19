@@ -236,6 +236,22 @@ fn contains_word(text: &str, word: &str) -> bool {
 /// 根据关键词推断工具类别
 fn keyword_to_category(keyword: &str) -> Option<ToolCategory> {
     let k = keyword.to_lowercase();
+
+    // 链接类先判。否则"打开这个链接"里的"打开"会先命中 Program 分支，
+    // 模型拿到的是应用管理工具，而用户要的是用浏览器打开网页。
+    if k.contains("链接") || k.contains("网址") || k.contains("url") || k.contains("http") {
+        return Some(ToolCategory::System);
+    }
+
+    // Office 文档同理：说"读一下这个 docx"时，"读"会先命中 File 分支，
+    // 而真正能干这活的工具在 Office 类。
+    if k.contains("docx") || k.contains("xlsx") || k.contains("pptx")
+        || k.contains("word") || k.contains("excel") || k.contains("powerpoint")
+        || k.contains("ppt") || k.contains("幻灯片")
+    {
+        return Some(ToolCategory::Office);
+    }
+
     // Program 类：打开/启动/运行/关闭/退出/安装/卸载/播放等
     if k.contains("打开") || k.contains("启动") || k.contains("运行") || k.contains("开启")
         || k.contains("launch") || k.contains("open") || k.contains("run") || k.contains("start")
@@ -287,10 +303,16 @@ fn keyword_to_category(keyword: &str) -> Option<ToolCategory> {
         || k.contains("监控") || k.contains("monitor") || k.contains("记录") || k.contains("log")
         || k.contains("分享") || k.contains("share") || k.contains("发送") || k.contains("send")
         || k.contains("打印") || k.contains("print") || k.contains("静音") || k.contains("mute")
-        || k.contains("execute") || k.contains("command") || k.contains("命令") || k.contains("cmd")
+        || k.contains("执行") || k.contains("execute") || k.contains("command") || k.contains("命令") || k.contains("cmd")
         || k.contains("统计") || k.contains("count") || k.contains("系统信息") || k.contains("系统状态")
+        || k.contains("锁屏") || k.contains("环境变量") || k.contains("environment")
+        || k.contains("空间") || k.contains("网关") || k.contains("ip 地址") || k.contains("dns")
     {
         Some(ToolCategory::System)
+    } else if k.contains("知识库") || k.contains("索引") || k.contains("knowledge")
+        || k.contains("资料") || k.contains("笔记") || k.contains("文档库")
+    {
+        Some(ToolCategory::Knowledge)
     } else if k.contains("remember") || k.contains("recall") || k.contains("forget")
         || k.contains("记忆") || k.contains("记住") || k.contains("回忆") || k.contains("忘记")
     {
@@ -318,6 +340,7 @@ pub fn fallback_categories() -> Vec<ToolCategory> {
         ToolCategory::ProcessWindow,
         ToolCategory::System,
         ToolCategory::Memory,
+        ToolCategory::Knowledge,
     ]
 }
 

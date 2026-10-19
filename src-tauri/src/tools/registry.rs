@@ -31,6 +31,10 @@ pub enum ToolCategory {
     System,
     /// 长期记忆
     Memory,
+    /// 本地文档知识库（索引与检索）
+    Knowledge,
+    /// Office 文档读写
+    Office,
     /// 动态技能
     Skill,
     /// 通用工具（始终加载）
@@ -46,6 +50,8 @@ impl ToolCategory {
             ToolCategory::Browser => "browser",
             ToolCategory::System => "system",
             ToolCategory::Memory => "memory",
+            ToolCategory::Knowledge => "knowledge",
+            ToolCategory::Office => "office",
             ToolCategory::Skill => "skill",
             ToolCategory::General => "general",
         }
@@ -173,6 +179,39 @@ impl ToolRegistry {
             Arc::new(github::GithubSearchTool::new(db.clone(), app_dir.clone())),
             ToolCategory::General,
         );
+
+        // 启动时核对能力契约覆盖率。
+        // 缺契约不阻断启动（已经能跑的功能不该因为记账不全就罢工），
+        // 但必须在日志里说清楚缺了谁——否则新增工具的人永远收不到提醒。
+        let report = super::contract::coverage(&registry.list_names());
+        if report.fully_declared() {
+            eprintln!(
+                "[Capability] 契约覆盖 {}/{}，实质副作用 {}/{} 已声明验证策略",
+                report.declared, report.total_tools, report.material_verified, report.material
+            );
+        } else {
+            eprintln!(
+                "[Capability] 契约覆盖 {}/{}，缺少契约的工具: {}",
+                report.declared,
+                report.total_tools,
+                report.missing.join(", ")
+            );
+        }
+        if !report.material_without_verification.is_empty() {
+            eprintln!(
+                "[Capability] 以下实质副作用能力既无验证策略也无欠账说明: {}",
+                report.material_without_verification.join(", ")
+            );
+        }
+        if !report.material_with_verification_debt.is_empty() {
+            eprintln!(
+                "[Capability] 已验证 {} 个实质副作用能力，另有 {} 个登记为验证欠账: {}",
+                report.material_verified,
+                report.material_with_verification_debt.len(),
+                report.material_with_verification_debt.join(", ")
+            );
+        }
+
         registry
     }
 
@@ -188,6 +227,15 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::file_ops::WriteFileTool), ToolCategory::File);
         self.register_with_category(Arc::new(executors::file_ops::ListDirectoryTool), ToolCategory::File);
 
+        // === File 类（文件管理扩容：复制/移动/删除/属性/检索/建目录）===
+        self.register_with_category(Arc::new(executors::fs_extra::CopyPathTool), ToolCategory::File);
+        self.register_with_category(Arc::new(executors::fs_extra::MovePathTool), ToolCategory::File);
+        self.register_with_category(Arc::new(executors::fs_extra::DeletePathTool), ToolCategory::File);
+        self.register_with_category(Arc::new(executors::fs_extra::GetFileInfoTool), ToolCategory::File);
+        self.register_with_category(Arc::new(executors::fs_extra::SearchFilesTool), ToolCategory::File);
+        self.register_with_category(Arc::new(executors::fs_extra::SearchContentTool), ToolCategory::File);
+        self.register_with_category(Arc::new(executors::fs_extra::CreateDirectoryTool), ToolCategory::File);
+
         // === Program 类 ===
         self.register_with_category(Arc::new(executors::program::LaunchProgramTool), ToolCategory::Program);
         self.register_with_category(Arc::new(executors::program::FindProgramTool), ToolCategory::Program);
@@ -196,6 +244,16 @@ impl ToolRegistry {
         // === System 类 ===
         self.register_with_category(Arc::new(executors::system::ExecuteCommandTool), ToolCategory::System);
         self.register_with_category(Arc::new(executors::system::TakeScreenshotTool), ToolCategory::System);
+
+        // === System 类（系统设置扩容：剪贴板/通知/网络/磁盘/环境/锁屏/开链接）===
+        self.register_with_category(Arc::new(executors::os_extra::ReadClipboardTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::os_extra::WriteClipboardTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::os_extra::SendNotificationTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::os_extra::GetNetworkStatusTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::os_extra::GetDiskUsageTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::os_extra::GetEnvironmentTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::os_extra::LockScreenTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::os_extra::OpenUrlTool), ToolCategory::System);
 
         // === ProcessWindow 类 ===
         use crate::computer;
@@ -223,6 +281,20 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::memory::RememberTool), ToolCategory::Memory);
         self.register_with_category(Arc::new(executors::memory::RecallTool), ToolCategory::Memory);
         self.register_with_category(Arc::new(executors::memory::ForgetTool), ToolCategory::Memory);
+        self.register_with_category(Arc::new(executors::memory::ListMemoriesTool), ToolCategory::Memory);
+        self.register_with_category(Arc::new(executors::memory::UpdateMemoryTool), ToolCategory::Memory);
+        self.register_with_category(Arc::new(executors::memory::MemoryStatsTool), ToolCategory::Memory);
+
+        // === Office 类（Word / Excel / PowerPoint 读取）===
+        self.register_with_category(Arc::new(executors::office::ReadDocxTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::office::ReadXlsxTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::office::ReadPptxTool), ToolCategory::Office);
+
+        // === Knowledge 类（本地文档索引与检索）===
+        self.register_with_category(Arc::new(executors::knowledge::IndexDocumentTool), ToolCategory::Knowledge);
+        self.register_with_category(Arc::new(executors::knowledge::SearchKnowledgeTool), ToolCategory::Knowledge);
+        self.register_with_category(Arc::new(executors::knowledge::ListKnowledgeTool), ToolCategory::Knowledge);
+        self.register_with_category(Arc::new(executors::knowledge::ForgetDocumentTool), ToolCategory::Knowledge);
 
         // === Browser 类（13 个）===
         self.register_with_category(Arc::new(executors::browser::BrowserOpenTool), ToolCategory::Browser);

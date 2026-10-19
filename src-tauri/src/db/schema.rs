@@ -3,7 +3,7 @@
 //! 所有表结构和索引定义。
 //! 设计原则：写少读多、预建索引、数据最小化。
 //!
-//! 共 11 张表：
+//! 共 18 张表：
 //! 1. migrations         - 迁移版本记录
 //! 2. settings           - 配置项
 //! 3. audit_logs         - 审计日志
@@ -15,6 +15,13 @@
 //! 9. automation_rules   - 自动化规则
 //! 10. github_snapshots  - GitHub 趋势快照元数据
 //! 11. notification_logs - 通知日志
+//! 12. agent_tasks       - Agent 任务状态
+//! 13. trusted_tools     - 已信任工具
+//! 14. agent_observations - Agent 观察记录
+//! 15. memory_items      - 长期记忆
+//! 16. proactive_rules   - 主动助手规则
+//! 17. skills            - 已安装技能
+//! 18. tool_receipts     - 工具回执账本（事实层）
 
 /// 完整初始化 SQL
 ///
@@ -333,6 +340,42 @@ CREATE TABLE IF NOT EXISTS skills (
 
 CREATE INDEX IF NOT EXISTS idx_skills_type ON skills(skill_type);
 CREATE INDEX IF NOT EXISTS idx_skills_enabled ON skills(enabled);
+
+-- ============================================================
+-- 18. tool_receipts - 工具回执账本（能力契约层新增）
+-- ============================================================
+-- 与 audit_logs 的分工：audit_logs 记"谁被允许做了什么"（安全审计），
+-- tool_receipts 记"这次调用实际改变了什么、拿什么证据判定它完成了"（事实）。
+-- 模型说"已经做完"不算事实，verification_status = 'VERIFIED' 才算。
+CREATE TABLE IF NOT EXISTS tool_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    run_id TEXT,
+    tool_name TEXT NOT NULL,
+    capability_id TEXT NOT NULL,
+    side_effect TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    reversible INTEGER NOT NULL DEFAULT 1,
+    risk_level TEXT NOT NULL,
+    verification_strategy TEXT NOT NULL,
+    verification_status TEXT NOT NULL,
+    verification_evidence TEXT,
+    missing_fields TEXT,
+    idempotency_key TEXT,
+    request_digest TEXT NOT NULL,
+    result_digest TEXT,
+    permission_result TEXT NOT NULL,
+    success INTEGER NOT NULL,
+    error_code TEXT,
+    duration_ms INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_receipts_session ON tool_receipts(session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_receipts_tool ON tool_receipts(tool_name);
+CREATE INDEX IF NOT EXISTS idx_receipts_status ON tool_receipts(verification_status);
+CREATE INDEX IF NOT EXISTS idx_receipts_idempotency ON tool_receipts(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_receipts_created ON tool_receipts(created_at DESC);
 "#;
 
 /// Phase 4 安全层数据库迁移 SQL
@@ -354,4 +397,34 @@ CREATE INDEX IF NOT EXISTS idx_trusted_tools_name ON trusted_tools(tool_name);
 
 -- 更新 allowed_directories 的 access_level（如果已有数据）
 UPDATE allowed_directories SET access_level = 'TRUSTED' WHERE is_default = 0;
+"#;
+
+/// 本地知识库迁移 SQL
+///
+/// 与记忆表的区别：`memory_items` 存"助手记住的事实"，会被注入 System Prompt；
+/// 这两张表存"用户文档的原文分块"，只在检索时按需取出——
+/// 原文进上下文会挤掉对话历史，所以必须分层。
+pub const MIGRATION_KNOWLEDGE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    ext TEXT,
+    bytes INTEGER NOT NULL DEFAULT 0,
+    sha256 TEXT NOT NULL,
+    chunk_count INTEGER NOT NULL DEFAULT 0,
+    indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_kdocs_indexed ON knowledge_documents(indexed_at DESC);
+
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    chars INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_kchunks_doc ON knowledge_chunks(document_id, ordinal);
 "#;

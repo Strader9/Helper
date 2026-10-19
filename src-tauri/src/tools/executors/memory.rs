@@ -248,3 +248,204 @@ impl AgentTool for ForgetTool {
         }
     }
 }
+
+// ============================================================
+// list_memories 工具 — 浏览记忆
+// ============================================================
+
+/// 列出记忆（不依赖关键词）
+pub struct ListMemoriesTool;
+
+#[async_trait]
+impl AgentTool for ListMemoriesTool {
+    fn name(&self) -> &'static str {
+        "list_memories"
+    }
+
+    fn description(&self) -> &'static str {
+        "按重要性列出长期记忆，可按类型过滤。用来回答「你都记得我什么」「关于项目有哪些记忆」。与 recall 的区别：recall 需要关键词，这里不需要。"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "memory_type": {
+                    "type": "string",
+                    "enum": ["user_preference", "task_history", "knowledge", "conversation_summary", "app_usage"],
+                    "description": "按类型过滤（可选）"
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "返回数量上限（可选，默认 20）"
+                }
+            }
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
+        let memory_type = args["memory_type"].as_str().map(MemoryType::from_str);
+        let limit = args["limit"].as_u64().unwrap_or(20).min(100) as usize;
+
+        let conn = crate::memory::open_connection()
+            .ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))?;
+
+        let memories = MemoryEngine::list_by_type(&conn, memory_type, limit)?;
+        let items: Vec<serde_json::Value> = memories
+            .iter()
+            .map(|m| {
+                json!({
+                    "id": m.id,
+                    "memory_type": m.memory_type.as_str(),
+                    "content": m.content,
+                    "importance": m.importance,
+                    "access_count": m.access_count,
+                    "created_at": m.created_at,
+                    "source": m.source
+                })
+            })
+            .collect();
+
+        Ok(ToolResult::ok(json!({
+            "count": items.len(),
+            "memories": items
+        })))
+    }
+}
+
+// ============================================================
+// update_memory 工具 — 修正记忆
+// ============================================================
+
+/// 修正一条已有记忆
+pub struct UpdateMemoryTool;
+
+#[async_trait]
+impl AgentTool for UpdateMemoryTool {
+    fn name(&self) -> &'static str {
+        "update_memory"
+    }
+
+    fn description(&self) -> &'static str {
+        "修改一条已有记忆的内容或重要性。当用户说「那条记错了」「改成……」「这个更重要」时使用，而不是再记一条新的（重复记忆会让检索结果变脏）。"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "要修改的记忆 ID（从 list_memories 或 recall 得到）"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "新的内容（可选，不改则不传）"
+                },
+                "importance": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "新的重要性 0-100（可选，不改则不传）"
+                }
+            },
+            "required": ["memory_id"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Medium
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
+        let memory_id = args["memory_id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| AppError::InvalidArgument("memory_id is required".to_string()))?;
+        let content = args["content"].as_str();
+        let importance = args["importance"].as_u64().map(|v| v.min(100) as u8);
+
+        if content.is_none() && importance.is_none() {
+            return Ok(ToolResult::err(
+                "INVALID_PARAMS",
+                "content 与 importance 至少要给一个",
+            ));
+        }
+
+        let conn = crate::memory::open_connection()
+            .ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))?;
+
+        let changed = MemoryEngine::update_memory(&conn, memory_id, content, importance)?;
+        if changed {
+            Ok(ToolResult::ok(json!({
+                "memory_id": memory_id,
+                "updated": true,
+                "content_changed": content.is_some(),
+                "importance_changed": importance.is_some(),
+            })))
+        } else {
+            Ok(ToolResult::err(
+                "NOT_FOUND",
+                &format!("未找到 ID 为 {} 的记忆", memory_id),
+            ))
+        }
+    }
+}
+
+// ============================================================
+// memory_stats 工具 — 记忆概览
+// ============================================================
+
+/// 记忆库统计
+pub struct MemoryStatsTool;
+
+#[async_trait]
+impl AgentTool for MemoryStatsTool {
+    fn name(&self) -> &'static str {
+        "memory_stats"
+    }
+
+    fn description(&self) -> &'static str {
+        "记忆库概览：总条数、各类型分布、最高与最低重要性。用来判断「记忆是不是太多了」或「某类记忆有没有攒下来」。"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({ "type": "object", "properties": {} })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    async fn execute(&self, _args: serde_json::Value) -> AppResult<ToolResult> {
+        let conn = crate::memory::open_connection()
+            .ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))?;
+
+        let total = MemoryEngine::count(&conn)?;
+        let by_type: Vec<serde_json::Value> = MemoryEngine::counts_by_type(&conn)?
+            .into_iter()
+            .map(|(name, count)| json!({ "memory_type": name, "count": count }))
+            .collect();
+
+        let (importance_min, importance_max): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT MIN(importance), MAX(importance) FROM memory_items",
+                [],
+                |row| Ok((row.get(0).ok(), row.get(1).ok())),
+            )
+            .unwrap_or((None, None));
+
+        Ok(ToolResult::ok(json!({
+            "total": total,
+            "by_type": by_type,
+            "importance_min": importance_min,
+            "importance_max": importance_max,
+        })))
+    }
+}

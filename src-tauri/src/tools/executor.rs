@@ -15,6 +15,8 @@ use crate::db::Database;
 use crate::error::{AppError, AppResult};
 use crate::security::{PermissionManager, PermissionResult, DENY_USER_DENIED};
 use crate::security::{PermissionDecision, PermissionRequestPayload};
+use crate::tools::contract::{contract_for, CapabilityContract, VerificationStrategy};
+use crate::tools::receipt::{ProbeVerdict, VerificationOutcome, VerificationStatus};
 use crate::tools::{ToolRegistry, ToolResult, RiskLevel};
 
 /// 工具执行请求
@@ -136,6 +138,17 @@ impl ToolExecutor {
         let risk_level = tool.risk_level();
         let risk_str = risk_level.as_str().to_string();
 
+        // 1.5 取能力契约。
+        // 没有契约的工具照样能跑（不因为记账缺失就罢工），但回执里必须
+        // 如实标记"未声明契约"，否则事后无法区分"验证通过"和"没人说要验证"。
+        let contract = contract_for(&request.tool_name);
+        if contract.is_none() {
+            eprintln!(
+                "[Capability] 工具 '{}' 没有能力契约，其副作用与验证策略未知",
+                request.tool_name
+            );
+        }
+
         // 2. 提取路径参数（用于路径安全校验）
         let path_arg = extract_path_from_args(&request.arguments, &request.tool_name);
 
@@ -152,20 +165,31 @@ impl ToolExecutor {
                 permission_result_str = "ALLOWED".to_string();
             }
             PermissionResult::Denied { reason, code } => {
+                let denied_result = ToolResult::err(&code, &reason);
+                let permission_str = format!("DENIED: {}", code);
                 // 记录审计日志（被权限系统拒绝）
                 self.write_audit(
                     &session_id, &request.tool_name, &risk_str,
                     Some(&request.arguments.to_string()),
-                    &format!("DENIED: {}", code), false,
+                    &permission_str, false,
                     Some(&code), Some(&reason), 0,
                     Some(&format!("权限拒绝: {}", code)),
                 ).await;
+                let (verification, receipt_id) = self
+                    .persist_receipt(
+                        contract, &request.tool_name, &session_id, run_id.as_deref(),
+                        &request.arguments, &denied_result, &permission_str, 0, &risk_str,
+                        None,
+                    )
+                    .await;
                 return Ok(ToolExecutionResult {
                     tool_name: request.tool_name,
                     success: false,
-                    result: ToolResult::err(&code, &reason),
-                    permission_result: format!("DENIED: {}", code),
+                    result: denied_result,
+                    permission_result: permission_str,
                     duration_ms: 0,
+                    verification,
+                    receipt_id,
                 });
             }
             PermissionResult::ConfirmationRequired => {
@@ -192,19 +216,30 @@ impl ToolExecutor {
                         permission_result_str = "ALLOWED_ALWAYS".to_string();
                     }
                     PermissionDecision::Deny => {
+                        let denied_result = ToolResult::err(DENY_USER_DENIED, "用户拒绝了此操作");
+                        let permission_str = "DENIED: USER_DENIED".to_string();
                         self.write_audit(
                             &session_id, &request.tool_name, &risk_str,
                             Some(&request.arguments.to_string()),
-                            "DENIED: USER_DENIED", false,
+                            &permission_str, false,
                             Some(DENY_USER_DENIED), Some("用户拒绝了此操作"), 0,
                             Some("用户拒绝操作"),
                         ).await;
+                        let (verification, receipt_id) = self
+                            .persist_receipt(
+                                contract, &request.tool_name, &session_id, run_id.as_deref(),
+                                &request.arguments, &denied_result, &permission_str, 0, &risk_str,
+                                None,
+                            )
+                            .await;
                         return Ok(ToolExecutionResult {
                             tool_name: request.tool_name,
                             success: false,
-                            result: ToolResult::err(DENY_USER_DENIED, "用户拒绝了此操作"),
-                            permission_result: "DENIED: USER_DENIED".to_string(),
+                            result: denied_result,
+                            permission_result: permission_str,
                             duration_ms: 0,
+                            verification,
+                            receipt_id,
                         });
                     }
                 }
@@ -222,6 +257,8 @@ impl ToolExecutor {
 
         // 先克隆 arguments 用于审计（tool.execute 会 move 掉 request.arguments）
         let args_json = request.arguments.to_string();
+        // 回执要留一份结构化参数算摘要与幂等键，同样在 move 之前取
+        let args_for_receipt = request.arguments.clone();
 
         let result = match timeout(tool_timeout, tool.execute(request.arguments)).await {
             Ok(Ok(result)) => result,
@@ -263,13 +300,126 @@ impl ToolExecutor {
             result_summary.as_deref(),
         ).await;
 
+        // 6. 独立探查：工具说成功了，去现实世界里看一眼是不是真成功。
+        //    只对声明了机器可判据、且确实执行成功的能力做——探查要起子进程
+        //    （tasklist 等），对失败调用和"没有判据"的能力没有意义。
+        let probe = self
+            .probe(&request.tool_name, contract, &args_for_receipt, &result)
+            .await;
+
+        // 7. 落一条事实回执：这次调用到底改变了什么、拿什么证据算完成
+        let (verification, receipt_id) = self
+            .persist_receipt(
+                contract,
+                &request.tool_name,
+                &session_id,
+                run_id.as_deref(),
+                &args_for_receipt,
+                &result,
+                &permission_result_str,
+                duration_ms,
+                &risk_str,
+                probe.as_ref(),
+            )
+            .await;
+
+        if verification.status == VerificationStatus::Unverified {
+            eprintln!(
+                "[Receipt] '{}' 自报成功但回执缺少字段: {}",
+                request.tool_name,
+                verification.missing_fields.join(", ")
+            );
+        }
+        if verification.status == VerificationStatus::Contradicted {
+            eprintln!(
+                "[Receipt] '{}' 自报成功但独立探查否证: {}",
+                request.tool_name,
+                verification.evidence.as_deref().unwrap_or("无判据")
+            );
+        }
+
         Ok(ToolExecutionResult {
             tool_name: request.tool_name,
             success,
             result,
             permission_result: permission_result_str,
             duration_ms,
+            verification,
+            receipt_id,
         })
+    }
+
+    /// 计算验证结论并落库（实现见 `receipt::record`）。
+    ///
+    /// 执行器只负责把上下文递过去，判定与记账的规则集中在回执模块，
+    /// 避免"执行器一套规则、测试另一套规则"。
+    #[allow(clippy::too_many_arguments)]
+    async fn persist_receipt(
+        &self,
+        contract: Option<&'static CapabilityContract>,
+        tool_name: &str,
+        session_id: &str,
+        run_id: Option<&str>,
+        arguments: &serde_json::Value,
+        result: &ToolResult,
+        permission_result: &str,
+        duration_ms: i64,
+        risk_level: &str,
+        probe: Option<&ProbeVerdict>,
+    ) -> (VerificationOutcome, String) {
+        let db = self.db.lock().await;
+        crate::tools::receipt::record(
+            &db,
+            contract,
+            tool_name,
+            session_id,
+            run_id,
+            arguments,
+            result,
+            permission_result,
+            duration_ms,
+            risk_level,
+            probe,
+        )
+    }
+
+    /// 做一次独立探查，把"工具自述"与"现实"对齐。
+    ///
+    /// 探查会起子进程（`tasklist` 之类），所以：
+    /// - 只在工具确实执行成功、且契约声明了机器可判据时才做；
+    /// - 用 `spawn_blocking` 挪出异步线程池，避免阻塞运行时。
+    async fn probe(
+        &self,
+        tool_name: &str,
+        contract: Option<&'static CapabilityContract>,
+        arguments: &serde_json::Value,
+        result: &ToolResult,
+    ) -> Option<ProbeVerdict> {
+        let contract = contract?;
+        if contract.verification == VerificationStrategy::None || !result.success {
+            return Some(ProbeVerdict::Unavailable);
+        }
+
+        let tool = tool_name.to_string();
+        let args = arguments.clone();
+        let result = result.clone();
+
+        let joined = tokio::task::spawn_blocking(move || {
+            crate::agent::verification::VerificationEngine::new().verify(&tool, &args, &result)
+        })
+        .await;
+
+        use crate::agent::verification::VerificationResult;
+        match joined {
+            Ok(VerificationResult::Pass { summary }) => Some(ProbeVerdict::Pass(summary)),
+            Ok(VerificationResult::Fail { reason }) => Some(ProbeVerdict::Fail(reason)),
+            Ok(VerificationResult::Unavailable { .. }) => Some(ProbeVerdict::Unavailable),
+            // 探查任务本身崩了：如实记"没查"，不要吞掉也不要冒充通过。
+            Err(e) => {
+                eprintln!("[Probe] '{}' 探查任务失败: {}", tool_name, e);
+                Some(ProbeVerdict::Unavailable)
+            }
+        }
     }
 
     /// 写入审计日志（失败仅记录日志，不影响主流程）
@@ -535,24 +685,57 @@ pub struct ToolExecutionResult {
     pub result: ToolResult,
     pub permission_result: String,
     pub duration_ms: i64,
+    /// 这次调用是否达成契约要求的验证结论
+    pub verification: VerificationOutcome,
+    /// 回执 ID（写库失败时为空串）
+    pub receipt_id: String,
 }
 
 impl ToolExecutionResult {
     /// 转换为给 LLM 的 tool 消息内容
     pub fn to_tool_message_content(&self) -> String {
-        if self.result.success {
+        let mut payload = if self.result.success {
             self.result
                 .data
-                .as_ref()
-                .map(|d| d.to_string())
-                .unwrap_or_else(|| "{}".to_string())
+                .clone()
+                .unwrap_or_else(|| serde_json::json!({}))
         } else {
-            format!(
-                r#"{{"error": "{}", "code": "{}"}}"#,
-                self.result.error.as_deref().unwrap_or("unknown error"),
-                self.result.error_code.as_deref().unwrap_or("UNKNOWN")
-            )
+            serde_json::json!({
+                "error": self.result.error.as_deref().unwrap_or("unknown error"),
+                "code": self.result.error_code.as_deref().unwrap_or("UNKNOWN"),
+            })
+        };
+
+        // 把验证结论一并交给模型。
+        //
+        // 只记账不告知等于没记：模型看不到结论，就会照着"工具返回成功"
+        // 继续往下编。让它在下一轮就看见 `CONTRADICTED` 与判据，
+        // 才有机会纠正而不是继续声称完成。
+        if self.verification.status != VerificationStatus::NotRequired {
+            let mut verdict = serde_json::json!({
+                "status": self.verification.status.as_str()
+            });
+            if let Some(evidence) = &self.verification.evidence {
+                verdict["evidence"] = serde_json::Value::String(evidence.clone());
+            }
+            if !self.verification.missing_fields.is_empty() {
+                verdict["missing_fields"] = serde_json::json!(self.verification.missing_fields);
+            }
+
+            match &mut payload {
+                serde_json::Value::Object(map) => {
+                    map.insert("verification".to_string(), verdict);
+                }
+                _ => {
+                    payload = serde_json::json!({
+                        "result": payload,
+                        "verification": verdict,
+                    });
+                }
+            }
         }
+
+        payload.to_string()
     }
 }
 
@@ -577,4 +760,5 @@ mod tests {
             Some(r"C:\Program Files\Tencent\QQNT\QQ.exe".to_string())
         );
     }
+
 }

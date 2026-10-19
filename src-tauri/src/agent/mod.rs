@@ -587,7 +587,20 @@ async fn execute_direct_tool(
         })
         .await;
 
-    let response = if execution.success {
+    let response = if execution.verification.status
+        == crate::tools::receipt::VerificationStatus::Contradicted
+    {
+        // 工具说成功、现实说没成：对用户只能报后者。
+        // 这里不许沿用工具自述，否则就是把"自述"转述成"事实"。
+        format!(
+            "指令未能确认完成：{}",
+            execution
+                .verification
+                .evidence
+                .as_deref()
+                .unwrap_or("独立核验显示实际状态与执行结果不符")
+        )
+    } else if execution.success {
         execution
             .result
             .data

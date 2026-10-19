@@ -1,0 +1,962 @@
+//! 能力契约 —— 每个工具必须声明"会做什么、风险多大、怎么算做完了"。
+//!
+//! 与 `RiskLevel` 的分工：`RiskLevel` 只回答"要不要弹窗"，本模块回答
+//! "这次调用产生了什么类别的副作用、落在哪个范围、能否撤销、结束后拿什么
+//! 证据来判定它真的完成了"。
+//!
+//! 设计原则：**宁可声明 none，也不假装有验证**。
+//! `VerificationStrategy::None` 表示"没有可靠的机器可判据"，回执照样记录，
+//! 但状态是 `NOT_REQUIRED` 而不是 `VERIFIED`。把无验证包装成已验证，
+//! 比不验证更危险——上层会据此认为结果可信。
+
+use super::RiskLevel;
+
+/// 副作用的类别。
+///
+/// 判断依据是"这次调用改变了什么"，不是"这个工具听起来多危险"。
+/// `LocalRead` / `NetworkRead` 没有实质副作用；其余都是实质副作用
+/// （`is_material`），需要幂等键与回执验证。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SideEffect {
+    /// 只读本地文件 / 系统信息
+    LocalRead,
+    /// 写本地文件
+    LocalWrite,
+    /// 改变本地运行状态（焦点、窗口、浏览器标签）
+    LocalStateChange,
+    /// 控制桌面程序（含结束进程）
+    DesktopControl,
+    /// 只读网络
+    NetworkRead,
+    /// 改变外部系统的状态（未来发布/提交类能力使用）
+    ExternalStateChange,
+    /// 向外部发送信息
+    ExternalCommunication,
+    /// 执行进程/命令
+    ProcessExecution,
+    /// 安装或卸载软件
+    Installation,
+    /// 无任何可观察副作用
+    None,
+}
+
+impl SideEffect {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SideEffect::LocalRead => "local_read",
+            SideEffect::LocalWrite => "local_write",
+            SideEffect::LocalStateChange => "local_state_change",
+            SideEffect::DesktopControl => "desktop_control",
+            SideEffect::NetworkRead => "network_read",
+            SideEffect::ExternalStateChange => "external_state_change",
+            SideEffect::ExternalCommunication => "external_communication",
+            SideEffect::ProcessExecution => "process_execution",
+            SideEffect::Installation => "installation",
+            SideEffect::None => "none",
+        }
+    }
+
+    /// 是否属于"实质副作用"——需要幂等键、需要验证策略。
+    ///
+    /// 只读类不算：重放一次只读调用不会让世界变得更糟，
+    /// 强制给它们配幂等键只会拖慢每一次读取。
+    pub fn is_material(&self) -> bool {
+        !matches!(
+            self,
+            SideEffect::LocalRead | SideEffect::NetworkRead | SideEffect::None
+        )
+    }
+
+    /// 从落库的标签还原副作用类别。
+    ///
+    /// 回执表里存的是字符串（`local_write` 之类）。证据层要把回执重新
+    /// 分类时必须走同一条映射，否则一旦将来改了标签写法，
+    /// "哪些算实质副作用"就会在账本侧和聚合侧给出不同答案。
+    pub fn from_label(label: &str) -> Option<Self> {
+        Some(match label {
+            "local_read" => SideEffect::LocalRead,
+            "local_write" => SideEffect::LocalWrite,
+            "local_state_change" => SideEffect::LocalStateChange,
+            "desktop_control" => SideEffect::DesktopControl,
+            "network_read" => SideEffect::NetworkRead,
+            "external_state_change" => SideEffect::ExternalStateChange,
+            "external_communication" => SideEffect::ExternalCommunication,
+            "process_execution" => SideEffect::ProcessExecution,
+            "installation" => SideEffect::Installation,
+            "none" => SideEffect::None,
+            _ => return None,
+        })
+    }
+}
+
+/// 验证策略 —— 用哪一类证据判定"这件事真的做完了"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationStrategy {
+    /// 工具返回里含有可核对的终态字段（如 exit_code、path）
+    TerminalReceipt,
+    /// 本地状态发生了可核对的改变（如写入字节数、删除条数）
+    StateDiff,
+    /// 产出了真实存在的文件（路径必须存在且非空）
+    Artifact,
+    /// 被调用方（OS/浏览器/外部服务）回执确认
+    ProviderAck,
+    /// 没有可靠的机器可判据
+    None,
+}
+
+impl VerificationStrategy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            VerificationStrategy::TerminalReceipt => "terminal_receipt",
+            VerificationStrategy::StateDiff => "state_diff",
+            VerificationStrategy::Artifact => "artifact",
+            VerificationStrategy::ProviderAck => "provider_ack",
+            VerificationStrategy::None => "none",
+        }
+    }
+}
+
+/// 单个能力的契约声明。
+pub struct CapabilityContract {
+    /// 工具名，必须与 `AgentTool::name()` 完全一致
+    pub tool: &'static str,
+    /// 副作用类别
+    pub side_effect: SideEffect,
+    /// 副作用落点（给人和审计看的范围描述）
+    pub scope: &'static str,
+    /// 是否可撤销/可重放
+    pub reversible: bool,
+    /// 验证策略
+    pub verification: VerificationStrategy,
+    /// 判定成功必须出现的回执字段（含 0 / false 这类值也算"出现"）
+    pub required_fields: &'static [&'static str],
+}
+
+impl CapabilityContract {
+    /// 该契约是否要求跑完做机器校验
+    pub fn requires_verification(&self) -> bool {
+        self.verification != VerificationStrategy::None
+    }
+}
+
+/// 全部内置能力的契约表。
+///
+/// 新增工具时必须在这里登记，否则启动日志会报"未声明契约"，
+/// `contracts_cover_all_registered_tools` 测试也会失败。
+/// 这是刻意的：没有契约的工具等于"没人说清它到底做了什么"。
+pub const CONTRACTS: &[CapabilityContract] = &[
+    // ============ General ============
+    CapabilityContract {
+        tool: "ping",
+        side_effect: SideEffect::None,
+        scope: "-",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        tool: "github_trending",
+        side_effect: SideEffect::NetworkRead,
+        scope: "api.github.com",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        tool: "github_search",
+        side_effect: SideEffect::NetworkRead,
+        scope: "api.github.com",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    // ============ File ============
+    CapabilityContract {
+        tool: "open_file",
+        side_effect: SideEffect::DesktopControl,
+        scope: "系统默认程序",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        tool: "read_file",
+        side_effect: SideEffect::LocalRead,
+        scope: "可信目录",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "content"],
+    },
+    CapabilityContract {
+        tool: "write_file",
+        side_effect: SideEffect::LocalWrite,
+        scope: "可信目录",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["path", "bytes_written"],
+    },
+    CapabilityContract {
+        tool: "list_directory",
+        side_effect: SideEffect::LocalRead,
+        scope: "可信目录",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "entries", "count"],
+    },
+    CapabilityContract {
+        // verified_bytes 是复制完成后重新统计落点得到的字节数：
+        // 与源字节数不一致时，这一次复制就没有真正完成。
+        tool: "copy_path",
+        side_effect: SideEffect::LocalWrite,
+        scope: "文件系统",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["source", "destination", "kind", "bytes", "verified_bytes"],
+    },
+    CapabilityContract {
+        // source_gone 由工具在动作后重新探测源路径得出，是移动的终态判据。
+        tool: "move_path",
+        side_effect: SideEffect::LocalWrite,
+        scope: "文件系统",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["source", "destination", "mode", "source_gone"],
+    },
+    CapabilityContract {
+        // 删除默认进回收站，可恢复；exists_after 由动作后重新探测得出。
+        tool: "delete_path",
+        side_effect: SideEffect::LocalWrite,
+        scope: "文件系统（默认回收站）",
+        reversible: false,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["path", "kind", "exists_after"],
+    },
+    CapabilityContract {
+        tool: "get_file_info",
+        side_effect: SideEffect::LocalRead,
+        scope: "文件系统元数据",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "kind", "bytes"],
+    },
+    CapabilityContract {
+        tool: "search_files",
+        side_effect: SideEffect::LocalRead,
+        scope: "可信目录",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["root", "pattern", "count"],
+    },
+    CapabilityContract {
+        tool: "search_content",
+        side_effect: SideEffect::LocalRead,
+        scope: "可信目录内的文本文件",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["root", "query", "count"],
+    },
+    CapabilityContract {
+        tool: "create_directory",
+        side_effect: SideEffect::LocalWrite,
+        scope: "文件系统",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["path", "is_dir"],
+    },
+    // ============ Program ============
+    CapabilityContract {
+        tool: "launch_program",
+        side_effect: SideEffect::ProcessExecution,
+        scope: "本机应用",
+        reversible: true,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["program", "path", "pid"],
+    },
+    CapabilityContract {
+        tool: "find_program",
+        side_effect: SideEffect::LocalRead,
+        scope: "开始菜单 / App Paths",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["name", "paths", "found"],
+    },
+    CapabilityContract {
+        tool: "close_program",
+        side_effect: SideEffect::DesktopControl,
+        scope: "本机进程",
+        reversible: false,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["program", "process"],
+    },
+    // ============ System ============
+    CapabilityContract {
+        tool: "execute_command",
+        side_effect: SideEffect::ProcessExecution,
+        scope: "cmd.exe",
+        reversible: false,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["stdout", "exit_code"],
+    },
+    CapabilityContract {
+        tool: "take_screenshot",
+        side_effect: SideEffect::LocalWrite,
+        scope: "临时目录",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["path"],
+    },
+    CapabilityContract {
+        tool: "read_clipboard",
+        side_effect: SideEffect::LocalRead,
+        scope: "系统剪贴板",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["text", "chars"],
+    },
+    CapabilityContract {
+        // readback_matched 是写完立刻读回来与输入比对的结果；
+        // 对不上时工具本身返回失败，不会走到"已验证"。
+        tool: "write_clipboard",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "系统剪贴板",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["chars", "written", "readback_matched"],
+    },
+    CapabilityContract {
+        // 通知是否真的显示受"专注助手/免打扰"设置控制，
+        // 工具只能拿到 toast 提交结果，拿不到展示回执。已登记欠账。
+        tool: "send_notification",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "Windows 通知中心",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        tool: "get_network_status",
+        side_effect: SideEffect::NetworkRead,
+        scope: "本机网卡 / 223.5.5.5",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["hostname", "interfaces", "reachable"],
+    },
+    CapabilityContract {
+        tool: "get_disk_usage",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地磁盘",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["drives", "count"],
+    },
+    CapabilityContract {
+        tool: "get_environment",
+        side_effect: SideEffect::LocalRead,
+        scope: "进程环境变量",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "names"],
+    },
+    CapabilityContract {
+        // 锁屏后桌面会话切到安全桌面，普通进程枚举不到状态，
+        // 没有任何可用的机器判据。已登记欠账。
+        tool: "lock_screen",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "Windows 桌面会话",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        // 链接由默认浏览器承接，工具只拿到 shell 受理结果。已登记欠账。
+        tool: "open_url",
+        side_effect: SideEffect::DesktopControl,
+        scope: "系统默认浏览器",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    // ============ ProcessWindow ============
+    CapabilityContract {
+        tool: "list_processes",
+        side_effect: SideEffect::LocalRead,
+        scope: "本机进程表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["processes", "count"],
+    },
+    CapabilityContract {
+        tool: "kill_process",
+        side_effect: SideEffect::DesktopControl,
+        scope: "本机进程",
+        reversible: false,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["target"],
+    },
+    CapabilityContract {
+        tool: "get_active_window",
+        side_effect: SideEffect::LocalRead,
+        scope: "前台窗口",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        tool: "list_windows",
+        side_effect: SideEffect::LocalRead,
+        scope: "可见窗口",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["windows", "count"],
+    },
+    CapabilityContract {
+        tool: "focus_window",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "目标窗口",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        tool: "minimize_window",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "目标窗口",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        tool: "close_window",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "目标窗口",
+        reversible: false,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        tool: "get_system_context",
+        side_effect: SideEffect::LocalRead,
+        scope: "系统信息",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["summary"],
+    },
+    // ============ Program（应用管理器）============
+    CapabilityContract {
+        tool: "is_application_running",
+        side_effect: SideEffect::LocalRead,
+        scope: "本机进程表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["name", "running", "pids"],
+    },
+    CapabilityContract {
+        tool: "get_application_status",
+        side_effect: SideEffect::LocalRead,
+        scope: "本机进程表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["name", "status", "running"],
+    },
+    CapabilityContract {
+        tool: "get_application_info",
+        side_effect: SideEffect::LocalRead,
+        scope: "本机进程表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["name", "processes", "count"],
+    },
+    CapabilityContract {
+        tool: "restart_application",
+        side_effect: SideEffect::ProcessExecution,
+        scope: "本机应用",
+        reversible: true,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["name", "restarted"],
+    },
+    CapabilityContract {
+        tool: "list_installed_applications",
+        side_effect: SideEffect::LocalRead,
+        scope: "注册表 / 开始菜单",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["applications", "total", "returned"],
+    },
+    CapabilityContract {
+        tool: "close_all_applications",
+        side_effect: SideEffect::DesktopControl,
+        scope: "本机应用窗口",
+        reversible: false,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["closed_count", "closed_windows"],
+    },
+    CapabilityContract {
+        tool: "launch_workspace",
+        side_effect: SideEffect::ProcessExecution,
+        scope: "本机应用组",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    // ============ Memory ============
+    CapabilityContract {
+        tool: "remember",
+        side_effect: SideEffect::LocalWrite,
+        scope: "长期记忆库",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["memory_id", "content"],
+    },
+    CapabilityContract {
+        tool: "recall",
+        side_effect: SideEffect::LocalRead,
+        scope: "长期记忆库",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "memories"],
+    },
+    CapabilityContract {
+        tool: "forget",
+        side_effect: SideEffect::LocalWrite,
+        scope: "长期记忆库",
+        reversible: false,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["deleted"],
+    },
+    CapabilityContract {
+        tool: "list_memories",
+        side_effect: SideEffect::LocalRead,
+        scope: "长期记忆库",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "memories"],
+    },
+    CapabilityContract {
+        // updated 是 UPDATE 影响行数换算来的：未命中时为 false，不会假报成功
+        tool: "update_memory",
+        side_effect: SideEffect::LocalWrite,
+        scope: "长期记忆库",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["memory_id", "updated"],
+    },
+    CapabilityContract {
+        tool: "memory_stats",
+        side_effect: SideEffect::LocalRead,
+        scope: "长期记忆库",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["total", "by_type"],
+    },
+    // ============ Office ============
+    CapabilityContract {
+        tool: "read_docx",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 docx 文件",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "text", "chars"],
+    },
+    CapabilityContract {
+        tool: "read_xlsx",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 xlsx 文件",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "rows", "row_count"],
+    },
+    CapabilityContract {
+        tool: "read_pptx",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 pptx 文件",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "slides", "count"],
+    },
+    // ============ Knowledge ============
+    CapabilityContract {
+        // indexed / unchanged 由逐文件索引结果累加得出，scanned 是实际扫到的文件数
+        tool: "index_document",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地知识库索引",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["path", "scanned", "indexed", "unchanged"],
+    },
+    CapabilityContract {
+        tool: "search_knowledge",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地知识库索引",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["query", "count", "hits"],
+    },
+    CapabilityContract {
+        tool: "list_knowledge",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地知识库索引",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "total_documents"],
+    },
+    CapabilityContract {
+        // removed 表示库里确有该路径；false 不是失败，而是"本来就没索引过"
+        tool: "forget_document",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地知识库索引（不动磁盘文件）",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["path", "removed"],
+    },
+    // ============ Browser ============
+    CapabilityContract {
+        tool: "browser_open",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "受控浏览器实例",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        tool: "browser_close",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "受控浏览器实例",
+        reversible: false,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["success"],
+    },
+    CapabilityContract {
+        tool: "browser_navigate",
+        side_effect: SideEffect::NetworkRead,
+        scope: "受控浏览器标签",
+        reversible: true,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["success", "url", "title"],
+    },
+    CapabilityContract {
+        tool: "browser_screenshot",
+        side_effect: SideEffect::LocalWrite,
+        scope: "临时目录",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["success", "path"],
+    },
+    CapabilityContract {
+        tool: "browser_get_content",
+        side_effect: SideEffect::NetworkRead,
+        scope: "当前页面",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["success", "content"],
+    },
+    CapabilityContract {
+        tool: "browser_get_title",
+        side_effect: SideEffect::NetworkRead,
+        scope: "当前页面",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["success", "title", "url"],
+    },
+    CapabilityContract {
+        tool: "browser_click",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "当前页面",
+        reversible: true,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["success", "clicked"],
+    },
+    CapabilityContract {
+        tool: "browser_type",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "当前页面输入框",
+        reversible: true,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["success", "selector", "chars_typed"],
+    },
+    CapabilityContract {
+        tool: "browser_scroll",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "当前页面",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["success", "direction"],
+    },
+    CapabilityContract {
+        tool: "browser_wait",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "当前页面",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        tool: "browser_execute_js",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "当前页面脚本上下文",
+        reversible: false,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        tool: "browser_list_tabs",
+        side_effect: SideEffect::LocalRead,
+        scope: "受控浏览器标签",
+        reversible: true,
+        verification: VerificationStrategy::None,
+        required_fields: &[],
+    },
+    CapabilityContract {
+        tool: "browser_switch_tab",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "受控浏览器标签",
+        reversible: true,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["success"],
+    },
+];
+
+/// 验证欠账表 —— 有实质副作用、但没有可靠机器判据的能力，以及为什么没有。
+///
+/// 这张表的存在意义是**不许沉默**：能力可以暂时没有验证策略，
+/// 但必须写清"为什么没法验证"。没有理由的空白会被
+/// `material_side_effects_are_either_verified_or_documented` 测试拦住。
+///
+/// 这些条目不是"永远不验证"的许可证——将来有了可靠判据（比如窗口操作
+/// 之后重新枚举前台窗口比对），就要从这张表里移走并补上验证策略。
+pub const VERIFICATION_DEBT: &[(&str, &str)] = &[
+    (
+        "open_file",
+        "打开动作交给系统默认程序，工具只拿到 shell 受理结果，无法确认目标程序已呈现文件",
+    ),
+    (
+        "focus_window",
+        "窗口焦点由 OS 异步切换，工具只确认请求已投递，返回结构随 PowerShell 输出变化",
+    ),
+    (
+        "minimize_window",
+        "最小化由 OS 异步完成，返回结构随 PowerShell 输出变化，无可声明必填字段",
+    ),
+    (
+        "close_window",
+        "关闭请求可能被目标程序的保存确认框阻断，工具返回时无法判定窗口是否真的没了",
+    ),
+    (
+        "launch_workspace",
+        "批量启动，各应用的启动结果由自身进程决定，工具只汇总受理情况",
+    ),
+    (
+        "browser_open",
+        "浏览器进程启动后由 CDP 异步就绪，工具返回时不保证页面已可操作",
+    ),
+    (
+        "browser_wait",
+        "等待是时间语义，没有可核对的产物",
+    ),
+    (
+        "browser_execute_js",
+        "脚本返回值结构由页面决定，无法预先声明必填字段",
+    ),
+    (
+        "send_notification",
+        "toast 是否真的展示取决于专注助手与免打扰设置，提交成功不等于用户看见",
+    ),
+    (
+        "lock_screen",
+        "锁屏后桌面会话切到安全桌面，普通进程枚举不到会话状态，无可用判据",
+    ),
+    (
+        "open_url",
+        "链接由默认浏览器承接，工具只拿到 shell 受理结果，无法确认页面已打开",
+    ),
+];
+
+/// 查某个工具的验证欠账理由
+pub fn verification_debt(tool: &str) -> Option<&'static str> {
+    VERIFICATION_DEBT
+        .iter()
+        .find(|(name, _)| *name == tool)
+        .map(|(_, reason)| *reason)
+}
+
+/// 按工具名查契约
+pub fn contract_for(tool: &str) -> Option<&'static CapabilityContract> {
+    CONTRACTS.iter().find(|c| c.tool == tool)
+}
+
+/// 契约覆盖率报告。
+///
+/// 只统计事实，不做"大概齐"：`material_without_verification` 里的每一条
+/// 都是"有实质副作用、既没有验证策略、也没写清为什么"的能力，
+/// 属于必须当天补掉的缺口；`material_with_verification_debt` 是已登记的
+/// 已知欠账，可以排期但不能消失。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CoverageReport {
+    /// 已注册工具总数
+    pub total_tools: usize,
+    /// 已声明契约的工具数
+    pub declared: usize,
+    /// 已注册但没有契约的工具（必须为空）
+    pub missing: Vec<String>,
+    /// 有实质副作用的能力数
+    pub material: usize,
+    /// 实质副作用且声明了验证策略的能力数
+    pub material_verified: usize,
+    /// 有实质副作用、没有验证策略、也没有欠账说明的能力名（必须为空）
+    pub material_without_verification: Vec<String>,
+    /// 有实质副作用、没有验证策略但已登记理由的能力名
+    pub material_with_verification_debt: Vec<String>,
+}
+
+impl CoverageReport {
+    /// 是否全部覆盖（新增工具没登记契约时为 false）
+    pub fn fully_declared(&self) -> bool {
+        self.missing.is_empty()
+    }
+}
+
+/// 计算覆盖率
+pub fn coverage(registered_tools: &[String]) -> CoverageReport {
+    let mut missing = Vec::new();
+    let mut material = 0usize;
+    let mut material_verified = 0usize;
+    let mut material_without_verification = Vec::new();
+    let mut material_with_verification_debt = Vec::new();
+
+    for name in registered_tools {
+        match contract_for(name) {
+            None => missing.push(name.clone()),
+            Some(c) => {
+                if c.side_effect.is_material() {
+                    material += 1;
+                    if c.requires_verification() {
+                        material_verified += 1;
+                    } else if verification_debt(c.tool).is_some() {
+                        material_with_verification_debt.push(c.tool.to_string());
+                    } else {
+                        material_without_verification.push(c.tool.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    missing.sort();
+    material_without_verification.sort();
+    material_with_verification_debt.sort();
+
+    CoverageReport {
+        total_tools: registered_tools.len(),
+        declared: registered_tools.len() - missing.len(),
+        missing,
+        material,
+        material_verified,
+        material_without_verification,
+        material_with_verification_debt,
+    }
+}
+
+/// 把风险等级与副作用放在一起做一次自洽性检查。
+///
+/// 只检查两个方向，因为只有这两条是硬道理：
+/// - **SAFE 不能有实质副作用**：否则界面上会出现"零风险地改动了东西"。
+/// - **MEDIUM 以上必须有实质副作用**：否则每次都弹窗，用户很快学会闭眼点确认，
+///   真正的危险操作反而被淹没。
+///
+/// LOW 刻意不约束：它是"做过但代价只是重做一次"的桶，open_file（用默认程序
+/// 打开文档）就落在这里——它有副作用，但不该为它弹窗。用副作用类别反推 LOW
+/// 的边界，只会把产品拖进"每步都确认"的泥潭。
+pub fn risk_is_consistent(contract: &CapabilityContract, risk: RiskLevel) -> bool {
+    match risk {
+        RiskLevel::Safe => !contract.side_effect.is_material(),
+        RiskLevel::Low => true,
+        RiskLevel::Medium | RiskLevel::High | RiskLevel::Critical => {
+            contract.side_effect.is_material()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::ToolRegistry;
+
+    #[test]
+    fn every_registered_tool_declares_a_contract() {
+        let registry = ToolRegistry::default();
+        let report = coverage(&registry.list_names());
+        assert!(
+            report.missing.is_empty(),
+            "以下工具没有能力契约: {:?}",
+            report.missing
+        );
+        assert_eq!(report.declared, report.total_tools);
+    }
+
+    #[test]
+    fn contract_table_has_no_duplicates() {
+        let mut names: Vec<&str> = CONTRACTS.iter().map(|c| c.tool).collect();
+        let before = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(before, names.len(), "契约表里存在重复的工具名");
+    }
+
+    #[test]
+    fn material_side_effects_declare_verification() {
+        let report = coverage(&ToolRegistry::default().list_names());
+        assert!(
+            report.material_without_verification.is_empty(),
+            "以下实质副作用能力既没有验证策略，也没登记欠账理由: {:?}",
+            report.material_without_verification
+        );
+    }
+
+    #[test]
+    fn verification_debt_points_at_real_gaps() {
+        for (tool, reason) in VERIFICATION_DEBT {
+            let contract = contract_for(tool).unwrap_or_else(|| panic!("{tool} 没有契约"));
+            assert!(
+                contract.side_effect.is_material(),
+                "{tool} 没有实质副作用，不该登记验证欠账"
+            );
+            assert!(
+                !contract.requires_verification(),
+                "{tool} 已经有验证策略了，欠账登记应删除"
+            );
+            assert!(!reason.trim().is_empty(), "{tool} 的欠账理由不能为空");
+        }
+    }
+
+    #[test]
+    fn declared_required_fields_are_not_empty_when_verification_is_on() {
+        for c in CONTRACTS {
+            if c.requires_verification() {
+                assert!(
+                    !c.required_fields.is_empty(),
+                    "{} 声明了验证策略却没有必填回执字段",
+                    c.tool
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn risk_levels_match_side_effect_materiality() {
+        let registry = ToolRegistry::default();
+        for name in registry.list_names() {
+            let Some(tool) = registry.get(&name) else {
+                continue;
+            };
+            let Some(contract) = contract_for(&name) else {
+                continue;
+            };
+            assert!(
+                risk_is_consistent(contract, tool.risk_level()),
+                "{} 的风险等级与副作用类别不自洽: {:?} / {}",
+                name,
+                tool.risk_level(),
+                contract.side_effect.as_str()
+            );
+        }
+    }
+}

@@ -1,13 +1,18 @@
 //! 工具执行器集合
 //!
-//! Phase 3 新增的系统执行工具：
-//! - 文件操作：打开、读取、写入、列出目录
-//! - 程序操作：启动、查找
-//! - 系统操作：执行命令、截屏
+//! - 文件基础：打开、读取、写入、列出目录（`file_ops`）
+//! - 文件管理：复制、移动、删除、属性、检索、建目录（`fs_extra`）
+//! - 程序操作：启动、查找、关闭（`program`）
+//! - 系统基础：执行命令、截屏（`system`）
+//! - 系统设置：剪贴板、通知、网络、磁盘、环境变量、锁屏、开链接（`os_extra`）
 
 pub mod browser;
 pub mod file_ops;
+pub mod fs_extra;
 pub mod github;
+pub mod knowledge;
+pub mod office;
 pub mod memory;
+pub mod os_extra;
 pub mod program;
 pub mod system;

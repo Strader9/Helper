@@ -9,6 +9,8 @@ pub mod browser;
 pub mod computer;
 pub mod db;
 pub mod error;
+pub mod evidence;
+pub mod knowledge;
 pub mod llm;
 pub mod memory;
 pub mod monitoring;
@@ -2514,6 +2516,61 @@ pub mod commands {
         pub error_message: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub duration_ms: Option<i64>,
+    }
+
+    /// 读取工具回执账本（事实层）。
+    ///
+    /// 与 `get_audit_logs` 并存而不是替代：审计回答"允许了吗"，
+    /// 回执回答"实际改变了什么、有没有证据"。
+    #[tauri::command]
+    pub async fn get_tool_receipts(
+        state: State<'_, AppState>,
+        limit: Option<i64>,
+        tool_name: Option<String>,
+    ) -> Result<Vec<crate::tools::receipt::ToolReceipt>, String> {
+        let db = state.db.lock().await;
+        db.list_tool_receipts(limit.unwrap_or(100), tool_name.as_deref())
+            .map_err(|e| e.to_string())
+    }
+
+    /// 一轮任务的真值快照。
+    ///
+    /// 界面在收到最终回复后调用它：账本里这一轮有没有证据、
+    /// 模型那句话能不能算数，都由这里给结论，前端不自己猜。
+    #[derive(Debug, Serialize)]
+    pub struct TaskTruthResponse {
+        pub snapshot: crate::evidence::task_truth::TaskTruthSnapshot,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub claim: Option<crate::evidence::task_truth::ClaimAssessment>,
+    }
+
+    #[tauri::command]
+    pub async fn get_task_truth(
+        state: State<'_, AppState>,
+        run_id: String,
+        claim_text: Option<String>,
+    ) -> Result<TaskTruthResponse, String> {
+        let receipts = {
+            let db = state.db.lock().await;
+            db.list_tool_receipts_by_run(&run_id, 200)
+                .map_err(|e| e.to_string())?
+        };
+        let snapshot = crate::evidence::task_truth::build(Some(&run_id), &receipts);
+        let claim = claim_text
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+            .map(|text| crate::evidence::task_truth::assess_claim(text, &snapshot));
+        Ok(TaskTruthResponse { snapshot, claim })
+    }
+
+    /// 能力契约覆盖率：给界面和自检用。
+    #[tauri::command]
+    pub async fn get_capability_coverage(
+        state: State<'_, AppState>,
+    ) -> Result<crate::tools::contract::CoverageReport, String> {
+        Ok(crate::tools::contract::coverage(
+            &state.tool_registry.list_names(),
+        ))
     }
 
     #[derive(Debug, Serialize)]

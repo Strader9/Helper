@@ -2,7 +2,9 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import CyberIcon from "../components/CyberIcon";
+import ExecutionEvidence from "../components/ExecutionEvidence";
 import { createChatRunId, formatToolResult, humanizeError, parseEventEnvelope } from "../chatUi";
+import { fetchTaskTruth, type ReceiptStatus, type TaskTruthResponse } from "../lib/taskTruth";
 
 // ============================================================
 // 类型定义
@@ -38,12 +40,19 @@ interface ChatEvent {
   data?: string | { name: string; arguments: string } | { name: string; success: boolean; content: string };
 }
 
+interface ToolVerification {
+  status: ReceiptStatus;
+  evidence?: string;
+}
+
 interface ToolExecution {
   id: string;
   name: string;
   arguments: string;
   status: "running" | "success" | "error";
   result?: string;
+  /** 后端回执给出的验证结论：没有它，界面就不能说"成功" */
+  verification?: ToolVerification;
   collapsed: boolean;
 }
 
@@ -109,6 +118,8 @@ function Chat() {
   const [thinking, setThinking] = useState(false);
   const [toolExecutions, setToolExecutions] = useState<ToolExecution[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
+  /** 本轮任务的判决书：由后端按回执聚合，前端只负责显示 */
+  const [taskTruth, setTaskTruth] = useState<TaskTruthResponse | null>(null);
 
   // ---- Task 状态 ----
   const [currentTask, setCurrentTask] = useState<TaskUpdateEvent | null>(null);
@@ -129,6 +140,9 @@ function Chat() {
   const permissionUnlistenRef = useRef<UnlistenFn | null>(null);
   // 用 ref 存储当前对话 ID，避免 setupEventListeners 闭包捕获旧值
   const currentConversationIdRef = useRef<string | null>(null);
+  // 本轮已生成的回复正文。事件回调注册在 [] 依赖上，读不到最新的 state，
+  // 而判定"模型有没有多报"必须拿到完整回复。
+  const lastAssistantTextRef = useRef("");
 
   // ---- 对话状态重置（切换/新建对话时必须调用，防止旧对话残留）----
   const resetConversationState = useCallback(() => {
@@ -143,6 +157,8 @@ function Chat() {
     setChatError(null);
     setTaskExpanded(false);
     setPermissionRequest(null);
+    setTaskTruth(null);
+    lastAssistantTextRef.current = "";
   }, []);
 
   // ---- 初始化 ----
@@ -279,6 +295,7 @@ function Chat() {
         try {
           const event: ChatEvent = JSON.parse(payload);
           if (typeof event.data === "string") {
+            lastAssistantTextRef.current += event.data;
             setStreamingText((prev) => prev + event.data);
           }
         } catch {
@@ -290,6 +307,8 @@ function Chat() {
         setThinking(true);
         setStreamingText("");
         setPermissionRequest(null);
+        setTaskTruth(null);
+        lastAssistantTextRef.current = "";
       }],
       ["chat:tool_call", (payload) => {
         try {
@@ -317,6 +336,7 @@ function Chat() {
           const event: ChatEvent = JSON.parse(payload);
           if (event.data && typeof event.data === "object" && "name" in event.data) {
             const data = event.data as { name: string; success: boolean; content: string };
+            const verification = extractVerification(data.content);
             setToolExecutions((prev) => {
               const reversed = [...prev].reverse();
               const revIndex = reversed.findIndex(
@@ -329,6 +349,7 @@ function Chat() {
                 ...updated[actualIndex],
                 status: data.success ? "success" : "error",
                 result: formatToolResult(data.content),
+                verification,
               };
               return updated;
             });
@@ -338,10 +359,21 @@ function Chat() {
         }
       }],
       ["chat:done", () => {
+        const finishedRunId = activeRunIdRef.current;
+        const finalText = lastAssistantTextRef.current;
         activeRunIdRef.current = null;
         setIsLoading(false);
         setThinking(false);
         setStreamingText("");
+        // 收尾时向账本要一份判决书：这一轮到底有没有证据、模型那句话算不算数。
+        // 没有产生任何回执的纯对话不显示面板，避免每句回答都挂一块仪表盘。
+        if (finishedRunId) {
+          fetchTaskTruth(finishedRunId, finalText).then((truth) => {
+            if (truth && truth.snapshot.counts.total > 0) {
+              setTaskTruth(truth);
+            }
+          });
+        }
         const cid = currentConversationIdRef.current;
         if (cid) {
           loadMessages(cid);
@@ -806,6 +838,10 @@ function Chat() {
             );
           })}
 
+          {taskTruth && (
+            <ExecutionEvidence snapshot={taskTruth.snapshot} claim={taskTruth.claim} />
+          )}
+
           <div ref={messagesEndRef} />
         </div>
 
@@ -945,6 +981,55 @@ function MessageBubble({ message }: { message: ConversationMessage }) {
   );
 }
 
+// ---- 工具结论呈现 ----
+
+type ToolTone = "running" | "success" | "unverified" | "contradicted" | "error";
+
+/**
+ * 工具卡片的标题栏文案。
+ *
+ * 优先级固定：回执结论 > 工具自报。工具返回 success=true 只说明它自己
+ * 认为成了；没有回执（老能力/未登记契约）时才退回旧文案，并把这一点
+ * 如实说出来，而不是继续写"执行成功"。
+ */
+function toolStatusPresentation(tool: ToolExecution): { label: string; tone: ToolTone } {
+  if (tool.status === "running") return { label: "执行中…", tone: "running" };
+  switch (tool.verification?.status) {
+    case "VERIFIED":
+      return { label: "已验证", tone: "success" };
+    case "CONTRADICTED":
+      return { label: "与事实不符", tone: "contradicted" };
+    case "FAILED":
+      return { label: "执行失败", tone: "error" };
+    case "UNVERIFIED":
+      return { label: "未能确认", tone: "unverified" };
+    case "NOT_REQUIRED":
+      return { label: "已执行 · 无可核对判据", tone: "success" };
+    default:
+      return tool.status === "success"
+        ? { label: "执行成功（未登记判据）", tone: "success" }
+        : { label: "执行失败", tone: "error" };
+  }
+}
+
+/** 从工具返回内容里取出后端附带的验证结论。 */
+function extractVerification(content: string): ToolVerification | undefined {
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const raw = (parsed as { verification?: unknown }).verification;
+    if (!raw || typeof raw !== "object") return undefined;
+    const record = raw as { status?: unknown; evidence?: unknown };
+    if (typeof record.status !== "string") return undefined;
+    return {
+      status: record.status as ReceiptStatus,
+      evidence: typeof record.evidence === "string" ? record.evidence : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 // ---- 工具执行卡片组件 ----
 
 function ToolExecutionCard({
@@ -956,13 +1041,13 @@ function ToolExecutionCard({
   recoveries: RecoveryEvent[];
   onToggle: () => void;
 }) {
-  const statusIcon =
-    tool.status === "running" ? <CyberIcon name="clock" size={14} /> :
-    tool.status === "success" ? <CyberIcon name="check" size={14} /> : <CyberIcon name="xCircle" size={14} />;
+  const presentation = toolStatusPresentation(tool);
 
-  const statusText =
-    tool.status === "running" ? "执行中..." :
-    tool.status === "success" ? "执行成功" : "执行失败";
+  const statusIcon =
+    presentation.tone === "running" ? <CyberIcon name="clock" size={14} /> :
+    presentation.tone === "success" ? <CyberIcon name="check" size={14} /> :
+    presentation.tone === "unverified" ? <CyberIcon name="alertTriangle" size={14} /> :
+    <CyberIcon name="xCircle" size={14} />;
 
   const strategyLabels: Record<string, string> = {
     retry: "重试",
@@ -996,11 +1081,11 @@ function ToolExecutionCard({
   })();
 
   return (
-    <div className={`tool-execution-card ${tool.status}`}>
+    <div className={`tool-execution-card ${presentation.tone}`}>
       <div className="tool-execution-header" onClick={onToggle}>
         <span className="tool-status-icon">{statusIcon}</span>
         <span className="tool-name">{tool.name}</span>
-        <span className="tool-status-text">{statusText}</span>
+        <span className="tool-status-text">{presentation.label}</span>
         {recoveries.length > 0 && (
           <span className="tool-recovery-badge" title={`已恢复 ${recoveries.length} 次`}>
             <CyberIcon name="refresh" size={14} /> {recoveries.length}
@@ -1039,7 +1124,17 @@ function ToolExecutionCard({
           {tool.status !== "running" && displayResult && (
             <div className="tool-section">
               <span className="tool-section-label">结果</span>
-              <pre className={`tool-code ${tool.status}`}>{displayResult}</pre>
+              <pre className={`tool-code ${presentation.tone === "unverified" ? "error" : presentation.tone}`}>{displayResult}</pre>
+            </div>
+          )}
+
+          {tool.verification && (
+            <div className="tool-section">
+              <span className="tool-section-label">判据</span>
+              <p className="tool-verification-note">
+                {tool.verification.evidence
+                  ?? "这一轮没有拿到可以核对的证据"}
+              </p>
             </div>
           )}
 

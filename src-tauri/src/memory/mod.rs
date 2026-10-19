@@ -463,6 +463,64 @@ impl MemoryEngine {
         Self::recall(conn, context, None, limit)
     }
 
+    /// 修改一条记忆的内容或重要性。
+    ///
+    /// 返回 false 表示这条记忆不存在——不是"改成功了但内容一样"。
+    /// 两个参数都没给时不发 SQL，避免一次无意义的全表扫描。
+    pub fn update_memory(
+        conn: &rusqlite::Connection,
+        memory_id: &str,
+        content: Option<&str>,
+        importance: Option<u8>,
+    ) -> rusqlite::Result<bool> {
+        if content.is_none() && importance.is_none() {
+            return Ok(false);
+        }
+
+        let changed = match (content, importance) {
+            (Some(text), Some(score)) => {
+                let keywords = serde_json::to_string(&extract_keywords(text))
+                    .unwrap_or_else(|_| "[]".to_string());
+                conn.execute(
+                    "UPDATE memory_items
+                     SET content = ?1, keywords = ?2, importance = ?3, last_accessed_at = datetime('now')
+                     WHERE id = ?4",
+                    rusqlite::params![text, keywords, score.min(100) as i64, memory_id],
+                )?
+            }
+            (Some(text), None) => {
+                let keywords = serde_json::to_string(&extract_keywords(text))
+                    .unwrap_or_else(|_| "[]".to_string());
+                conn.execute(
+                    "UPDATE memory_items
+                     SET content = ?1, keywords = ?2, last_accessed_at = datetime('now')
+                     WHERE id = ?3",
+                    rusqlite::params![text, keywords, memory_id],
+                )?
+            }
+            (None, Some(score)) => conn.execute(
+                "UPDATE memory_items SET importance = ?1, last_accessed_at = datetime('now') WHERE id = ?2",
+                rusqlite::params![score.min(100) as i64, memory_id],
+            )?,
+            (None, None) => 0,
+        };
+
+        Ok(changed > 0)
+    }
+
+    /// 各类型的记忆条数
+    pub fn counts_by_type(
+        conn: &rusqlite::Connection,
+    ) -> rusqlite::Result<Vec<(String, usize)>> {
+        let mut stmt = conn.prepare(
+            "SELECT memory_type, COUNT(*) FROM memory_items GROUP BY memory_type ORDER BY COUNT(*) DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as usize))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     /// 获取所有记忆数量
     pub fn count(conn: &rusqlite::Connection) -> rusqlite::Result<usize> {
         conn.query_row("SELECT COUNT(*) FROM memory_items", [], |row| {

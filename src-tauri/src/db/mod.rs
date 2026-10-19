@@ -81,6 +81,34 @@ impl Database {
         self.seed_default_directories()?;
         self.run_phase4_migration()?;
         self.ensure_session_summary_columns()?;
+        self.ensure_receipt_evidence_column()?;
+        self.run_knowledge_migration()?;
+        Ok(())
+    }
+
+    /// 给已存在的 tool_receipts 表补上 verification_evidence 列。
+    ///
+    /// 老库里的回执没有独立探查证据，补列后历史行该字段为 NULL——
+    /// 这是正确语义：当时确实没做过探查，不能事后追认。
+    fn ensure_receipt_evidence_column(&self) -> AppResult<()> {
+        let existing: Vec<String> = {
+            let mut stmt = self.conn.prepare("PRAGMA table_info(tool_receipts)")?;
+            let names: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            names
+        };
+
+        // 表可能还没建（首次启动会由 SCHEMA_SQL 建好），此时无需迁移。
+        if existing.is_empty() {
+            return Ok(());
+        }
+
+        if !existing.iter().any(|c| c == "verification_evidence") {
+            self.conn
+                .execute_batch("ALTER TABLE tool_receipts ADD COLUMN verification_evidence TEXT")?;
+        }
         Ok(())
     }
 
@@ -181,6 +209,12 @@ impl Database {
     /// 执行 Phase 4 迁移
     fn run_phase4_migration(&self) -> AppResult<()> {
         self.conn.execute_batch(schema::MIGRATION_PHASE4_SQL)?;
+        Ok(())
+    }
+
+    /// 建本地知识库的两张表（已有库靠 IF NOT EXISTS 平滑升级）。
+    fn run_knowledge_migration(&self) -> AppResult<()> {
+        self.conn.execute_batch(schema::MIGRATION_KNOWLEDGE_SQL)?;
         Ok(())
     }
 
@@ -514,6 +548,143 @@ impl Database {
     }
 
     // ============================================================
+    // 能力契约层：工具回执账本
+    // ============================================================
+
+    /// 写入一条工具回执。
+    ///
+    /// 失败不应影响工具本身的执行结果——回执是记账，不是业务。
+    /// 但调用方必须把失败打到日志里，别让"记账失败"静默消失。
+    pub fn insert_tool_receipt(&self, receipt: &crate::tools::receipt::ToolReceipt) -> AppResult<()> {
+        self.conn.execute(
+            "INSERT INTO tool_receipts (
+                receipt_id, session_id, run_id, tool_name, capability_id,
+                side_effect, scope, reversible, risk_level,
+                verification_strategy, verification_status, missing_fields,
+                idempotency_key, request_digest, result_digest,
+                permission_result, success, error_code, duration_ms, verification_evidence
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![
+                receipt.receipt_id,
+                receipt.session_id,
+                receipt.run_id,
+                receipt.tool_name,
+                receipt.capability_id,
+                receipt.side_effect,
+                receipt.scope,
+                receipt.reversible as i64,
+                receipt.risk_level,
+                receipt.verification_strategy,
+                receipt.verification_status,
+                receipt.missing_fields,
+                receipt.idempotency_key,
+                receipt.request_digest,
+                receipt.result_digest,
+                receipt.permission_result,
+                receipt.success as i64,
+                receipt.error_code,
+                receipt.duration_ms,
+                receipt.verification_evidence,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// 按时间倒序读取回执，可按工具名过滤。
+    pub fn list_tool_receipts(
+        &self,
+        limit: i64,
+        tool_name: Option<&str>,
+    ) -> AppResult<Vec<crate::tools::receipt::ToolReceipt>> {
+        let mut receipts = Vec::new();
+        match tool_name {
+            Some(name) => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT receipt_id, session_id, run_id, tool_name, capability_id,
+                            side_effect, scope, reversible, risk_level,
+                            verification_strategy, verification_status, missing_fields,
+                            idempotency_key, request_digest, result_digest,
+                            permission_result, success, error_code, duration_ms, verification_evidence
+                     FROM tool_receipts WHERE tool_name = ?1
+                     ORDER BY created_at DESC, rowid DESC LIMIT ?2",
+                )?;
+                let rows = stmt.query_map(params![name, limit], row_to_receipt)?;
+                for row in rows {
+                    receipts.push(row?);
+                }
+            }
+            None => {
+                let mut stmt = self.conn.prepare(
+                    "SELECT receipt_id, session_id, run_id, tool_name, capability_id,
+                            side_effect, scope, reversible, risk_level,
+                            verification_strategy, verification_status, missing_fields,
+                            idempotency_key, request_digest, result_digest,
+                            permission_result, success, error_code, duration_ms, verification_evidence
+                     FROM tool_receipts
+                     ORDER BY created_at DESC, rowid DESC LIMIT ?1",
+                )?;
+                let rows = stmt.query_map(params![limit], row_to_receipt)?;
+                for row in rows {
+                    receipts.push(row?);
+                }
+            }
+        }
+        Ok(receipts)
+    }
+
+    /// 按 `run_id` 读取同一次任务的全部回执，按发生顺序正序返回。
+    ///
+    /// 任务真值快照要靠这个函数把"一轮对话里的若干次工具调用"聚成一个整体。
+    /// 这里用 `rowid` 排序而不是时间戳：同一毫秒内产生的两条回执，
+    /// 时间戳无法定序，插入顺序才是它们真实的先后。
+    pub fn list_tool_receipts_by_run(
+        &self,
+        run_id: &str,
+        limit: i64,
+    ) -> AppResult<Vec<crate::tools::receipt::ToolReceipt>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT receipt_id, session_id, run_id, tool_name, capability_id,
+                    side_effect, scope, reversible, risk_level,
+                    verification_strategy, verification_status, missing_fields,
+                    idempotency_key, request_digest, result_digest,
+                    permission_result, success, error_code, duration_ms, verification_evidence
+             FROM tool_receipts WHERE run_id = ?1
+             ORDER BY rowid ASC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![run_id, limit], row_to_receipt)?;
+        let mut receipts = Vec::new();
+        for row in rows {
+            receipts.push(row?);
+        }
+        Ok(receipts)
+    }
+
+    /// 查询同一条幂等键是否已有成功回执。
+    ///
+    /// 供后续"重放保护"使用：同一个会话重复提交同一份参数时，
+    /// 可以先看这里，而不是再执行一次。
+    pub fn find_successful_receipt_by_idempotency(
+        &self,
+        key: &str,
+    ) -> AppResult<Option<crate::tools::receipt::ToolReceipt>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT receipt_id, session_id, run_id, tool_name, capability_id,
+                    side_effect, scope, reversible, risk_level,
+                    verification_strategy, verification_status, missing_fields,
+                    idempotency_key, request_digest, result_digest,
+                    permission_result, success, error_code, duration_ms, verification_evidence
+             FROM tool_receipts
+             WHERE idempotency_key = ?1 AND success = 1
+             ORDER BY created_at DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![key], row_to_receipt)?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    // ============================================================
     // V10: GitHub 趋势快照持久化
     // ============================================================
 
@@ -631,6 +802,36 @@ pub struct TrustedTool {
     pub risk_level: String,
     pub added_at: String,
 }
+
+/// 把一行 `tool_receipts` 映射成回执结构。
+///
+/// 列顺序必须与三条 SELECT 完全一致；新增列时三处一起改，
+/// 否则会读错列而不是报错——这类错误只能靠这个函数集中兜住。
+fn row_to_receipt(row: &rusqlite::Row<'_>) -> rusqlite::Result<crate::tools::receipt::ToolReceipt> {
+    Ok(crate::tools::receipt::ToolReceipt {
+        receipt_id: row.get(0)?,
+        session_id: row.get(1)?,
+        run_id: row.get(2)?,
+        tool_name: row.get(3)?,
+        capability_id: row.get(4)?,
+        side_effect: row.get(5)?,
+        scope: row.get(6)?,
+        reversible: row.get::<_, i64>(7)? != 0,
+        risk_level: row.get(8)?,
+        verification_strategy: row.get(9)?,
+        verification_status: row.get(10)?,
+        missing_fields: row.get::<_, Option<String>>(11)?.unwrap_or_else(|| "[]".to_string()),
+        idempotency_key: row.get(12)?,
+        request_digest: row.get(13)?,
+        result_digest: row.get(14)?,
+        permission_result: row.get(15)?,
+        success: row.get::<_, i64>(16)? != 0,
+        error_code: row.get(17)?,
+        duration_ms: row.get::<_, Option<i64>>(18)?.unwrap_or(0),
+        verification_evidence: row.get(19)?,
+    })
+}
+
 
 #[cfg(test)]
 mod settings_tests {
@@ -895,5 +1096,90 @@ mod settings_tests {
         assert!(!is_secret_setting("ollama.base_url"));
         assert!(!is_secret_setting("ollama.model"));
         assert!(!is_secret_setting("ui.theme"));
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    use crate::tools::receipt::ToolReceipt;
+    use std::path::PathBuf;
+
+    fn fresh_db(tag: &str) -> (Database, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "pcg-receipt-test-{}-{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let db = Database::new(&dir.join("t.db")).expect("打开数据库");
+        db.init_schema().expect("初始化 schema");
+        (db, dir)
+    }
+
+    fn cleanup(dir: &PathBuf) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn receipt(id: &str, run: Option<&str>, tool: &str, status: &str, evidence: Option<&str>) -> ToolReceipt {
+        ToolReceipt {
+            receipt_id: id.to_string(),
+            session_id: "sess-1".to_string(),
+            run_id: run.map(str::to_owned),
+            tool_name: tool.to_string(),
+            capability_id: tool.to_string(),
+            side_effect: "local_write".to_string(),
+            scope: "test".to_string(),
+            reversible: true,
+            risk_level: "LOW".to_string(),
+            verification_strategy: "artifact".to_string(),
+            verification_status: status.to_string(),
+            verification_evidence: evidence.map(str::to_owned),
+            missing_fields: "[]".to_string(),
+            idempotency_key: None,
+            request_digest: "req".to_string(),
+            result_digest: Some("res".to_string()),
+            permission_result: "ALLOWED".to_string(),
+            success: true,
+            error_code: None,
+            duration_ms: 12,
+        }
+    }
+
+    /// 按 run_id 取回执时既不能串轮次，也不能把列读错位。
+    ///
+    /// 后者是这个测试真正的价值：`row_to_receipt` 依赖 SELECT 的列顺序，
+    /// 少一列、多一列都不会报错，只会把 `verification_evidence` 读成
+    /// 别的字段——那种错误只能靠断言具体字段抓出来。
+    #[test]
+    fn receipts_are_scoped_by_run_and_read_back_intact() {
+        let (db, dir) = fresh_db("by-run");
+        db.insert_tool_receipt(&receipt("r1", Some("run-a"), "write_file", "VERIFIED", Some("回读一致")))
+            .expect("写入 r1");
+        db.insert_tool_receipt(&receipt("r2", Some("run-b"), "write_file", "FAILED", None))
+            .expect("写入 r2");
+        db.insert_tool_receipt(&receipt("r3", Some("run-a"), "start_process", "CONTRADICTED", Some("进程未在运行")))
+            .expect("写入 r3");
+
+        let rows = db.list_tool_receipts_by_run("run-a", 100).expect("按 run 查询");
+        assert_eq!(rows.len(), 2, "只应取回 run-a 的两条回执");
+        assert_eq!(rows[0].receipt_id, "r1");
+        assert_eq!(rows[1].receipt_id, "r3", "必须按插入顺序，而不是倒序");
+        assert_eq!(rows[0].verification_evidence.as_deref(), Some("回读一致"));
+        assert_eq!(rows[1].verification_status, "CONTRADICTED");
+        assert_eq!(rows[1].duration_ms, 12);
+        assert!(rows[0].success);
+
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn unknown_run_returns_nothing() {
+        let (db, dir) = fresh_db("missing-run");
+        db.insert_tool_receipt(&receipt("r1", Some("run-a"), "write_file", "VERIFIED", None))
+            .expect("写入 r1");
+        assert!(db.list_tool_receipts_by_run("run-zzz", 100).expect("查询").is_empty());
+        cleanup(&dir);
     }
 }

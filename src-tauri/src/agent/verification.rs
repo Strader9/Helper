@@ -16,6 +16,12 @@ pub enum VerificationResult {
     Pass { summary: String },
     /// 验证失败
     Fail { reason: String },
+    /// 没有可用的验证手段——这是"没查"，不是"通过"。
+    ///
+    /// 这里必须与 `Pass` 严格区分：以前没有专用验证器的工具会落到
+    /// `Pass { "工具执行成功" }`，等于把工具的自述当成验证结论，
+    /// 让"没查"看起来像"查过了没问题"。
+    Unavailable { reason: String },
 }
 
 /// 验证引擎
@@ -75,9 +81,9 @@ impl VerificationEngine {
             "open_file" => self.verify_open_file(result),
             "find_program" => self.verify_find_program(result),
             _ => {
-                // 默认信任工具返回的 success
-                VerificationResult::Pass {
-                    summary: "工具执行成功".to_string(),
+                // 没有专用验证器：明确报告"查不了"，而不是默认通过。
+                VerificationResult::Unavailable {
+                    reason: format!("没有为 '{}' 提供独立验证器", tool_name),
                 }
             }
         }
@@ -109,19 +115,20 @@ impl VerificationEngine {
             format!("{}.exe", process_name)
         };
 
-        // 用 tasklist 检查进程是否存在
-        match check_process_exists(&process_name) {
+        // 启动是异步的：进程表可能还没刷新。给一个最多 2 秒的观察窗，
+        // 只查一次会把"刚启动"误判成"没启动"，进而错误地否证工具。
+        match wait_for_process_state(&process_name, true, 2000) {
             Ok(true) => VerificationResult::Pass {
-                summary: format!("进程 {} 已启动", process_name),
+                summary: format!("进程 {} 已在运行", process_name),
             },
             Ok(false) => VerificationResult::Fail {
-                reason: format!("进程 {} 未在运行，启动可能失败", process_name),
+                reason: format!("观察 2 秒后进程 {} 仍未出现，启动可能失败", process_name),
             },
             Err(e) => {
-                // 无法检查时，信任工具返回值
+                // 查不了 ≠ 查过没问题：如实报告"没查"，不冒充通过。
                 eprintln!("[Verification] 检查进程失败: {}", e);
-                VerificationResult::Pass {
-                    summary: "工具返回启动成功（进程状态无法确认）".to_string(),
+                VerificationResult::Unavailable {
+                    reason: format!("无法读取进程列表: {}", e),
                 }
             }
         }
@@ -143,20 +150,17 @@ impl VerificationEngine {
         // 映射到进程名
         let process_name = resolve_process_name_for_check(name);
 
-        // 等待一小段时间让进程退出
-        std::thread::sleep(std::time::Duration::from_millis(500));
-
-        match check_process_exists(&process_name) {
-            Ok(false) => VerificationResult::Pass {
+        match wait_for_process_state(&process_name, false, 2000) {
+            Ok(true) => VerificationResult::Pass {
                 summary: format!("进程 {} 已关闭", process_name),
             },
-            Ok(true) => VerificationResult::Fail {
-                reason: format!("进程 {} 仍在运行，关闭可能失败", process_name),
+            Ok(false) => VerificationResult::Fail {
+                reason: format!("观察 2 秒后进程 {} 仍在运行，关闭可能失败", process_name),
             },
             Err(e) => {
                 eprintln!("[Verification] 检查进程失败: {}", e);
-                VerificationResult::Pass {
-                    summary: "工具返回关闭成功（进程状态无法确认）".to_string(),
+                VerificationResult::Unavailable {
+                    reason: format!("无法读取进程列表: {}", e),
                 }
             }
         }
@@ -291,38 +295,35 @@ impl VerificationEngine {
         let pid = arguments.get("pid").and_then(|v| v.as_i64());
         let name = arguments.get("name").and_then(|v| v.as_str());
 
-        // 等待进程退出
-        std::thread::sleep(std::time::Duration::from_millis(500));
-
         if let Some(pid) = pid {
             // 用 tasklist 检查指定 PID 是否存在
-            match check_pid_exists(pid as u32) {
-                Ok(false) => VerificationResult::Pass {
+            match wait_for_pid_gone(pid as u32, 2000) {
+                Ok(true) => VerificationResult::Pass {
                     summary: format!("进程 PID {} 已终止", pid),
                 },
-                Ok(true) => VerificationResult::Fail {
-                    reason: format!("进程 PID {} 仍在运行", pid),
+                Ok(false) => VerificationResult::Fail {
+                    reason: format!("观察 2 秒后进程 PID {} 仍在运行", pid),
                 },
                 Err(e) => {
                     eprintln!("[Verification] 检查进程失败: {}", e);
-                    VerificationResult::Pass {
-                        summary: "工具返回终止成功（进程状态无法确认）".to_string(),
+                    VerificationResult::Unavailable {
+                        reason: format!("无法读取进程列表: {}", e),
                     }
                 }
             }
         } else if let Some(name) = name {
             let process_name = resolve_process_name_for_check(name);
-            match check_process_exists(&process_name) {
-                Ok(false) => VerificationResult::Pass {
+            match wait_for_process_state(&process_name, false, 2000) {
+                Ok(true) => VerificationResult::Pass {
                     summary: format!("进程 {} 已终止", process_name),
                 },
-                Ok(true) => VerificationResult::Fail {
-                    reason: format!("进程 {} 仍在运行", process_name),
+                Ok(false) => VerificationResult::Fail {
+                    reason: format!("观察 2 秒后进程 {} 仍在运行", process_name),
                 },
                 Err(e) => {
                     eprintln!("[Verification] 检查进程失败: {}", e);
-                    VerificationResult::Pass {
-                        summary: "工具返回终止成功（进程状态无法确认）".to_string(),
+                    VerificationResult::Unavailable {
+                        reason: format!("无法读取进程列表: {}", e),
                     }
                 }
             }
@@ -621,6 +622,48 @@ impl Default for VerificationEngine {
     }
 }
 
+/// 在时间窗内轮询进程状态。
+///
+/// `expect_present = true` 等进程出现（启动），`false` 等进程消失（关闭/终止）。
+///
+/// 为什么必须轮询：启动和退出都不是瞬时的。只查一次，就会把"刚起来还没进
+/// 进程表"判成失败，把"还没退干净"判成失败——而失败在这条链路上会被记成
+/// `CONTRADICTED`，等于用错误的证据否证正确的结果。
+///
+/// 返回值：`Ok(true)` 达到期望状态；`Ok(false)` 超时仍未达到；
+/// `Err` 根本无法检查（调用方应记 `Unavailable`，不要冒充通过或失败）。
+fn wait_for_process_state(
+    process_name: &str,
+    expect_present: bool,
+    timeout_ms: u64,
+) -> Result<bool, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        let present = check_process_exists(process_name)?;
+        if present == expect_present {
+            return Ok(true);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+}
+
+/// 在时间窗内轮询 PID 是否消失。
+fn wait_for_pid_gone(pid: u32, timeout_ms: u64) -> Result<bool, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    loop {
+        if !check_pid_exists(pid)? {
+            return Ok(true);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Ok(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+}
+
 /// 检查进程是否存在（Windows tasklist）
 fn check_process_exists(process_name: &str) -> Result<bool, String> {
     #[cfg(target_os = "windows")]
@@ -688,5 +731,53 @@ fn resolve_process_name_for_check(name: &str) -> String {
                 format!("{}.exe", name)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ok_result() -> ToolResult {
+        ToolResult::ok(serde_json::json!({"path": "x", "bytes_written": 1}))
+    }
+
+    #[test]
+    fn tool_without_verifier_is_unavailable_not_passed() {
+        let engine = VerificationEngine::new();
+        let result = engine.verify("no_such_tool", &serde_json::json!({}), &ok_result());
+        assert!(
+            matches!(result, VerificationResult::Unavailable { .. }),
+            "没有验证器时必须报告 Unavailable，不能伪装成通过"
+        );
+    }
+
+    #[test]
+    fn write_file_to_missing_path_is_contradicted_by_reality() {
+        let engine = VerificationEngine::new();
+        let path = std::env::temp_dir().join(format!(
+            "pcg_verify_absent_{}.txt",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let args = serde_json::json!({"path": path.to_string_lossy(), "content": "x"});
+        let result = engine.verify("write_file", &args, &ok_result());
+        assert!(
+            matches!(result, VerificationResult::Fail { .. }),
+            "文件不存在时，工具自报成功也应被判失败"
+        );
+    }
+
+    #[test]
+    fn write_file_to_existing_path_passes() {
+        let engine = VerificationEngine::new();
+        let path = std::env::temp_dir().join(format!(
+            "pcg_verify_present_{}.txt",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&path, "hello").expect("准备文件");
+        let args = serde_json::json!({"path": path.to_string_lossy(), "content": "hello"});
+        let result = engine.verify("write_file", &args, &ok_result());
+        assert!(matches!(result, VerificationResult::Pass { .. }));
+        let _ = std::fs::remove_file(&path);
     }
 }
