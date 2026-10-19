@@ -364,6 +364,23 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::client::ClientHealthCheckTool), ToolCategory::Client);
         self.register_with_category(Arc::new(executors::client::ClientUsageStatsTool), ToolCategory::Client);
 
+        // === Client 类（P3 运维簇：用量 / 模型配置 / 休眠 / 外部 CLI / 运行时工作）===
+        self.register_with_category(Arc::new(executors::ops::UsageGetSummaryTool), ToolCategory::Client);
+        self.register_with_category(Arc::new(executors::ops::ModelConfigurationGetTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::ops::ModelConfigurationUpdateTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::ops::ModelConfigurationTestTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::ops::SleepStatusTool), ToolCategory::Client);
+        self.register_with_category(Arc::new(executors::ops::SleepCycleTool), ToolCategory::Client);
+        self.register_with_category(Arc::new(executors::ops::ExternalCliRunTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::ops::ExternalCliStatusTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::ops::ExternalCliGetRunTool), ToolCategory::System);
+        self.register_with_category(Arc::new(executors::ops::RuntimeWorkStatusTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::ops::RuntimeWorkPauseTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::ops::RuntimeWorkResumeTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::ops::RuntimeWorkCancelTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::ops::KnowledgeFileStatsTool), ToolCategory::Knowledge);
+        self.register_with_category(Arc::new(executors::ops::KnowledgeCoverageReportTool), ToolCategory::Knowledge);
+
         // === Media 类（图像处理 + 音视频能力探测）===
         self.register_with_category(Arc::new(executors::media::ImageInfoTool), ToolCategory::Media);
         self.register_with_category(Arc::new(executors::media::ImageResizeTool), ToolCategory::Media);

@@ -20,6 +20,7 @@ pub mod knowledge;
 pub mod mcp;
 pub mod ocr;
 pub mod office;
+pub mod ops;
 pub mod media;
 pub mod memory;
 pub mod messaging;
