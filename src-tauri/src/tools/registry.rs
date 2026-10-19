@@ -55,6 +55,8 @@ pub enum ToolCategory {
     Mcp,
     /// 联网检索（搜索、抓网页）
     Web,
+    /// Git 仓库操作
+    Git,
     /// 通用工具（始终加载）
     General,
 }
@@ -80,6 +82,7 @@ impl ToolCategory {
             ToolCategory::Industry => "industry",
             ToolCategory::Mcp => "mcp",
             ToolCategory::Web => "web",
+            ToolCategory::Git => "git",
             ToolCategory::General => "general",
         }
     }
@@ -397,6 +400,13 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::web::WebSearchTool), ToolCategory::Web);
         self.register_with_category(Arc::new(executors::web::UrlFetchTool), ToolCategory::Web);
 
+        // === Git 类（仓库状态/差异/历史/暂存/提交）===
+        self.register_with_category(Arc::new(executors::git::GitStatusTool), ToolCategory::Git);
+        self.register_with_category(Arc::new(executors::git::GitDiffTool), ToolCategory::Git);
+        self.register_with_category(Arc::new(executors::git::GitLogTool), ToolCategory::Git);
+        self.register_with_category(Arc::new(executors::git::GitStageTool), ToolCategory::Git);
+        self.register_with_category(Arc::new(executors::git::GitCommitTool), ToolCategory::Git);
+
         // === Agents 类（任务编排：计划 / 步骤 / 断点）===
         self.register_with_category(Arc::new(executors::tasks::CreateTaskPlanTool), ToolCategory::Agents);
         self.register_with_category(Arc::new(executors::tasks::ListAgentTasksTool), ToolCategory::Agents);
@@ -420,6 +430,23 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::office::WriteDocxTool), ToolCategory::Office);
         self.register_with_category(Arc::new(executors::office::WriteXlsxTool), ToolCategory::Office);
         self.register_with_category(Arc::new(executors::office::WritePptxTool), ToolCategory::Office);
+
+        // === Office 类（增量修改：在已有文档上改，不整份重写）===
+        self.register_with_category(Arc::new(executors::office::ModifyDocxTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::office::ModifyXlsxTool), ToolCategory::Office);
+
+        // === Office 类（PDF 家族：读取/抽取/信息/合并/生成/转换）===
+        self.register_with_category(Arc::new(executors::pdf::ReadPdfTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::pdf::PdfToTextTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::pdf::PdfInfoTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::pdf::MergePdfTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::pdf::CreatePdfTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::pdf::ConvertToPdfTool), ToolCategory::Office);
+
+        // === Office 类（OCR：图片文字识别，走系统 Windows.Media.Ocr）===
+        self.register_with_category(Arc::new(executors::ocr::OcrImageFileTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::ocr::OcrScreenTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::ocr::OcrLanguagesTool), ToolCategory::Office);
 
         // === Knowledge 类（本地文档索引与检索）===
         self.register_with_category(Arc::new(executors::knowledge::IndexDocumentTool), ToolCategory::Knowledge);

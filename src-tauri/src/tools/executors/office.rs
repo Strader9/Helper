@@ -1130,6 +1130,901 @@ impl AgentTool for WritePptxTool {
     }
 }
 
+// ============================================================
+// 增量修改（modify_docx / modify_xlsx）
+//
+// write_docx/write_xlsx 是"从零生成"，会把目标文件整个覆盖掉。
+// 用户手上已有的文档要改两个字，显然不能重写一遍——那会丢掉样式、
+// 图片、页眉页脚、批注。这里的做法是打开 zip 只替换 document.xml /
+// sheetN.xml 这一个条目，其余条目原封不动。
+// ============================================================
+
+/// 用 Update 模式替换 zip 里的单个条目，其余条目保持原样。
+///
+/// 为什么不用 read_zip_entries + write_zip_entries：那套组合是"解出来再整体
+/// 重打"，图片、样式、嵌入对象都会丢（ReadToEnd 按 UTF-8 读二进制会毁数据）。
+/// ZipArchiveMode::Update 是就地改，未触碰的条目字节级不变。
+fn update_zip_entry(path: &str, entry: &str, content: &str) -> AppResult<()> {
+    let script = format!(
+        r#"Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$ErrorActionPreference = 'Stop'
+$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{path}'))
+$name = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{name}'))
+$content = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{content}'))
+$zip = [System.IO.Compression.ZipFile]::Open($p, [System.IO.Compression.ZipArchiveMode]::Update)
+$target = $null
+foreach ($e in @($zip.Entries)) {{
+  if (($e.FullName -replace '\\', '/') -eq $name) {{ $target = $e; break }}
+}}
+if ($null -eq $target) {{ $target = $zip.CreateEntry($name) }}
+$stream = $target.Open()
+$stream.SetLength(0)
+# 不带 BOM：OOXML 各部件都是无 BOM 的 UTF-8
+$enc = New-Object System.Text.UTF8Encoding($false)
+$sw = New-Object System.IO.StreamWriter($stream, $enc)
+$sw.Write($content)
+$sw.Close()
+$stream.Close()
+$zip.Dispose()
+'ok'"#,
+        path = literal(path),
+        name = literal(entry),
+        content = literal(content),
+    );
+    let (ok, stdout, stderr) = run_powershell(&script)?;
+    if !ok || !stdout.trim().contains("ok") {
+        return Err(AppError::ToolExecution(format!(
+            "写入文档条目失败: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(())
+}
+
+/// 找出所有段落（`<w:p>` 块）的字节区间。
+///
+/// 必须排除 `<w:pPr>` / `<w:pStyle>` 这类同前缀标签——直接找 `<w:p` 会
+/// 把它们当成段落开头，段落边界全错。
+fn paragraph_spans(xml: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = xml[cursor..].find("<w:p") {
+        let start = cursor + rel;
+        let after = &xml[start + 4..];
+        let is_paragraph = after.is_empty()
+            || after.starts_with('>')
+            || after.starts_with(' ')
+            || after.starts_with('\t')
+            || after.starts_with('\n')
+            || after.starts_with('\r')
+            || after.starts_with('/');
+        if !is_paragraph {
+            cursor = start + 4;
+            continue;
+        }
+        // 自闭合 <w:p/>
+        if after.starts_with('/') || after.starts_with(">") && after[1..].starts_with("</w:p>") {
+            let end = match xml[start..].find('>') {
+                Some(gt) => start + gt + 1,
+                None => break,
+            };
+            spans.push((start, end));
+            cursor = end;
+            continue;
+        }
+        match xml[start..].find("</w:p>") {
+            Some(end_rel) => {
+                let end = start + end_rel + "</w:p>".len();
+                spans.push((start, end));
+                cursor = end;
+            }
+            None => break,
+        }
+    }
+    spans
+}
+
+/// 把整段内容换成一段新文字，保留段落属性（`<w:pPr>`：对齐、缩进、样式）。
+fn rewrite_paragraph(block: &str, text: &str) -> String {
+    let open_end = match block.find('>') {
+        Some(i) => i + 1,
+        None => {
+            return format!(
+                "<w:p><w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
+                escape_xml(text)
+            )
+        }
+    };
+    let close = "</w:p>";
+    let inner_end = block.len().saturating_sub(close.len());
+    if open_end > inner_end {
+        return format!(
+            "<w:p><w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
+            escape_xml(text)
+        );
+    }
+    let open = &block[..open_end];
+    let inner = &block[open_end..inner_end];
+    let ppr = if inner.trim_start().starts_with("<w:pPr") {
+        match inner.find("</w:pPr>") {
+            Some(e) => &inner[..e + "</w:pPr>".len()],
+            None => "",
+        }
+    } else {
+        ""
+    };
+    if text.trim().is_empty() {
+        format!("{}{}</w:p>", open, ppr)
+    } else {
+        format!(
+            "{}{}<w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
+            open,
+            ppr,
+            escape_xml(text)
+        )
+    }
+}
+
+/// 在每个 `<w:t>` 内部做文本替换，返回 (新 xml, 命中次数)。
+///
+/// 只能整段命中同一个 run 内的文字。Word 会把一句话按编辑历史切成多个
+/// run（改过词的句子几乎必然是碎的），跨 run 的短语匹配不到——这是纯文本
+/// 层面替换的固有限制，不是实现缺陷。
+fn replace_in_text_runs(xml: &str, from: &str, to: &str) -> (String, usize) {
+    let mut out = String::with_capacity(xml.len());
+    let mut cursor = 0usize;
+    let mut hits = 0usize;
+    loop {
+        let Some(rel) = xml[cursor..].find("<w:t") else {
+            out.push_str(&xml[cursor..]);
+            break;
+        };
+        let tag_start = cursor + rel;
+        let Some(gt_rel) = xml[tag_start..].find('>') else {
+            out.push_str(&xml[cursor..]);
+            break;
+        };
+        let content_start = tag_start + gt_rel + 1;
+        // 自闭合 <w:t/>：没有内容可换
+        if xml[tag_start..content_start].ends_with("/>") {
+            out.push_str(&xml[cursor..content_start]);
+            cursor = content_start;
+            continue;
+        }
+        let Some(end_rel) = xml[content_start..].find("</w:t>") else {
+            out.push_str(&xml[cursor..]);
+            break;
+        };
+        let content_end = content_start + end_rel;
+        out.push_str(&xml[cursor..content_start]);
+        let raw = &xml[content_start..content_end];
+        let plain = unescape_xml(raw);
+        if plain.contains(from) {
+            hits += plain.matches(from).count();
+            out.push_str(&escape_xml(&plain.replace(from, to)));
+        } else {
+            out.push_str(raw);
+        }
+        out.push_str("</w:t>");
+        cursor = content_end + "</w:t>".len();
+    }
+    (out, hits)
+}
+
+/// document.xml 里段落应该插在哪：`</w:body>` 之前，且要在 `<w:sectPr>` 之前。
+///
+/// `w:sectPr` 定义页面尺寸/页边距，Word 要求它是 body 的最后一个子元素。
+/// 插到它后面，文档会变成"新段落用默认页面设置"，打印出来页边距全变。
+fn docx_body_insert_point(xml: &str) -> Option<usize> {
+    let body_close = xml.rfind("</w:body>")?;
+    let head = &xml[..body_close];
+    if let Some(sect) = head.rfind("<w:sectPr") {
+        // 只认 body 直属的 sectPr：它和 </w:body> 之间只有空白
+        if head[sect..].trim_end().ends_with("</w:sectPr>") {
+            return Some(sect);
+        }
+    }
+    Some(body_close)
+}
+
+/// 修改已有的 Word 文档
+pub struct ModifyDocxTool;
+
+#[async_trait]
+impl AgentTool for ModifyDocxTool {
+    fn name(&self) -> &'static str {
+        "modify_docx"
+    }
+
+    fn description(&self) -> &'static str {
+        "在已有 .docx 文档上做局部修改，保留原有样式、图片、页眉页脚（不像 write_docx 那样整份重写）。支持三种操作，可组合：append_paragraphs 在末尾追加段落；replace_text 替换指定文字（只能命中同一个文字块内的连续文字，被 Word 拆散的长句可能匹配不到）；replace_paragraph 按段落序号整段改写（序号从 1 开始，可用 read_docx 先看内容）。"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "要修改的 .docx 路径（必须是已存在的文件）" },
+                "append_paragraphs": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "在文档末尾追加的段落"
+                },
+                "replace_text": {
+                    "type": "array",
+                    "description": "文本替换列表",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "from": { "type": "string", "description": "要查找的原文" },
+                            "to": { "type": "string", "description": "替换成的文字，可为空字符串（等于删除）" }
+                        },
+                        "required": ["from", "to"]
+                    }
+                },
+                "replace_paragraph": {
+                    "type": "object",
+                    "description": "按段落序号整段改写",
+                    "properties": {
+                        "index": { "type": "integer", "description": "段落序号，从 1 开始" },
+                        "text": { "type": "string", "description": "新的段落文字" }
+                    },
+                    "required": ["index", "text"]
+                }
+            },
+            "required": ["path"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Medium
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
+        let path = require_str(&args, "path")?;
+        ensure_ext(path, &["docx"])?;
+        if !Path::new(path).is_file() {
+            return Err(AppError::InvalidArgument(format!(
+                "文档不存在（modify_docx 只能改已有文件，新建请用 write_docx）: {}",
+                path
+            )));
+        }
+
+        let entries = read_zip_entries(path, &["word/document.xml".to_string()])?;
+        let xml = entries
+            .into_iter()
+            .find(|(name, _)| name.ends_with("word/document.xml"))
+            .map(|(_, xml)| xml)
+            .ok_or_else(|| {
+                AppError::ToolExecution(
+                    "文件里没有 word/document.xml，可能不是有效的 docx".to_string(),
+                )
+            })?;
+
+        let mut updated = xml.clone();
+        let mut changed = false;
+        let mut replaced_hits = 0usize;
+        let mut appended = 0usize;
+        let mut paragraph_replaced: Option<usize> = None;
+
+        // 1) 文本替换
+        if let Some(list) = args["replace_text"].as_array() {
+            for item in list {
+                let from = item["from"].as_str().unwrap_or("");
+                if from.is_empty() {
+                    continue;
+                }
+                let to = item["to"].as_str().unwrap_or("");
+                let (next, hits) = replace_in_text_runs(&updated, from, to);
+                if hits > 0 {
+                    updated = next;
+                    replaced_hits += hits;
+                    changed = true;
+                }
+            }
+        }
+
+        // 2) 整段改写（放在文本替换之后：序号是基于原始文档的，
+        //    先替换会让序号对应的段落内容变掉，但位置不变——顺序无所谓，
+        //    这里选在追加之前，避免追加的段落混进序号计算）
+        if let Some(spec) = args["replace_paragraph"].as_object() {
+            let index = spec.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let text = spec.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            if index == 0 {
+                return Err(AppError::InvalidArgument(
+                    "replace_paragraph.index 从 1 开始".to_string(),
+                ));
+            }
+            let spans = paragraph_spans(&updated);
+            if index > spans.len() {
+                return Err(AppError::InvalidArgument(format!(
+                    "段落序号超出范围：文档共 {} 段，请求第 {} 段",
+                    spans.len(),
+                    index
+                )));
+            }
+            let (start, end) = spans[index - 1];
+            let block = &updated[start..end];
+            let fresh = rewrite_paragraph(block, text);
+            updated.replace_range(start..end, &fresh);
+            paragraph_replaced = Some(index);
+            changed = true;
+        }
+
+        // 3) 末尾追加段落
+        if let Some(list) = args["append_paragraphs"].as_array() {
+            let paragraphs: Vec<String> = list
+                .iter()
+                .filter_map(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            if !paragraphs.is_empty() {
+                let insert_at = docx_body_insert_point(&updated).ok_or_else(|| {
+                    AppError::ToolExecution("文档结构异常：找不到 </w:body>".to_string())
+                })?;
+                let mut block = String::new();
+                for p in &paragraphs {
+                    block.push_str(&format!(
+                        "<w:p><w:pPr><w:rPr><w:rFonts w:eastAsia=\"Microsoft YaHei\"/></w:rPr></w:pPr>\
+                         <w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
+                        escape_xml(p.trim_end())
+                    ));
+                }
+                updated.insert_str(insert_at, &block);
+                appended = paragraphs.len();
+                changed = true;
+            }
+        }
+
+        if !changed {
+            return Ok(ToolResult::err(
+                "NOTHING_TO_DO",
+                "没有提供任何有效的修改操作（append_paragraphs / replace_text / replace_paragraph 至少给一个）",
+            ));
+        }
+
+        update_zip_entry(path, "word/document.xml", &updated)?;
+
+        // 回读校验：写回成功 ≠ 内容真的进去了（可能写到了别的条目）。
+        // 重新打开文件抽出文字，确认改后的文字确实存在。
+        let verify = read_zip_entries(path, &["word/document.xml".to_string()])?;
+        let after_xml = verify
+            .into_iter()
+            .find(|(n, _)| n.ends_with("word/document.xml"))
+            .map(|(_, x)| x)
+            .unwrap_or_default();
+        let text_after = docx_to_text(&after_xml);
+        let paragraphs_after = paragraph_spans(&after_xml).len();
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+
+        Ok(ToolResult::ok(serde_json::json!({
+            "path": path,
+            "paragraphs_after": paragraphs_after,
+            "appended": appended,
+            "replaced_occurrences": replaced_hits,
+            "paragraph_replaced": paragraph_replaced,
+            "size_bytes": size,
+            "text_preview": text_after.chars().take(200).collect::<String>(),
+        })))
+    }
+}
+
+// ------------------------------------------------------------
+// xlsx 单元格改写
+// ------------------------------------------------------------
+
+/// 解析单元格引用 "AB12" → (列下标 0 基, 行号 1 基)
+fn parse_cell_ref(reference: &str) -> Option<(usize, u32)> {
+    let reference = reference.trim();
+    let mut col = 0usize;
+    let mut digits = String::new();
+    let mut seen_digit = false;
+    for c in reference.chars() {
+        if c.is_ascii_alphabetic() {
+            if seen_digit {
+                return None; // A1B 这种非法
+            }
+            col = col * 26 + (c.to_ascii_uppercase() as usize - 'A' as usize + 1);
+        } else if c.is_ascii_digit() {
+            seen_digit = true;
+            digits.push(c);
+        } else {
+            return None;
+        }
+    }
+    if !seen_digit || col == 0 {
+        return None;
+    }
+    let row: u32 = digits.parse().ok()?;
+    if row == 0 {
+        return None;
+    }
+    Some((col - 1, row))
+}
+
+/// 生成单元格 XML：数字写成数值，其余写成内联字符串。
+///
+/// 用 inlineStr 而不是共享字符串表：共享表要给 sharedStrings.xml 增条目并
+/// 改 count/uniqueCount，还要维护 SST 索引——为了写一个格子改四处的账，
+/// 不值得。内联字符串是 OOXML 里合法的等价写法。
+fn cell_xml(reference: &str, value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Number(n) => {
+            format!("<c r=\"{}\"><v>{}</v></c>", reference, n)
+        }
+        serde_json::Value::Bool(b) => format!(
+            "<c r=\"{}\" t=\"b\"><v>{}</v></c>",
+            reference,
+            if *b { 1 } else { 0 }
+        ),
+        serde_json::Value::Null => format!("<c r=\"{}\"/>", reference),
+        other => {
+            let text = other.as_str().map(|s| s.to_string()).unwrap_or_else(|| other.to_string());
+            if text.is_empty() {
+                // 空字符串：写成空单元格而不是 inlineStr，Excel 才不会把它当"有内容"
+                format!("<c r=\"{}\"/>", reference)
+            } else {
+                format!(
+                    "<c r=\"{}\" t=\"inlineStr\"><is><t xml:space=\"preserve\">{}</t></is></c>",
+                    reference,
+                    escape_xml(&text)
+                )
+            }
+        }
+    }
+}
+
+/// 找出 sheetData 内所有行的 (行号, 起始, 结束)
+fn row_spans(sheet_xml: &str) -> Vec<(u32, usize, usize)> {
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = sheet_xml[cursor..].find("<row") {
+        let start = cursor + rel;
+        let after = &sheet_xml[start + 4..];
+        if !(after.starts_with(' ')
+            || after.starts_with('>')
+            || after.starts_with('/')
+            || after.starts_with('\t')
+            || after.starts_with('\n')
+            || after.starts_with('\r'))
+        {
+            cursor = start + 4;
+            continue;
+        }
+        let Some(gt_rel) = sheet_xml[start..].find('>') else {
+            break;
+        };
+        let tag = &sheet_xml[start..start + gt_rel];
+        let row_no = tag
+            .split("r=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        if tag.trim_end().ends_with('/') {
+            let end = start + gt_rel + 1;
+            spans.push((row_no, start, end));
+            cursor = end;
+            continue;
+        }
+        match sheet_xml[start..].find("</row>") {
+            Some(end_rel) => {
+                let end = start + end_rel + "</row>".len();
+                spans.push((row_no, start, end));
+                cursor = end;
+            }
+            None => break,
+        }
+    }
+    spans
+}
+
+/// 找 row 内所有单元格的 (列下标, 起始, 结束)
+fn cell_spans(row_xml: &str) -> Vec<(usize, usize, usize)> {
+    let mut spans = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = row_xml[cursor..].find("<c ") {
+        let start = cursor + rel;
+        let Some(gt_rel) = row_xml[start..].find('>') else {
+            break;
+        };
+        let tag = &row_xml[start..start + gt_rel];
+        let reference = tag
+            .split("r=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or("");
+        let col = parse_cell_ref(reference).map(|(c, _)| c).unwrap_or(0);
+        if tag.trim_end().ends_with('/') {
+            let end = start + gt_rel + 1;
+            spans.push((col, start, end));
+            cursor = end;
+            continue;
+        }
+        match row_xml[start..].find("</c>") {
+            Some(end_rel) => {
+                let end = start + end_rel + "</c>".len();
+                spans.push((col, start, end));
+                cursor = end;
+            }
+            None => break,
+        }
+    }
+    spans
+}
+
+/// 在 row 内设置一个单元格：已存在则整格替换，不存在则按列序插入。
+fn set_cell_in_row(row_xml: &str, col: usize, reference: &str, value: &serde_json::Value) -> String {
+    let fresh = cell_xml(reference, value);
+    let spans = cell_spans(row_xml);
+    if let Some((_, start, end)) = spans.iter().find(|(c, _, _)| *c == col) {
+        let mut out = String::with_capacity(row_xml.len() + fresh.len());
+        out.push_str(&row_xml[..*start]);
+        out.push_str(&fresh);
+        out.push_str(&row_xml[*end..]);
+        return out;
+    }
+    // 按列序插入：OpenXML 规范要求 row 内的 c 按列升序，乱序 Excel 会提示修复
+    for (c, start, _) in &spans {
+        if *c > col {
+            let mut out = String::with_capacity(row_xml.len() + fresh.len());
+            out.push_str(&row_xml[..*start]);
+            out.push_str(&fresh);
+            out.push_str(&row_xml[*start..]);
+            return out;
+        }
+    }
+    match row_xml.rfind("</row>") {
+        Some(pos) => {
+            let mut out = String::with_capacity(row_xml.len() + fresh.len());
+            out.push_str(&row_xml[..pos]);
+            out.push_str(&fresh);
+            out.push_str(&row_xml[pos..]);
+            out
+        }
+        None => row_xml.to_string(),
+    }
+}
+
+/// 确保 sheet 里存在某一行，返回新的 sheet xml。
+///
+/// 自闭合的 `<row r="5"/>` 要展开成 `<row r="5"></row>` 才能往里放单元格。
+fn ensure_row(sheet_xml: &str, row: u32) -> String {
+    let spans = row_spans(sheet_xml);
+    if let Some((_, start, end)) = spans.iter().find(|(r, _, _)| *r == row) {
+        let block = &sheet_xml[*start..*end];
+        if block.contains("</row>") {
+            return sheet_xml.to_string();
+        }
+        let fresh = format!("<row r=\"{}\"></row>", row);
+        let mut out = String::with_capacity(sheet_xml.len() + 16);
+        out.push_str(&sheet_xml[..*start]);
+        out.push_str(&fresh);
+        out.push_str(&sheet_xml[*end..]);
+        return out;
+    }
+    let fresh = format!("<row r=\"{}\"></row>", row);
+    // 按行号升序插入
+    for (r, start, _) in &spans {
+        if *r > row {
+            let mut out = String::with_capacity(sheet_xml.len() + fresh.len());
+            out.push_str(&sheet_xml[..*start]);
+            out.push_str(&fresh);
+            out.push_str(&sheet_xml[*start..]);
+            return out;
+        }
+    }
+    match sheet_xml.rfind("</sheetData>") {
+        Some(pos) => {
+            let mut out = String::with_capacity(sheet_xml.len() + fresh.len());
+            out.push_str(&sheet_xml[..pos]);
+            out.push_str(&fresh);
+            out.push_str(&sheet_xml[pos..]);
+            out
+        }
+        // 没有 sheetData 的空表：补一个
+        None => sheet_xml.replace(
+            "</worksheet>",
+            &format!("<sheetData>{}</sheetData></worksheet>", fresh),
+        ),
+    }
+}
+
+/// sheet 名 → 工作表 xml 路径。
+///
+/// workbook.xml 只给 `r:id`，真实文件名在 workbook.xml.rels 里，
+/// 而那个 target 可能是 "worksheets/sheet1.xml"（相对 xl/）也可能是
+/// "/xl/worksheets/sheet1.xml"（绝对）——两种写法 Excel 都产出过。
+fn xlsx_sheet_map(entries: &[(String, String)]) -> Vec<(String, String)> {
+    let workbook = entries
+        .iter()
+        .find(|(n, _)| n.ends_with("xl/workbook.xml"))
+        .map(|(_, x)| x.as_str())
+        .unwrap_or("");
+    let rels = entries
+        .iter()
+        .find(|(n, _)| n.ends_with("xl/_rels/workbook.xml.rels"))
+        .map(|(_, x)| x.as_str())
+        .unwrap_or("");
+
+    // rId → target
+    let mut id_to_target: Vec<(String, String)> = Vec::new();
+    let mut rest = rels;
+    while let Some(pos) = rest.find("<Relationship") {
+        let tag_end = match rest[pos..].find('>') {
+            Some(e) => pos + e,
+            None => break,
+        };
+        let tag = &rest[pos..tag_end];
+        let id = tag
+            .split("Id=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or("");
+        let target = tag
+            .split("Target=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or("");
+        if !id.is_empty() && !target.is_empty() {
+            id_to_target.push((id.to_string(), target.to_string()));
+        }
+        rest = &rest[tag_end..];
+    }
+
+    let mut result = Vec::new();
+    let mut rest = workbook;
+    while let Some(pos) = rest.find("<sheet ") {
+        let tag_end = match rest[pos..].find('>') {
+            Some(e) => pos + e,
+            None => break,
+        };
+        let tag = &rest[pos..tag_end];
+        let name = tag
+            .split("name=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or("");
+        let rid = tag
+            .split("r:id=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or("");
+        if let Some((_, target)) = id_to_target.iter().find(|(id, _)| id == rid) {
+            let path = if target.starts_with('/') {
+                target.trim_start_matches('/').to_string()
+            } else {
+                format!("xl/{}", target)
+            };
+            result.push((unescape_xml(name), path));
+        }
+        rest = &rest[tag_end..];
+    }
+    result
+}
+
+/// 修改已有的 Excel 工作簿
+pub struct ModifyXlsxTool;
+
+#[async_trait]
+impl AgentTool for ModifyXlsxTool {
+    fn name(&self) -> &'static str {
+        "modify_xlsx"
+    }
+
+    fn description(&self) -> &'static str {
+        "在已有 .xlsx 工作簿里改单元格内容，保留其他工作表、公式、样式和图表（不像 write_xlsx 那样整份重写）。set_cells 是单元格列表：sheet 省略时用第一张表，cell 如 \"B3\"，value 可以是文字或数字。行/单元格不存在会自动创建。"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "要修改的 .xlsx 路径（必须是已存在的文件）" },
+                "set_cells": {
+                    "type": "array",
+                    "description": "要写入的单元格",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "sheet": { "type": "string", "description": "工作表名，省略用第一张" },
+                            "cell": { "type": "string", "description": "单元格地址，如 A1、B3" },
+                            "value": { "description": "写入的值：文字、数字或布尔" }
+                        },
+                        "required": ["cell", "value"]
+                    }
+                }
+            },
+            "required": ["path", "set_cells"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Medium
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
+        let path = require_str(&args, "path")?;
+        ensure_ext(path, &["xlsx"])?;
+        if !Path::new(path).is_file() {
+            return Err(AppError::InvalidArgument(format!(
+                "工作簿不存在（modify_xlsx 只能改已有文件，新建请用 write_xlsx）: {}",
+                path
+            )));
+        }
+        let cells = args["set_cells"].as_array().cloned().unwrap_or_default();
+        if cells.is_empty() {
+            return Err(AppError::InvalidArgument(
+                "set_cells 为空，没有要写入的内容".to_string(),
+            ));
+        }
+
+        // 先取出 workbook 结构与所有 sheet 条目
+        let meta = read_zip_entries(
+            path,
+            &[
+                "xl/workbook.xml".to_string(),
+                "xl/_rels/workbook.xml.rels".to_string(),
+            ],
+        )?;
+        let sheet_map = xlsx_sheet_map(&meta);
+        if sheet_map.is_empty() {
+            return Err(AppError::ToolExecution(
+                "无法解析工作表清单（xl/workbook.xml 或 rels 缺失/异常）".to_string(),
+            ));
+        }
+        let sheet_names: Vec<String> = sheet_map.iter().map(|(n, _)| n.clone()).collect();
+
+        // 按工作表分组：同一张表只读一次、写一次，避免多次往返
+        let mut per_sheet: Vec<(String, String, Vec<(usize, u32, serde_json::Value, String)>)> =
+            Vec::new();
+        for item in &cells {
+            let wanted_sheet = item["sheet"].as_str().unwrap_or("").trim().to_string();
+            let (sheet_name, sheet_path) = if wanted_sheet.is_empty() {
+                sheet_map[0].clone()
+            } else {
+                match sheet_map.iter().find(|(n, _)| n == &wanted_sheet) {
+                    Some(pair) => pair.clone(),
+                    None => {
+                        return Err(AppError::InvalidArgument(format!(
+                            "找不到工作表「{}」。现有工作表: {}",
+                            wanted_sheet,
+                            sheet_names.join(", ")
+                        )))
+                    }
+                }
+            };
+            let reference = item["cell"].as_str().unwrap_or("").trim().to_string();
+            let (col, row) = parse_cell_ref(&reference).ok_or_else(|| {
+                AppError::InvalidArgument(format!("单元格地址不合法: {}", reference))
+            })?;
+            let value = item.get("value").cloned().unwrap_or(serde_json::Value::Null);
+
+            if let Some(slot) = per_sheet.iter_mut().find(|(n, _, _)| n == &sheet_name) {
+                slot.2.push((col, row, value, reference));
+            } else {
+                per_sheet.push((
+                    sheet_name.clone(),
+                    sheet_path.clone(),
+                    vec![(col, row, value, reference)],
+                ));
+            }
+        }
+
+        let mut written = 0usize;
+        let mut touched_sheets: Vec<String> = Vec::new();
+
+        for (sheet_name, sheet_path, items) in &per_sheet {
+            let loaded = read_zip_entries(path, &[sheet_path.clone()])?;
+            let xml = loaded
+                .into_iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(sheet_path))
+                .map(|(_, x)| x)
+                .ok_or_else(|| {
+                    AppError::ToolExecution(format!(
+                        "工作表「{}」的 xml（{}）不在文件里",
+                        sheet_name, sheet_path
+                    ))
+                })?;
+
+            let mut updated = xml.clone();
+            for (col, row, value, reference) in items {
+                updated = ensure_row(&updated, *row);
+                // ensure_row 之后重新定位行块（位置可能变了）
+                let spans = row_spans(&updated);
+                let Some((_, start, end)) = spans.iter().find(|(r, _, _)| r == row).copied()
+                else {
+                    return Err(AppError::ToolExecution(format!(
+                        "无法在 {} 第 {} 行定位插入点",
+                        sheet_name, row
+                    )));
+                };
+                let row_block = &updated[start..end];
+                let fresh_row = set_cell_in_row(row_block, *col, reference, value);
+                updated.replace_range(start..end, &fresh_row);
+                written += 1;
+            }
+
+            update_zip_entry(path, sheet_path, &updated)?;
+            touched_sheets.push(sheet_name.clone());
+        }
+
+        // 回读校验：把改过的单元格重新读出来，确认值真的落进去了。
+        // 这一步能抓住"写成功了但写到另一张表"这类错位。
+        let mut verified: Vec<serde_json::Value> = Vec::new();
+        for (sheet_name, sheet_path, items) in &per_sheet {
+            let reloaded = read_zip_entries(path, &[sheet_path.clone()])?;
+            let xml = reloaded
+                .into_iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(sheet_path))
+                .map(|(_, x)| x)
+                .unwrap_or_default();
+            for (_, row, value, reference) in items {
+                let expected = match value {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::Bool(b) => {
+                        if *b { "1".to_string() } else { "0".to_string() }
+                    }
+                    _ => String::new(),
+                };
+                // 在对应行里找这个单元格的实际内容。
+                // 只抽 <t>（内联字符串）和 <v>（数值）：这两个标签就是
+                // 单元格里"看得见的值"，其余 <f> 公式、样式不参与比对。
+                let spans = row_spans(&xml);
+                let found = spans
+                    .iter()
+                    .find(|(r, _, _)| r == row)
+                    .map(|(_, s, e)| {
+                        let block = &xml[*s..*e];
+                        let cells = cell_spans(block);
+                        cells
+                            .iter()
+                            .find(|(c, _, _)| {
+                                parse_cell_ref(reference)
+                                    .map(|(cc, _)| cc == *c)
+                                    .unwrap_or(false)
+                            })
+                            .map(|(_, cs, ce)| {
+                                let cell_xml = &block[*cs..*ce];
+                                let inline = collect_tag(cell_xml, "t");
+                                if inline.is_empty() {
+                                    collect_tag(cell_xml, "v")
+                                } else {
+                                    inline
+                                }
+                            })
+                    })
+                    .flatten()
+                    .unwrap_or_default();
+                verified.push(serde_json::json!({
+                    "sheet": sheet_name,
+                    "cell": reference,
+                    "expected": expected,
+                    "found": found.clone(),
+                    "match": expected.is_empty() || found.contains(&expected),
+                }));
+            }
+        }
+
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let all_match = verified
+            .iter()
+            .all(|v| v["match"].as_bool().unwrap_or(false));
+
+        Ok(ToolResult::ok(serde_json::json!({
+            "path": path,
+            "sheets_touched": touched_sheets,
+            "cells_written": written,
+            "all_verified": all_match,
+            "size_bytes": size,
+            "cells": verified,
+        })))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1407,5 +2302,249 @@ mod tests {
         let _ = std::fs::remove_file(&docx);
         let _ = std::fs::remove_file(&xlsx);
         let _ = std::fs::remove_file(&pptx);
+    }
+
+    // ============ 增量修改（纯函数） ============
+
+    #[test]
+    fn cell_ref_parses_columns_beyond_z() {
+        assert_eq!(parse_cell_ref("A1"), Some((0, 1)));
+        assert_eq!(parse_cell_ref("Z9"), Some((25, 9)));
+        assert_eq!(parse_cell_ref("AA1"), Some((26, 1)));
+        assert_eq!(parse_cell_ref("ab12"), Some((27, 12)));
+    }
+
+    #[test]
+    fn cell_ref_rejects_malformed_input() {
+        assert_eq!(parse_cell_ref("1A"), None, "列必须在行号前");
+        assert_eq!(parse_cell_ref("A0"), None, "行号从 1 开始");
+        assert_eq!(parse_cell_ref("A1B"), None, "字母不能夹在行号后面");
+        assert_eq!(parse_cell_ref(""), None);
+    }
+
+    #[test]
+    fn paragraph_spans_ignores_ppr_and_style_tags() {
+        // <w:pPr> 与 <w:pStyle> 都以 `<w:p` 开头，不能被当成段落边界
+        let xml = r#"<w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>B</w:t></w:r></w:p></w:body>"#;
+        let spans = paragraph_spans(xml);
+        assert_eq!(spans.len(), 2, "应识别出 2 个段落");
+        assert_eq!(&xml[spans[0].0..spans[0].1], r#"<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>"#);
+    }
+
+    #[test]
+    fn replace_text_only_touches_wt_content() {
+        let xml = r#"<w:p><w:pPr><w:pStyle w:val="X"/></w:pPr><w:r><w:t>旧城市</w:t></w:r></w:p>"#;
+        let (out, hits) = replace_in_text_runs(xml, "旧城市", "新城市");
+        assert_eq!(hits, 1);
+        assert!(out.contains("新城市"));
+        // 属性值里的同名文字不能被改（否则样式引用会断）
+        assert!(out.contains(r#"w:val="X""#));
+    }
+
+    #[test]
+    fn replace_text_does_not_cross_runs() {
+        // Word 把"你好世界"拆成两个 run 时，跨 run 的匹配注定失败——
+        // 这是设计上的已知限制，测试把它固定下来，避免有人误以为能改。
+        let xml = r#"<w:p><w:r><w:t>你好</w:t></w:r><w:r><w:t>世界</w:t></w:r></w:p>"#;
+        let (_, hits) = replace_in_text_runs(xml, "你好世界", "再见");
+        assert_eq!(hits, 0, "跨 run 的短语不应命中");
+    }
+
+    #[test]
+    fn rewrite_paragraph_keeps_paragraph_properties() {
+        let block = r#"<w:p w:rsidR="00A1"><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>旧内容</w:t></w:r></w:p>"#;
+        let fresh = rewrite_paragraph(block, "新内容");
+        assert!(fresh.contains(r#"<w:jc w:val="center"/>"#), "段落对齐方式必须保留");
+        assert!(fresh.contains(r#"w:rsidR="00A1""#));
+        assert!(fresh.contains("新内容"));
+        assert!(!fresh.contains("旧内容"));
+    }
+
+    #[test]
+    fn docx_insert_point_stays_before_sectpr() {
+        let xml = r#"<w:body><w:p><w:r><w:t>A</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906"/></w:sectPr></w:body>"#;
+        let at = docx_body_insert_point(xml).unwrap();
+        assert!(
+            xml[at..].starts_with("<w:sectPr"),
+            "插入点必须在 sectPr 之前，否则页面设置会被新段落覆盖"
+        );
+    }
+
+    #[test]
+    fn set_cell_inserts_in_column_order() {
+        let row = r#"<row r="1"><c r="A1" t="inlineStr"><is><t>甲</t></is></c><c r="C1" t="inlineStr"><is><t>丙</t></is></c></row>"#;
+        let updated = set_cell_in_row(row, 1, "B1", &serde_json::json!("乙"));
+        let b = updated.find(r#"r="B1""#).expect("应插入 B1");
+        let c = updated.find(r#"r="C1""#).expect("C1 应还在");
+        assert!(b < c, "B1 必须排在 C1 之前，否则 Excel 会提示文件需修复");
+    }
+
+    #[test]
+    fn set_cell_replaces_existing_cell_in_place() {
+        let row = r#"<row r="2"><c r="A2" t="inlineStr"><is><t>旧</t></is></c></row>"#;
+        let updated = set_cell_in_row(row, 0, "A2", &serde_json::json!("新"));
+        assert!(updated.contains("新"));
+        assert!(!updated.contains("旧"));
+        assert_eq!(updated.matches("<c ").count(), 1, "不能多出一个重复单元格");
+    }
+
+    #[test]
+    fn nines_row_expands_self_closing_tag() {
+        let sheet = r#"<worksheet><sheetData><row r="1"/></sheetData></worksheet>"#;
+        let updated = ensure_row(sheet, 1);
+        assert!(updated.contains("<row r=\"1\"></row>"), "自闭合行要展开才能放单元格");
+        // 第二次调用必须幂等
+        assert_eq!(ensure_row(&updated, 1), updated);
+    }
+
+    #[test]
+    fn xlsx_sheet_map_handles_relative_and_absolute_targets() {
+        let entries = vec![
+            (
+                "xl/workbook.xml".to_string(),
+                r#"<workbook><sheets><sheet name="总表" sheetId="1" r:id="rId1"/><sheet name="明细" sheetId="2" r:id="rId2"/></sheets></workbook>"#.to_string(),
+            ),
+            (
+                "xl/_rels/workbook.xml.rels".to_string(),
+                r#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Target="/xl/worksheets/sheet2.xml"/></Relationships>"#.to_string(),
+            ),
+        ];
+        let map = xlsx_sheet_map(&entries);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[0], ("总表".to_string(), "xl/worksheets/sheet1.xml".to_string()));
+        assert_eq!(map[1], ("明细".to_string(), "xl/worksheets/sheet2.xml".to_string()));
+    }
+
+    /// 实机回环：生成 → 追加段落 → 文本替换 → 读回核对。
+    ///
+    /// 走真实 zip 读写（PowerShell），验证"就地改写"这条路真的没把
+    /// 文档写坏——纯字符串测试证明不了 zip 层的正确性。
+    #[tokio::test]
+    #[ignore = "需要 PowerShell 打包临时 Office 文件"]
+    async fn real_modify_docx_round_trip() {
+        let dir = std::env::temp_dir();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let path = dir.join(format!("pcg-mod-{}.docx", stamp));
+        let path_str = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        // 1) 先造一份
+        let created = WriteDocxTool
+            .execute(serde_json::json!({
+                "path": path_str,
+                "paragraphs": ["原第一段：旧项目名称", "原第二段：保留内容"]
+            }))
+            .await
+            .expect("write_docx 应返回");
+        assert!(created.success, "写 docx 失败: {:?}", created.error);
+
+        // 2) 追加 + 替换
+        let modified = ModifyDocxTool
+            .execute(serde_json::json!({
+                "path": path_str,
+                "append_paragraphs": ["追加的第三段"],
+                "replace_text": [{ "from": "旧项目名称", "to": "新项目名称" }]
+            }))
+            .await
+            .expect("modify_docx 应返回");
+        assert!(modified.success, "modify_docx 失败: {:?}", modified.error);
+        let md = modified.data.unwrap();
+        assert_eq!(md["appended"].as_u64(), Some(1));
+        assert_eq!(md["replaced_occurrences"].as_u64(), Some(1));
+        assert_eq!(md["paragraphs_after"].as_u64(), Some(3), "应有 3 段: {}", md);
+
+        // 3) 读回核对
+        let read = ReadDocxTool
+            .execute(serde_json::json!({ "path": path_str }))
+            .await
+            .expect("read_docx 应返回");
+        assert!(read.success, "读 docx 失败: {:?}", read.error);
+        let text = read.data.unwrap()["text"].as_str().unwrap_or("").to_string();
+        assert!(text.contains("新项目名称"), "替换后的文字应存在: {}", text);
+        assert!(!text.contains("旧项目名称"), "旧文字应已被替换");
+        assert!(text.contains("追加的第三段"), "追加的段落应存在: {}", text);
+        assert!(text.contains("保留内容"), "未改动的段落不能被弄丢: {}", text);
+
+        // 4) 按序号改写第二段
+        let by_index = ModifyDocxTool
+            .execute(serde_json::json!({
+                "path": path_str,
+                "replace_paragraph": { "index": 2, "text": "第二段已整段改写" }
+            }))
+            .await
+            .expect("modify_docx 应返回");
+        assert!(by_index.success, "按序号改写失败: {:?}", by_index.error);
+        let read2 = ReadDocxTool
+            .execute(serde_json::json!({ "path": path_str }))
+            .await
+            .expect("read_docx 应返回");
+        let text2 = read2.data.unwrap()["text"].as_str().unwrap_or("").to_string();
+        assert!(text2.contains("第二段已整段改写"), "序号改写结果: {}", text2);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 实机回环：生成 xlsx → 改单元格（含新建行）→ 读回核对。
+    #[tokio::test]
+    #[ignore = "需要 PowerShell 打包临时 Office 文件"]
+    async fn real_modify_xlsx_round_trip() {
+        let dir = std::env::temp_dir();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let path = dir.join(format!("pcg-modx-{}.xlsx", stamp));
+        let path_str = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let created = WriteXlsxTool
+            .execute(serde_json::json!({
+                "path": path_str,
+                "rows": [["姓名", "城市"], ["张三", "北京"]]
+            }))
+            .await
+            .expect("write_xlsx 应返回");
+        assert!(created.success, "写 xlsx 失败: {:?}", created.error);
+
+        // 改已有的 B2，并在第 3 行写两个新单元格（行本来不存在）
+        let modified = ModifyXlsxTool
+            .execute(serde_json::json!({
+                "path": path_str,
+                "set_cells": [
+                    { "cell": "B2", "value": "上海" },
+                    { "cell": "A3", "value": "李四" },
+                    { "cell": "B3", "value": 42 }
+                ]
+            }))
+            .await
+            .expect("modify_xlsx 应返回");
+        assert!(modified.success, "modify_xlsx 失败: {:?}", modified.error);
+        let md = modified.data.unwrap();
+        assert_eq!(md["cells_written"].as_u64(), Some(3));
+        assert_eq!(
+            md["all_verified"].as_bool(),
+            Some(true),
+            "回读校验应全部命中: {}",
+            md
+        );
+
+        let read = ReadXlsxTool
+            .execute(serde_json::json!({ "path": path_str }))
+            .await
+            .expect("read_xlsx 应返回");
+        assert!(read.success, "读 xlsx 失败: {:?}", read.error);
+        let rows = read.data.unwrap()["rows"].as_array().cloned().unwrap_or_default();
+        // 第一行表头必须还在（就地改写不能把原内容冲掉）
+        assert_eq!(rows[0][0].as_str(), Some("姓名"));
+        assert_eq!(rows[0][1].as_str(), Some("城市"));
+        assert_eq!(rows[1][0].as_str(), Some("张三"), "未改的单元格应保留");
+        assert_eq!(rows[1][1].as_str(), Some("上海"), "B2 应已改写");
+        assert_eq!(rows[2][0].as_str(), Some("李四"), "新行应写入");
+        assert_eq!(rows[2][1].as_str(), Some("42"), "数字应写入");
+
+        let _ = std::fs::remove_file(&path);
     }
 }

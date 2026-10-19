@@ -988,6 +988,149 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::StateDiff,
         required_fields: &["path", "slides", "size_bytes"],
     },
+    // ============ Office 增量修改 ============
+    CapabilityContract {
+        // paragraphs_after 与 text_preview 都是写回后重新打开文件得出的：
+        // 只报"写成功"没法证明改的是这一份文档的正文。
+        tool: "modify_docx",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 docx 文件（就地改写正文条目）",
+        reversible: false,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["path", "paragraphs_after", "size_bytes"],
+    },
+    CapabilityContract {
+        // all_verified 是逐单元格回读比对的结果
+        tool: "modify_xlsx",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 xlsx 文件（就地改写工作表条目）",
+        reversible: false,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["path", "cells_written", "all_verified", "size_bytes"],
+    },
+    // ============ PDF ============
+    CapabilityContract {
+        // has_text_layer 是"这份 PDF 到底有没有文字层"的判据：
+        // 抽出空文本不是失败，但没有它就没法区分"空文档"和"扫描件"。
+        tool: "read_pdf",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 pdf 文件",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "total_pages", "pages_read", "has_text_layer"],
+    },
+    CapabilityContract {
+        tool: "pdf_to_text",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 txt 文件",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["output", "pages", "chars", "bytes"],
+    },
+    CapabilityContract {
+        tool: "pdf_info",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 pdf 文件",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "page_count", "encrypted"],
+    },
+    CapabilityContract {
+        tool: "merge_pdf",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 pdf 文件",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["output", "total_pages", "size_bytes"],
+    },
+    CapabilityContract {
+        // pages 是回读生成物得到的页数：0 页说明只是写出了一个空壳
+        tool: "create_pdf",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 pdf 文件",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["path", "pages", "size_bytes"],
+    },
+    CapabilityContract {
+        tool: "convert_to_pdf",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 pdf 文件",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["output", "engine", "pages", "size_bytes"],
+    },
+    // ============ OCR ============
+    CapabilityContract {
+        // line_count 是引擎回传的行数：0 行说明这张图里没认出字，
+        // 和"识别失败"是两件事，必须能分开。
+        tool: "ocr_image_file",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地图片文件",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["path", "language", "line_count", "text"],
+    },
+    CapabilityContract {
+        // 截图会落到临时目录，算一次本地写
+        tool: "ocr_screen",
+        side_effect: SideEffect::LocalWrite,
+        scope: "主屏幕 + 临时 png",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["line_count", "chars"],
+    },
+    CapabilityContract {
+        tool: "ocr_languages",
+        side_effect: SideEffect::None,
+        scope: "-",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "languages"],
+    },
+    // ============ Git ============
+    CapabilityContract {
+        tool: "git_status",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 git 仓库",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["repo", "clean", "changed_entries"],
+    },
+    CapabilityContract {
+        tool: "git_diff",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 git 仓库",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["repo", "empty", "files_changed"],
+    },
+    CapabilityContract {
+        tool: "git_log",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 git 仓库",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["repo", "count"],
+    },
+    CapabilityContract {
+        // staged_count 是 add 之后重新查暂存区得到的：add 返回 0 不代表真进了暂存区
+        tool: "git_stage",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "本地 git 暂存区",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["repo", "mode", "staged_count"],
+    },
+    CapabilityContract {
+        // commit 是新增历史，无法用删除撤销；commit 哈希是硬证据
+        tool: "git_commit",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "本地 git 仓库历史",
+        reversible: false,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["repo", "commit", "message"],
+    },
     // ============ Knowledge ============
     CapabilityContract {
         // indexed / unchanged 由逐文件索引结果累加得出，scanned 是实际扫到的文件数

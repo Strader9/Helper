@@ -76,8 +76,18 @@ windows = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
+    # OCR 走系统自带的 Windows.Media.Ocr（WinRT）：不引 tesseract，
+    # 用户不用额外装引擎，中英混排开箱可用。
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+    "Graphics_Imaging",
+    "Storage",
+    "Storage_Streams",
+    "Media_Ocr",
 ] }
 raw-window-handle = "0.6"
+lopdf = "0.34"
 
 [package.metadata.tauri]
 # Tauri 构建元数据（桌面应用最小配置）
