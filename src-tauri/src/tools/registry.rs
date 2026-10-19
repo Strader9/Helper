@@ -442,6 +442,13 @@ impl ToolRegistry {
         // === General 类（JS 沙箱：纯计算 / 数据变换）===
         self.register_with_category(Arc::new(executors::code::CodeExecutionTool), ToolCategory::General);
 
+        // === Skill 类（扩展注册表：清单 + 生命周期回执）===
+        self.register_with_category(Arc::new(executors::extension::ExtensionListTool), ToolCategory::Skill);
+        self.register_with_category(Arc::new(executors::extension::ExtensionInstallTool), ToolCategory::Skill);
+        self.register_with_category(Arc::new(executors::extension::ExtensionDisableTool), ToolCategory::Skill);
+        self.register_with_category(Arc::new(executors::extension::ExtensionEnableTool), ToolCategory::Skill);
+        self.register_with_category(Arc::new(executors::extension::ExtensionReceiptsTool), ToolCategory::Skill);
+
         // === Automation 类（常驻定时任务：到点自动跑一次完整 Agent 循环）===
         self.register_with_category(Arc::new(executors::scheduler::ScheduleJobTool), ToolCategory::Automation);
         self.register_with_category(Arc::new(executors::scheduler::ListScheduledJobsTool), ToolCategory::Automation);

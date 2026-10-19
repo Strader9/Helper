@@ -10,6 +10,7 @@ pub mod browser;
 pub mod cad;
 pub mod client;
 pub mod code;
+pub mod extension;
 pub mod file_ops;
 pub mod fs_extra;
 pub mod git;

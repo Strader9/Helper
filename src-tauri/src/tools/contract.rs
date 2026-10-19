@@ -1283,6 +1283,48 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["ok", "status", "output", "result"],
     },
+    // ============ Extension（扩展注册表）============
+    CapabilityContract {
+        tool: "extension_list",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 extensions 表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "extensions"],
+    },
+    CapabilityContract {
+        // 安装物化官方技能 + 记清单/回执；skill 物化结果回读证明完成
+        tool: "extension_install",
+        side_effect: SideEffect::Installation,
+        scope: "本地 extensions 表 + 技能目录",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "status", "extension"],
+    },
+    CapabilityContract {
+        tool: "extension_disable",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 extensions.status",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "status", "extension"],
+    },
+    CapabilityContract {
+        tool: "extension_enable",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 extensions.status",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "status", "extension"],
+    },
+    CapabilityContract {
+        tool: "extension_receipts",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 extension_receipts 表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "receipts"],
+    },
     // ============ Office 增量修改 ============
     CapabilityContract {
         // paragraphs_after 与 text_preview 都是写回后重新打开文件得出的：

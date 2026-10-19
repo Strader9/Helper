@@ -628,3 +628,29 @@ CREATE TABLE IF NOT EXISTS work_takeover_evidence (
 
 CREATE INDEX IF NOT EXISTS idx_wt_evidence_task ON work_takeover_evidence(task_id);
 "#;
+
+pub const MIGRATION_EXTENSION_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS extensions (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    version TEXT NOT NULL DEFAULT '1.0.0',
+    publisher TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    permissions_json TEXT NOT NULL DEFAULT '[]',
+    skill_ids_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'installed',
+    manifest_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS extension_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    extension_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_extension_receipts_ext ON extension_receipts(extension_id);
+"#;

@@ -11,6 +11,7 @@ pub mod db;
 pub mod devices;
 pub mod error;
 pub mod evidence;
+pub mod extensions;
 pub mod knowledge;
 pub mod llm;
 pub mod memory;

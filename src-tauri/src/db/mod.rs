@@ -87,6 +87,7 @@ impl Database {
         self.run_devices_migration()?;
         self.run_workflow_migration()?;
         self.run_work_takeover_migration()?;
+        self.run_extension_migration()?;
         self.ensure_memory_tier_columns()?;
         Ok(())
     }
@@ -244,6 +245,12 @@ impl Database {
     /// 建工作接管的两张表（任务台账 / 证据工作流）。
     fn run_work_takeover_migration(&self) -> AppResult<()> {
         self.conn.execute_batch(schema::MIGRATION_WORK_TAKEOVER_SQL)?;
+        Ok(())
+    }
+
+    /// 建扩展注册表两张表（扩展清单 / 生命周期回执）。
+    fn run_extension_migration(&self) -> AppResult<()> {
+        self.conn.execute_batch(schema::MIGRATION_EXTENSION_SQL)?;
         Ok(())
     }
 
