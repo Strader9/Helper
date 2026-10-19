@@ -732,6 +732,30 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["path", "slides", "count"],
     },
+    CapabilityContract {
+        tool: "write_docx",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 docx 文件",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["path", "paragraphs", "size_bytes"],
+    },
+    CapabilityContract {
+        tool: "write_xlsx",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 xlsx 文件",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["path", "rows", "size_bytes"],
+    },
+    CapabilityContract {
+        tool: "write_pptx",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 pptx 文件",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["path", "slides", "size_bytes"],
+    },
     // ============ Knowledge ============
     CapabilityContract {
         // indexed / unchanged 由逐文件索引结果累加得出，scanned 是实际扫到的文件数

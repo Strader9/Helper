@@ -11,7 +11,7 @@ use std::path::Path;
 use async_trait::async_trait;
 
 use crate::error::{AppError, AppResult};
-use crate::tools::executors::os_extra::{literal, run_powershell_b64};
+use crate::tools::executors::os_extra::{literal, run_powershell, run_powershell_b64};
 use crate::tools::{AgentTool, RiskLevel, ToolResult};
 
 /// 单个条目解压后的上限。再大就不是办公文档了。
@@ -625,6 +625,511 @@ impl AgentTool for ReadXlsxTool {
     }
 }
 
+// ============================================================
+// 写入（反向：纯文本 / 表格 → OOXML → zip）
+// ============================================================
+
+/// XML 转义。与上面的 `unescape_xml` 互为逆操作：
+/// 写出的正文含 `<`、`&` 时必须转义，否则 Word 会把它们当标签。
+fn escape_xml(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// 0 基列号 → Excel 列名（0→A，25→Z，26→AA）。
+fn column_name(index: usize) -> String {
+    let mut n = index;
+    let mut name = String::new();
+    loop {
+        name.push((b'A' + (n % 26) as u8) as char);
+        if n < 26 {
+            break;
+        }
+        n = n / 26 - 1;
+    }
+    name.chars().rev().collect()
+}
+
+/// 生成 word/document.xml：每段包成 `<w:p><w:r><w:t>`。
+///
+/// `xml:space="preserve"` 必须写，否则 Word 会折叠连续空格与首尾空格。
+fn docx_document_xml(paragraphs: &[String]) -> String {
+    let mut body = String::new();
+    for p in paragraphs {
+        let text = p.trim_end();
+        if text.is_empty() {
+            body.push_str("<w:p/>");
+        } else {
+            body.push_str(&format!(
+                "<w:p><w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
+                escape_xml(text)
+            ));
+        }
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+         <w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">\
+         <w:body>{}<w:sectPr/></w:body></w:document>",
+        body
+    )
+}
+
+/// 生成 xl/worksheets/sheet1.xml：全部用内联字符串（`t="inlineStr"`），
+/// 绕开 sharedStrings 表，让最小 xlsx 也能被 Excel 正常打开。
+fn xlsx_sheet_xml(rows: &[Vec<String>]) -> String {
+    let mut out = String::new();
+    for (ri, row) in rows.iter().enumerate() {
+        out.push_str(&format!("<row r=\"{}\">", ri + 1));
+        for (ci, cell) in row.iter().enumerate() {
+            let cell_ref = format!("{}{}", column_name(ci), ri + 1);
+            out.push_str(&format!(
+                "<c r=\"{}\" t=\"inlineStr\"><is><t>{}</t></is></c>",
+                cell_ref,
+                escape_xml(cell)
+            ));
+        }
+        out.push_str("</row>");
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+         <worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">\
+         <sheetData>{}</sheetData></worksheet>",
+        out
+    )
+}
+
+/// 生成单页 slide XML：每行一个文本框段落。
+fn pptx_slide_xml(text: &str) -> String {
+    let mut paras = String::new();
+    for line in text.lines() {
+        let t = line.trim_end();
+        if t.is_empty() {
+            paras.push_str("<a:p/>");
+        } else {
+            paras.push_str(&format!("<a:p><a:r><a:t>{}</a:t></a:r></a:p>", escape_xml(t)));
+        }
+    }
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+         <p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" \
+         xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" \
+         xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">\
+         <p:cSld><p:spTree><p:sp><p:nvSpPr><p:cNvPr id=\"1\" name=\"text\"/>\
+         <p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/>{}</p:txBody>\
+         </p:sp></p:spTree></p:cSld></p:sld>",
+        paras
+    )
+}
+
+/// 用 System.IO.Compression 把若干 (条目名, 内容) 打进一个 zip，写到 `path`。
+///
+/// 与 `read_zip_entries` 相反：这里条目内容经 JSON → base64 传给脚本，
+/// 脚本用 `ZipArchive.CreateEntry` 直接写流，不落中间临时文件。
+/// 条目名统一用正斜杠（zip 规范）。
+fn write_zip_entries(path: &str, entries: &[(String, String)]) -> AppResult<()> {
+    let payload: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|(name, content)| serde_json::json!({ "n": name, "c": content }))
+        .collect();
+    let json = serde_json::to_string(&payload).unwrap_or_else(|_| "[]".to_string());
+
+    let script = format!(
+        r#"Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{path}'))
+$entries = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{json}')) | ConvertFrom-Json
+$zip = [System.IO.Compression.ZipFile]::Open($p, [System.IO.Compression.ZipArchiveMode]::Create)
+foreach ($e in $entries) {{
+  $entry = $zip.CreateEntry($e.n)
+  $sw = New-Object System.IO.StreamWriter($entry.Open())
+  $sw.Write($e.c)
+  $sw.Close()
+}}
+$zip.Dispose()
+'ok'"#,
+        path = literal(path),
+        json = literal(&json),
+    );
+
+    let (ok, _stdout, stderr) = run_powershell(&script)?;
+    // 双重校验：进程成功 ≠ 文件真写出来了。脚本里的非终止错误不会让
+    // powershell 返回非零，所以再确认目标文件确实落盘。
+    if !ok || !Path::new(path).is_file() {
+        return Err(AppError::ToolExecution(format!(
+            "写入文档失败: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(())
+}
+
+// ============================================================
+// write_docx
+// ============================================================
+
+/// 生成 Word 文档
+pub struct WriteDocxTool;
+
+#[async_trait]
+impl AgentTool for WriteDocxTool {
+    fn name(&self) -> &'static str {
+        "write_docx"
+    }
+
+    fn description(&self) -> &'static str {
+        "把纯文本写成 .docx Word 文档。用 text（按换行分段）或 paragraphs（字符串数组）指定内容，写入指定路径。生成的是纯文字文档，不含样式与图片。"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "输出的 .docx 文件路径" },
+                "text": { "type": "string", "description": "文档正文，按换行符分段（与 paragraphs 二选一）" },
+                "paragraphs": { "type": "array", "items": { "type": "string" }, "description": "段落数组（与 text 二选一）" }
+            },
+            "required": ["path"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
+        let path = require_str(&args, "path")?;
+        ensure_ext(path, &["docx"])?;
+
+        let paragraphs: Vec<String> = if let Some(arr) = args["paragraphs"].as_array() {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        } else if let Some(text) = args["text"].as_str() {
+            text.lines().map(|s| s.to_string()).collect()
+        } else {
+            return Err(AppError::InvalidArgument(
+                "text 或 paragraphs 至少提供一个".to_string(),
+            ));
+        };
+        if paragraphs.is_empty() {
+            return Err(AppError::InvalidArgument("内容为空，无法生成文档".to_string()));
+        }
+
+        let document_xml = docx_document_xml(&paragraphs);
+        let entries = vec![
+            (
+                "[Content_Types].xml".to_string(),
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>"#
+                    .to_string(),
+            ),
+            (
+                "_rels/.rels".to_string(),
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>"#
+                    .to_string(),
+            ),
+            ("word/document.xml".to_string(), document_xml),
+        ];
+
+        write_zip_entries(path, &entries)?;
+
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        Ok(ToolResult::ok(serde_json::json!({
+            "path": path,
+            "paragraphs": paragraphs.len(),
+            "chars": paragraphs.iter().map(|p| p.chars().count()).sum::<usize>(),
+            "size_bytes": size,
+        })))
+    }
+}
+
+// ============================================================
+// write_xlsx
+// ============================================================
+
+/// 生成 Excel 表格
+pub struct WriteXlsxTool;
+
+#[async_trait]
+impl AgentTool for WriteXlsxTool {
+    fn name(&self) -> &'static str {
+        "write_xlsx"
+    }
+
+    fn description(&self) -> &'static str {
+        "把二维表写成 .xlsx Excel 文件。用 rows（字符串二维数组）或 csv（按逗号/制表符切分）指定内容，写入指定路径。生成的是纯文本单元格，不含公式与样式。"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "输出的 .xlsx 文件路径" },
+                "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } }, "description": "二维字符串数组（与 csv 二选一）" },
+                "csv": { "type": "string", "description": "CSV/TSV 文本（与 rows 二选一）" },
+                "sheet_name": { "type": "string", "description": "工作表名，默认 Sheet1" }
+            },
+            "required": ["path"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
+        let path = require_str(&args, "path")?;
+        ensure_ext(path, &["xlsx"])?;
+
+        let rows: Vec<Vec<String>> = if let Some(arr) = args["rows"].as_array() {
+            arr.iter()
+                .map(|row| {
+                    row.as_array()
+                        .map(|cells| {
+                            cells
+                                .iter()
+                                .filter_map(|c| c.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect()
+        } else if let Some(csv) = args["csv"].as_str() {
+            csv.lines()
+                .map(|line| parse_csv_line(line))
+                .filter(|r| !r.is_empty())
+                .collect()
+        } else {
+            return Err(AppError::InvalidArgument(
+                "rows 或 csv 至少提供一个".to_string(),
+            ));
+        };
+        if rows.is_empty() {
+            return Err(AppError::InvalidArgument("内容为空，无法生成表格".to_string()));
+        }
+
+        let sheet_name = args["sheet_name"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Sheet1");
+
+        let sheet_xml = xlsx_sheet_xml(&rows);
+        let entries = vec![
+            (
+                "[Content_Types].xml".to_string(),
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"#
+                    .to_string(),
+            ),
+            (
+                "_rels/.rels".to_string(),
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#
+                    .to_string(),
+            ),
+            (
+                "xl/workbook.xml".to_string(),
+                format!(
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+                     <workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" \
+                     xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">\
+                     <sheets><sheet name=\"{}\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>",
+                    escape_xml(sheet_name)
+                ),
+            ),
+            (
+                "xl/_rels/workbook.xml.rels".to_string(),
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#
+                    .to_string(),
+            ),
+            ("xl/worksheets/sheet1.xml".to_string(), sheet_xml),
+        ];
+
+        write_zip_entries(path, &entries)?;
+
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        Ok(ToolResult::ok(serde_json::json!({
+            "path": path,
+            "rows": rows.len(),
+            "cols": rows.iter().map(|r| r.len()).max().unwrap_or(0),
+            "size_bytes": size,
+        })))
+    }
+}
+
+/// 解析一行 CSV/TSV：先探测分隔符（含制表符的按 tab，否则按逗号），
+/// 支持双引号包裹。不做完整 RFC 4180，够助手场景用。
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let delim = if line.contains('\t') { '\t' } else { ',' };
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    current.push('"');
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                current.push(c);
+            }
+        } else if c == '"' {
+            in_quotes = true;
+        } else if c == delim {
+            cells.push(current.clone());
+            current.clear();
+        } else {
+            current.push(c);
+        }
+    }
+    cells.push(current);
+    cells
+}
+
+// ============================================================
+// write_pptx
+// ============================================================
+
+/// 生成 PowerPoint 演示文稿
+pub struct WritePptxTool;
+
+#[async_trait]
+impl AgentTool for WritePptxTool {
+    fn name(&self) -> &'static str {
+        "write_pptx"
+    }
+
+    fn description(&self) -> &'static str {
+        "把文字写成 .pptx PowerPoint。用 slides（每页一个字符串，页内可用换行分段）指定内容，写入指定路径。生成的是纯文字页，不含图片与排版。"
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string", "description": "输出的 .pptx 文件路径" },
+                "slides": { "type": "array", "items": { "type": "string" }, "description": "每页文字（页内换行分段）" }
+            },
+            "required": ["path", "slides"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
+        let path = require_str(&args, "path")?;
+        ensure_ext(path, &["pptx"])?;
+
+        let slides: Vec<String> = args["slides"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if slides.is_empty() {
+            return Err(AppError::InvalidArgument("slides 不能为空".to_string()));
+        }
+
+        // 每个 slide 一条关系，加上 presentation.xml 自身
+        let mut slide_entries = Vec::new();
+        let mut rels = String::from(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+             <Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">",
+        );
+        let mut sld_id_list = String::new();
+        for (i, text) in slides.iter().enumerate() {
+            let n = i + 1;
+            slide_entries.push((format!("ppt/slides/slide{}.xml", n), pptx_slide_xml(text)));
+            rels.push_str(&format!(
+                "<Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide\" Target=\"slides/slide{}.xml\"/>",
+                n, n
+            ));
+            sld_id_list.push_str(&format!("<p:sldId id=\"{}\" r:id=\"rId{}\"/>", 256 + i, n));
+        }
+        rels.push_str("</Relationships>");
+
+        let presentation_xml = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\
+             <p:presentation xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" \
+             xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" \
+             xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">\
+             <p:sldIdLst>{}</p:sldIdLst><p:sldSz cx=\"9144000\" cy=\"6858000\"/></p:presentation>",
+            sld_id_list
+        );
+
+        let mut entries = vec![
+            (
+                "[Content_Types].xml".to_string(),
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>
+<Override PartName="/ppt/slides/slide1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>
+</Types>"#
+                    .to_string(),
+            ),
+            (
+                "_rels/.rels".to_string(),
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>
+</Relationships>"#
+                    .to_string(),
+            ),
+            ("ppt/presentation.xml".to_string(), presentation_xml),
+            ("ppt/_rels/presentation.xml.rels".to_string(), rels),
+        ];
+        entries.extend(slide_entries);
+
+        write_zip_entries(path, &entries)?;
+
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        Ok(ToolResult::ok(serde_json::json!({
+            "path": path,
+            "slides": slides.len(),
+            "chars": slides.iter().map(|s| s.chars().count()).sum::<usize>(),
+            "size_bytes": size,
+        })))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -767,5 +1272,140 @@ mod tests {
         assert!(wrong.is_err(), "非 docx 扩展名应报参数错误");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn escape_xml_round_trips_with_unescape() {
+        let raw = "a < b & c > \"d\" 'e'";
+        let escaped = escape_xml(raw);
+        assert!(
+            !escaped.contains('<') && !escaped.contains('>'),
+            "转义后不应残留裸尖括号: {escaped}"
+        );
+        assert_eq!(unescape_xml(&escaped), raw, "转义后还原应得到原文");
+    }
+
+    #[test]
+    fn column_name_counts_like_excel() {
+        assert_eq!(column_name(0), "A");
+        assert_eq!(column_name(25), "Z");
+        assert_eq!(column_name(26), "AA");
+        assert_eq!(column_name(27), "AB");
+        assert_eq!(column_name(701), "ZZ");
+    }
+
+    #[test]
+    fn docx_document_xml_wraps_paragraphs_and_escapes() {
+        let xml = docx_document_xml(&["第一段".to_string(), "含 & 与 < 符号".to_string(), "".to_string()]);
+        assert!(xml.contains("<w:p><w:r><w:t xml:space=\"preserve\">第一段</w:t>"), "段落应被包裹");
+        assert!(xml.contains("&amp;") && xml.contains("&lt;"), "特殊字符应转义");
+        assert!(xml.contains("<w:p/>"), "空段落应生成自闭合段");
+    }
+
+    #[test]
+    fn xlsx_sheet_xml_emits_inline_strings_with_cell_refs() {
+        let rows = vec![
+            vec!["姓名".to_string(), "年龄".to_string()],
+            vec!["张三".to_string(), "28".to_string()],
+        ];
+        let xml = xlsx_sheet_xml(&rows);
+        assert!(xml.contains(r#"<c r="A1" t="inlineStr"><is><t>姓名</t></is></c>"#), "A1 应映射正确");
+        assert!(xml.contains(r#"<c r="B2" t="inlineStr"><is><t>28</t></is></c>"#), "B2 应映射正确");
+    }
+
+    #[test]
+    fn pptx_slide_xml_makes_one_paragraph_per_line() {
+        let xml = pptx_slide_xml("标题\n要点一\n要点二");
+        assert_eq!(xml.matches("<a:p>").count(), 3, "三行应生成三个段落");
+        assert!(xml.contains("要点一"), "内容应保留");
+    }
+
+    #[test]
+    fn parse_csv_line_handles_quotes_and_tsv() {
+        assert_eq!(parse_csv_line("a,b,c"), vec!["a", "b", "c"]);
+        assert_eq!(parse_csv_line("a\tb"), vec!["a", "b"], "TSV 应按制表符切分");
+        assert_eq!(
+            parse_csv_line("\"a,b\",c"),
+            vec!["a,b", "c"],
+            "引号内的逗号不应切分"
+        );
+        assert_eq!(parse_csv_line("\"a\"\"b\""), vec!["a\"b"], "双引号应还原");
+    }
+
+    /// 实机回环：写 → 读，验证打包链路（ZipFile.CreateEntry）与 OOXML 结构能被
+    /// 自己的 read 工具解析回来。手动执行：
+    /// `cargo test write_then_read_round_trip -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "需要 PowerShell 打包临时 Office 文件"]
+    async fn write_then_read_round_trip() {
+        let tmp = std::env::temp_dir();
+        let tag = std::process::id();
+
+        // --- docx ---
+        let docx = tmp.join(format!("pcg-write-{tag}.docx"));
+        let _ = std::fs::remove_file(&docx);
+        let w = WriteDocxTool
+            .execute(serde_json::json!({
+                "path": docx.to_string_lossy(),
+                "text": "第一段：你好\n第二段：世界 <标签> & 实体"
+            }))
+            .await
+            .expect("写 docx");
+        assert!(w.success, "写 docx 失败: {:?}", w.error);
+        let r = ReadDocxTool
+            .execute(serde_json::json!({ "path": docx.to_string_lossy() }))
+            .await
+            .expect("读 docx");
+        assert!(r.success, "读 docx 失败: {:?}", r.error);
+        let text = r.data.unwrap()["text"].as_str().unwrap().to_string();
+        assert!(text.contains("第一段：你好"), "docx 回环正文缺失: {text:?}");
+        assert!(text.contains("<标签>") && text.contains("& 实体"), "特殊字符应还原: {text:?}");
+
+        // --- xlsx ---
+        let xlsx = tmp.join(format!("pcg-write-{tag}.xlsx"));
+        let _ = std::fs::remove_file(&xlsx);
+        let w = WriteXlsxTool
+            .execute(serde_json::json!({
+                "path": xlsx.to_string_lossy(),
+                "rows": [["姓名", "年龄"], ["张三", "28"]]
+            }))
+            .await
+            .expect("写 xlsx");
+        assert!(w.success, "写 xlsx 失败: {:?}", w.error);
+        let r = ReadXlsxTool
+            .execute(serde_json::json!({ "path": xlsx.to_string_lossy() }))
+            .await
+            .expect("读 xlsx");
+        assert!(r.success, "读 xlsx 失败: {:?}", r.error);
+        let data = r.data.unwrap();
+        let rows = data["rows"].as_array().unwrap();
+        assert_eq!(rows[0][0], "姓名");
+        assert_eq!(rows[1][1], "28", "xlsx 回环单元格应一致");
+
+        // --- pptx ---
+        let pptx = tmp.join(format!("pcg-write-{tag}.pptx"));
+        let _ = std::fs::remove_file(&pptx);
+        let w = WritePptxTool
+            .execute(serde_json::json!({
+                "path": pptx.to_string_lossy(),
+                "slides": ["标题页", "第二页：要点"]
+            }))
+            .await
+            .expect("写 pptx");
+        assert!(w.success, "写 pptx 失败: {:?}", w.error);
+        let r = ReadPptxTool
+            .execute(serde_json::json!({ "path": pptx.to_string_lossy() }))
+            .await
+            .expect("读 pptx");
+        assert!(r.success, "读 pptx 失败: {:?}", r.error);
+        let data = r.data.unwrap();
+        let slides = data["slides"].as_array().unwrap();
+        assert_eq!(slides.len(), 2, "pptx 应有两页");
+        assert_eq!(slides[0]["text"], "标题页");
+
+        // 清理
+        let _ = std::fs::remove_file(&docx);
+        let _ = std::fs::remove_file(&xlsx);
+        let _ = std::fs::remove_file(&pptx);
     }
 }

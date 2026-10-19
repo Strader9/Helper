@@ -358,10 +358,13 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::tasks::CancelAgentTaskTool), ToolCategory::Agents);
         self.register_with_category(Arc::new(executors::tasks::ResumeTaskContextTool), ToolCategory::Agents);
 
-        // === Office 类（Word / Excel / PowerPoint 读取）===
+        // === Office 类（Word / Excel / PowerPoint 读写）===
         self.register_with_category(Arc::new(executors::office::ReadDocxTool), ToolCategory::Office);
         self.register_with_category(Arc::new(executors::office::ReadXlsxTool), ToolCategory::Office);
         self.register_with_category(Arc::new(executors::office::ReadPptxTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::office::WriteDocxTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::office::WriteXlsxTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::office::WritePptxTool), ToolCategory::Office);
 
         // === Knowledge 类（本地文档索引与检索）===
         self.register_with_category(Arc::new(executors::knowledge::IndexDocumentTool), ToolCategory::Knowledge);
