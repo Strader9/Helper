@@ -41,6 +41,8 @@ export interface EvidenceLine {
   material: boolean;
   duration_ms: number;
   summary: string;
+  /** 回执落库时间（本地时间字符串）；空串表示读不到时间 */
+  at?: string;
 }
 
 export interface TaskTruthCounts {

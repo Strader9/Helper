@@ -110,10 +110,24 @@ export default function ExecutionEvidence({
   );
 }
 
+/**
+ * 从 "2026-10-19 12:03:44" 里取出 "12:03:44"。
+ *
+ * 只显示时分秒：同一次任务不会跨天，把日期重复印在每一行反而挤掉了
+ * 真正要看的判据。取不到（旧回执没有时间）就返回空串，不画时间列。
+ */
+function timeOf(at?: string): string {
+  if (!at) return "";
+  const match = at.match(/(\d{2}:\d{2}:\d{2})/);
+  return match ? match[1] : "";
+}
+
 function EvidenceRow({ line }: { line: EvidenceLine }) {
   const tone = receiptTone(line.verification_status);
+  const time = timeOf(line.at);
   return (
     <li className={`evidence-line tone-${tone}`}>
+      {time && <span className="evidence-line-time">{time}</span>}
       <span className="evidence-line-icon">
         <CyberIcon name={TONE_ICON[tone]} size={12} />
       </span>

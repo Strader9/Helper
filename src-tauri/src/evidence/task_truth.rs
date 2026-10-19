@@ -116,6 +116,9 @@ pub struct EvidenceLine {
     pub duration_ms: i64,
     /// 给人看的一句话结论
     pub summary: String,
+    /// 该回执的落库时间（本地时间字符串）。空串表示读不到时间——
+    /// 旧数据或非库来源，前端据此不画时间轴刻度。
+    pub at: String,
 }
 
 /// 一整轮的判决。
@@ -212,6 +215,7 @@ pub fn evidence_line(receipt: &ToolReceipt) -> EvidenceLine {
         material: is_material(receipt),
         duration_ms: receipt.duration_ms,
         summary: summarize(receipt, status, &missing),
+        at: receipt.created_at.clone(),
     }
 }
 
@@ -472,6 +476,7 @@ mod tests {
             success: status != "FAILED",
             error_code: None,
             duration_ms: 5,
+            created_at: "2026-10-19 12:00:00".to_string(),
         }
     }
 
@@ -547,6 +552,14 @@ mod tests {
         assert!(assessment.claims_success);
         assert!(assessment.backed);
         assert!(assessment.correction.is_none());
+    }
+
+    #[test]
+    fn evidence_line_carries_the_receipt_timestamp() {
+        // 证据时间线靠这个字段画刻度：一旦它在映射时被丢掉，
+        // 界面上就只剩一堆没有先后的行。
+        let line = evidence_line(&receipt("write_file", "local_write", "VERIFIED", Some("回读一致")));
+        assert_eq!(line.at, "2026-10-19 12:00:00");
     }
 
     #[test]

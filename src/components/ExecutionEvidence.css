@@ -178,6 +178,15 @@
   background: var(--bg-secondary);
 }
 
+.evidence-line-time {
+  flex: 0 0 52px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  padding-top: 1px;
+  letter-spacing: 0.3px;
+}
+
 .evidence-line-icon { display: inline-flex; margin-top: 1px; }
 .evidence-line.tone-ok .evidence-line-icon { color: var(--neon-green); }
 .evidence-line.tone-warn .evidence-line-icon { color: var(--neon-yellow); }

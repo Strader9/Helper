@@ -208,6 +208,10 @@ pub struct ToolReceipt {
     pub success: bool,
     pub error_code: Option<String>,
     pub duration_ms: i64,
+    /// 写入库的时间（数据库默认值）。`build()` 时还不知道，留空；
+    /// 从库里读出来才有值——证据时间线按它排序与展示。
+    #[serde(default)]
+    pub created_at: String,
 }
 
 impl ToolReceipt {
@@ -251,6 +255,7 @@ impl ToolReceipt {
             success: result.success,
             error_code: result.error_code.clone(),
             duration_ms,
+            created_at: String::new(),
         }
     }
 }

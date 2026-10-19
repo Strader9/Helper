@@ -662,7 +662,8 @@ impl Database {
                             side_effect, scope, reversible, risk_level,
                             verification_strategy, verification_status, missing_fields,
                             idempotency_key, request_digest, result_digest,
-                            permission_result, success, error_code, duration_ms, verification_evidence
+                            permission_result, success, error_code, duration_ms, verification_evidence,
+                            created_at
                      FROM tool_receipts WHERE tool_name = ?1
                      ORDER BY created_at DESC, rowid DESC LIMIT ?2",
                 )?;
@@ -677,7 +678,8 @@ impl Database {
                             side_effect, scope, reversible, risk_level,
                             verification_strategy, verification_status, missing_fields,
                             idempotency_key, request_digest, result_digest,
-                            permission_result, success, error_code, duration_ms, verification_evidence
+                            permission_result, success, error_code, duration_ms, verification_evidence,
+                            created_at
                      FROM tool_receipts
                      ORDER BY created_at DESC, rowid DESC LIMIT ?1",
                 )?;
@@ -705,7 +707,8 @@ impl Database {
                     side_effect, scope, reversible, risk_level,
                     verification_strategy, verification_status, missing_fields,
                     idempotency_key, request_digest, result_digest,
-                    permission_result, success, error_code, duration_ms, verification_evidence
+                    permission_result, success, error_code, duration_ms, verification_evidence,
+                    created_at
              FROM tool_receipts WHERE run_id = ?1
              ORDER BY rowid ASC LIMIT ?2",
         )?;
@@ -730,7 +733,8 @@ impl Database {
                     side_effect, scope, reversible, risk_level,
                     verification_strategy, verification_status, missing_fields,
                     idempotency_key, request_digest, result_digest,
-                    permission_result, success, error_code, duration_ms, verification_evidence
+                    permission_result, success, error_code, duration_ms, verification_evidence,
+                    created_at
              FROM tool_receipts
              WHERE idempotency_key = ?1 AND success = 1
              ORDER BY created_at DESC LIMIT 1",
@@ -887,6 +891,7 @@ fn row_to_receipt(row: &rusqlite::Row<'_>) -> rusqlite::Result<crate::tools::rec
         error_code: row.get(17)?,
         duration_ms: row.get::<_, Option<i64>>(18)?.unwrap_or(0),
         verification_evidence: row.get(19)?,
+        created_at: row.get::<_, Option<String>>(20)?.unwrap_or_default(),
     })
 }
 
@@ -1202,6 +1207,7 @@ mod receipt_tests {
             success: true,
             error_code: None,
             duration_ms: 12,
+            created_at: "2026-10-19 12:00:00".to_string(),
         }
     }
 
