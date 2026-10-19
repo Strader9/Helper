@@ -1336,4 +1336,68 @@ $bmp.Dispose()
             let _ = std::fs::remove_file(path);
         }
     }
+
+    /// 实机：用 ffmpeg 造一段测试视频，走 video_info → extract_audio → video_trim 全链路。
+    /// 前置：D:\ffmpeg\bin\ffmpeg.exe 与 ffprobe.exe 已就位。
+    /// 手动执行：`cargo test real_av_pipeline_round_trip -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "需要 ffmpeg 生成测试视频"]
+    async fn real_av_pipeline_round_trip() {
+        let tmp = std::env::temp_dir();
+        let tag = std::process::id();
+        let mp4 = tmp.join(format!("pcg-av-{tag}.mp4"));
+        let _ = std::fs::remove_file(&mp4);
+
+        // 用 ffmpeg 造 2 秒、320x240、带 440Hz 音轨的测试视频
+        let (ok, stderr) = run_ffmpeg(&[
+            "-y", "-f", "lavfi", "-i", "color=c=blue:s=320x240:d=2",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+            "-c:v", "libx264", "-c:a", "aac",
+            mp4.to_str().unwrap(),
+        ])
+        .expect("生成测试视频");
+        assert!(ok, "生成测试视频失败：{}", stderr);
+        assert!(mp4.is_file());
+
+        // video_info：读时长与分辨率
+        let info = VideoInfoTool
+            .execute(json!({ "path": mp4.to_string_lossy() }))
+            .await
+            .expect("video_info");
+        assert!(info.success, "video_info 失败：{:?}", info.error);
+        let data = info.data.expect("video_info 数据");
+        assert!(data["duration_seconds"].as_f64().unwrap() > 1.5, "时长应约 2 秒");
+        assert_eq!(data["video"]["width"], 320);
+        assert_eq!(data["video"]["height"], 240);
+        assert!(!data["audio"].is_null(), "应检测到音轨");
+
+        // extract_audio：提取 mp3
+        let mp3 = tmp.join(format!("pcg-av-{tag}.mp3"));
+        let _ = std::fs::remove_file(&mp3);
+        let extract = ExtractAudioTool
+            .execute(json!({ "path": mp4.to_string_lossy(), "output": mp3.to_string_lossy() }))
+            .await
+            .expect("extract_audio");
+        assert!(extract.success, "extract_audio 失败：{:?}", extract.error);
+        assert!(mp3.is_file() && std::fs::metadata(&mp3).unwrap().len() > 0);
+
+        // video_trim：裁剪 0-1 秒
+        let trimmed = tmp.join(format!("pcg-av-{tag}-trim.mp4"));
+        let _ = std::fs::remove_file(&trimmed);
+        let trim = VideoTrimTool
+            .execute(json!({
+                "path": mp4.to_string_lossy(),
+                "start": "0",
+                "end": "1",
+                "output": trimmed.to_string_lossy(),
+            }))
+            .await
+            .expect("video_trim");
+        assert!(trim.success, "video_trim 失败：{:?}", trim.error);
+        assert!(trimmed.is_file() && std::fs::metadata(&trimmed).unwrap().len() > 0);
+
+        let _ = std::fs::remove_file(&mp4);
+        let _ = std::fs::remove_file(&mp3);
+        let _ = std::fs::remove_file(&trimmed);
+    }
 }
