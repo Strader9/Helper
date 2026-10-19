@@ -392,6 +392,10 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::autonomy::AutonomyGetPolicyTool), ToolCategory::Client);
         self.register_with_category(Arc::new(executors::autonomy::AutonomyUpdatePolicyTool), ToolCategory::Client);
 
+        // === Office 类（P3 文档工具：拆分 / 差异对比）===
+        self.register_with_category(Arc::new(executors::pdf::SplitPdfTool), ToolCategory::Office);
+        self.register_with_category(Arc::new(executors::diff::DiffDocumentsTool), ToolCategory::Office);
+
         // === Media 类（图像处理 + 音视频能力探测）===
         self.register_with_category(Arc::new(executors::media::ImageInfoTool), ToolCategory::Media);
         self.register_with_category(Arc::new(executors::media::ImageResizeTool), ToolCategory::Media);

@@ -1787,6 +1787,23 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::StateDiff,
         required_fields: &["ok", "policy"],
     },
+    // ============ P3 文档工具 ============
+    CapabilityContract {
+        tool: "split_pdf",
+        side_effect: SideEffect::LocalWrite,
+        scope: "输出 PDF 文件",
+        reversible: true,
+        verification: VerificationStrategy::Artifact,
+        required_fields: &["output", "extracted_pages"],
+    },
+    CapabilityContract {
+        tool: "diff_documents",
+        side_effect: SideEffect::LocalRead,
+        scope: "两个本地文本文件",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["added", "removed", "diff"],
+    },
 ];
 
 /// 验证欠账表 —— 有实质副作用、但没有可靠机器判据的能力，以及为什么没有。

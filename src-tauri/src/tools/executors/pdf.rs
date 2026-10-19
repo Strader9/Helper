@@ -538,6 +538,113 @@ impl AgentTool for MergePdfTool {
 }
 
 // ============================================================
+// split_pdf —— 抽取指定页码范围到新文件
+// ============================================================
+
+pub struct SplitPdfTool;
+
+#[async_trait]
+impl AgentTool for SplitPdfTool {
+    fn name(&self) -> &'static str {
+        "split_pdf"
+    }
+
+    fn description(&self) -> &'static str {
+        "从 PDF 里抽取指定页码范围，另存为新文件（源文件不改动）。页码从 1 开始，支持 1-5,8,10- 这类写法。"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "input": { "type": "string", "description": "源 PDF 路径" },
+                "output": { "type": "string", "description": "输出 PDF 路径" },
+                "pages": { "type": "string", "description": "页码范围，如 1-3 或 2,4,6-8" }
+            },
+            "required": ["input", "output", "pages"]
+        })
+    }
+
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
+
+    async fn execute(&self, args: Value) -> AppResult<ToolResult> {
+        let input = require_str(&args, "input")?;
+        let output = require_str(&args, "output")?;
+        let pages_spec = require_str(&args, "pages")?;
+        ensure_ext(input, "pdf")?;
+        ensure_ext(output, "pdf")?;
+        if Path::new(input) == Path::new(output) {
+            return Err(AppError::InvalidArgument("输出路径不能与输入文件相同".to_string()));
+        }
+
+        let mut doc = load_pdf(input)?;
+        if doc.is_encrypted() {
+            return Ok(ToolResult::err("PDF_ENCRYPTED", "源文件已加密，无法拆分。请先解除加密。"));
+        }
+
+        // get_pages 返回的是 (ObjectId -> page ObjectId) 的映射，按 ObjectId 排序即为页序。
+        let all_pages: Vec<lopdf::ObjectId> = doc.get_pages().values().copied().collect();
+        let total = all_pages.len() as u32;
+        if total == 0 {
+            return Ok(ToolResult::err("PDF_NO_PAGES", "源文件没有页面"));
+        }
+        let page_nums = parse_pages(pages_spec, total)?;
+        if page_nums.is_empty() {
+            return Ok(ToolResult::err("PDF_NO_PAGES", "页码范围没有匹配到任何页"));
+        }
+        let selected: Vec<lopdf::ObjectId> = page_nums.iter().map(|p| all_pages[(*p - 1) as usize]).collect();
+
+        // 手术式改 Pages 树：保留整个 objects（含字体/图片等共享资源），
+        // 只把根 Pages 节点的 Kids / Count 替换成选中的页。
+        let root_id = doc
+            .trailer
+            .get(b"Root")
+            .map_err(|_| AppError::ToolExecution("PDF 缺少 Root".into()))?
+            .as_reference()
+            .map_err(|_| AppError::ToolExecution("Root 不是引用".into()))?;
+        let catalog = doc
+            .get_object(root_id)
+            .map_err(|_| AppError::ToolExecution("找不到 Catalog".into()))?;
+        let pages_id = catalog
+            .as_dict()
+            .map_err(|_| AppError::ToolExecution("Catalog 不是字典".into()))?
+            .get(b"Pages")
+            .map_err(|_| AppError::ToolExecution("Catalog 缺少 Pages".into()))?
+            .as_reference()
+            .map_err(|_| AppError::ToolExecution("Pages 不是引用".into()))?;
+
+        let mut pages_dict = doc
+            .get_object(pages_id)
+            .map_err(|_| AppError::ToolExecution("找不到 Pages 节点".into()))?
+            .as_dict()
+            .map_err(|_| AppError::ToolExecution("Pages 不是字典".into()))?
+            .clone();
+        let kids: Vec<lopdf::Object> = selected.iter().map(|id| lopdf::Object::Reference(*id)).collect();
+        pages_dict.set("Kids", lopdf::Object::Array(kids));
+        pages_dict.set("Count", selected.len() as i64);
+        doc.objects.insert(pages_id, lopdf::Object::Dictionary(pages_dict));
+
+        doc.compress();
+        doc.save(output)
+            .map_err(|e| AppError::ToolExecution(format!("写入拆分后的 PDF 失败: {}", e)))?;
+
+        let bytes = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+        if bytes == 0 {
+            return Ok(ToolResult::err("PDF_SPLIT_EMPTY", "拆分后文件为 0 字节，写入失败"));
+        }
+
+        Ok(ToolResult::ok(json!({
+            "output": output,
+            "source_pages": total,
+            "extracted_pages": selected.len(),
+            "size_bytes": bytes,
+        })))
+    }
+}
+
+// ============================================================
 // 浏览器探测（create_pdf / convert_to_pdf 共用）
 // ============================================================
 

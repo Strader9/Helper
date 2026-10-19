@@ -12,6 +12,7 @@ pub mod calendar;
 pub mod client;
 pub mod autonomy;
 pub mod code;
+pub mod diff;
 pub mod extension;
 pub mod file_ops;
 pub mod fs_extra;
