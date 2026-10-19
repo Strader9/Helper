@@ -89,6 +89,7 @@ impl Database {
         self.run_work_takeover_migration()?;
         self.run_extension_migration()?;
         self.run_calendar_migration()?;
+        self.run_industry_migration()?;
         self.ensure_memory_tier_columns()?;
         Ok(())
     }
@@ -258,6 +259,12 @@ impl Database {
     /// 建本地日历事件表（助手自己的提醒台账，非 Outlook/系统日历）。
     fn run_calendar_migration(&self) -> AppResult<()> {
         self.conn.execute_batch(schema::MIGRATION_CALENDAR_SQL)?;
+        Ok(())
+    }
+
+    /// 建行业快照表（电商经营快照 / 动作队列 / 客服草稿）。
+    fn run_industry_migration(&self) -> AppResult<()> {
+        self.conn.execute_batch(schema::MIGRATION_INDUSTRY_SQL)?;
         Ok(())
     }
 

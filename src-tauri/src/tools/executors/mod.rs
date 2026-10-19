@@ -19,6 +19,7 @@ pub mod fs_extra;
 pub mod git;
 pub mod github;
 pub mod industry;
+pub mod industry_ecommerce;
 pub mod knowledge;
 pub mod mcp;
 pub mod ocr;

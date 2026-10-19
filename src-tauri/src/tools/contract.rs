@@ -767,6 +767,74 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["found", "query"],
     },
+    // ============ Industry（电商经营台账 + 工作区 + 行业工作流）============
+    CapabilityContract {
+        tool: "industry_workspace_status",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 settings 的 industry.workspace",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["ok", "status", "active"],
+    },
+    CapabilityContract {
+        tool: "industry_workspace_bind",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 settings 的 industry.workspace",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "status", "persisted", "active"],
+    },
+    CapabilityContract {
+        // 只计算并持久化本地台账，绝不连外部店铺
+        tool: "industry_ecommerce_snapshot",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "本地 industry_snapshots 表（经营快照）",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["ok", "status", "persisted", "taskId", "sourceBound", "externalMutation", "snapshot.gmv", "snapshot.averageOrderValue"],
+    },
+    CapabilityContract {
+        // 仅审核动作队列，不上架/调价/采购/改库存
+        tool: "industry_ecommerce_action_queue",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "本地 industry_snapshots 表（动作队列）",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["ok", "status", "persisted", "taskId", "sourceBound", "externalMutation", "actionQueueOnly"],
+    },
+    CapabilityContract {
+        // 脱敏草稿，不发送/发布/退款/补偿
+        tool: "industry_ecommerce_service_drafts",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "本地 industry_snapshots 表（客服草稿）",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["ok", "status", "persisted", "taskId", "sourceBound", "externalMutation", "draftOnly", "privacyVerified"],
+    },
+    CapabilityContract {
+        tool: "industry_workflow_start",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "本地 work_takeover 台账",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["ok", "status", "persisted", "task.id"],
+    },
+    CapabilityContract {
+        tool: "industry_workflow_complete",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "本地 work_takeover 台账（归档）",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "status", "persisted", "task.id", "task.status"],
+    },
+    CapabilityContract {
+        tool: "business_archive_get",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 work_takeover 台账 + industry_snapshots 表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["ok", "historical", "line"],
+    },
     // ============ Mcp ============
     CapabilityContract {
         // 列出外部工具是纯网络读；返回的清单本身无副作用。

@@ -671,3 +671,19 @@ CREATE TABLE IF NOT EXISTS calendar_events (
 
 CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_at);
 "#;
+
+pub const MIGRATION_INDUSTRY_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS industry_snapshots (
+    id TEXT PRIMARY KEY,
+    product_line TEXT NOT NULL DEFAULT 'ecommerce',
+    snapshot_kind TEXT NOT NULL DEFAULT 'operations',
+    title TEXT NOT NULL DEFAULT '',
+    source_bound INTEGER NOT NULL DEFAULT 0,
+    facts_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    external_mutation INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_industry_snapshots_line ON industry_snapshots(product_line, snapshot_kind);
+"#;

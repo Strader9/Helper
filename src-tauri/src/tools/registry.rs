@@ -423,6 +423,15 @@ impl ToolRegistry {
         // === Industry 类（行业场景模板）===
         self.register_with_category(Arc::new(executors::industry::IndustryScenariosTool), ToolCategory::Industry);
         self.register_with_category(Arc::new(executors::industry::IndustryGuideTool), ToolCategory::Industry);
+        // === Industry 类（电商经营台账 + 工作区 + 行业工作流）===
+        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryWorkspaceStatusTool), ToolCategory::Industry);
+        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryWorkspaceBindTool), ToolCategory::Industry);
+        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryEcommerceSnapshotTool), ToolCategory::Industry);
+        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryEcommerceActionQueueTool), ToolCategory::Industry);
+        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryEcommerceServiceDraftsTool), ToolCategory::Industry);
+        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryWorkflowStartTool), ToolCategory::Industry);
+        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryWorkflowCompleteTool), ToolCategory::Industry);
+        self.register_with_category(Arc::new(executors::industry_ecommerce::BusinessArchiveGetTool), ToolCategory::Industry);
 
         // === Mcp 类（Model Context Protocol 外部工具转发）===
         self.register_with_category(Arc::new(executors::mcp::McpListToolsTool), ToolCategory::Mcp);
