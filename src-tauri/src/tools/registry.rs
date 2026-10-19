@@ -415,6 +415,21 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::tasks::CancelAgentTaskTool), ToolCategory::Agents);
         self.register_with_category(Arc::new(executors::tasks::ResumeTaskContextTool), ToolCategory::Agents);
 
+        // === Agents 类（工作接管：断点续做台账 + 确认边界 + 证据链）===
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskCreateTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskListTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskGetTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskUpdateTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskContinueTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskAdvanceTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskExportPacketTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverCapabilityReuseProbeTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverEvidenceStartTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverEvidenceUpdateTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverEvidenceStatusTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverEvidencePromoteTool), ToolCategory::Agents);
+        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverEvidenceListTool), ToolCategory::Agents);
+
         // === Automation 类（常驻定时任务：到点自动跑一次完整 Agent 循环）===
         self.register_with_category(Arc::new(executors::scheduler::ScheduleJobTool), ToolCategory::Automation);
         self.register_with_category(Arc::new(executors::scheduler::ListScheduledJobsTool), ToolCategory::Automation);

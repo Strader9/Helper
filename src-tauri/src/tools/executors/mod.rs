@@ -28,4 +28,5 @@ pub mod scheduler;
 pub mod system;
 pub mod web;
 pub mod workflow;
+pub mod work_takeover;
 pub mod tasks;

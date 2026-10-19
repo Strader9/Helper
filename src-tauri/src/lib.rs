@@ -25,6 +25,7 @@ pub mod utils;
 pub mod webgen;
 pub mod webpublish;
 pub mod workflow;
+pub mod work_takeover;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;

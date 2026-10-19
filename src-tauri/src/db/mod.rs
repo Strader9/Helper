@@ -86,6 +86,7 @@ impl Database {
         self.run_scheduler_migration()?;
         self.run_devices_migration()?;
         self.run_workflow_migration()?;
+        self.run_work_takeover_migration()?;
         self.ensure_memory_tier_columns()?;
         Ok(())
     }
@@ -237,6 +238,12 @@ impl Database {
     /// 建工作流引擎的三张表（定义 / 运行 / 步骤）。
     fn run_workflow_migration(&self) -> AppResult<()> {
         self.conn.execute_batch(schema::MIGRATION_WORKFLOW_SQL)?;
+        Ok(())
+    }
+
+    /// 建工作接管的两张表（任务台账 / 证据工作流）。
+    fn run_work_takeover_migration(&self) -> AppResult<()> {
+        self.conn.execute_batch(schema::MIGRATION_WORK_TAKEOVER_SQL)?;
         Ok(())
     }
 

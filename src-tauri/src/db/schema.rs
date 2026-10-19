@@ -572,3 +572,59 @@ CREATE TABLE IF NOT EXISTS workflow_steps (
 
 CREATE INDEX IF NOT EXISTS idx_wf_steps_run ON workflow_steps(run_id, seq);
 "#;
+
+/// 工作接管（work_takeover）迁移 SQL
+///
+/// 与 `agent_tasks` / `workflow_defs` 的分工：
+/// - `agent_tasks`：一次对话里"我要做这几件事"的临时台账，随对话推进；
+/// - `workflow_defs`：步骤与依赖写死的固定流程，每次跑顺序一样；
+/// - 这里：**接管用户的一件具体工作**（客户、店铺、账号、案件、交付），
+///   把"当前动作 / 草稿 / 确认边界 / 阻塞 / 风险 / 产物"持久化下来，随时断点续做。
+///   和 workflow 的关键区别是它**带着确认边界**（allowedNow / confirmationRequired /
+///   blockedBy），明确"哪些现在能做、哪些要等用户点头、哪些被卡住"。
+///
+/// `next_actions_json` 等数组字段统一存 JSON 字符串，避免为"要不要多一张表"
+/// 纠结——这些数组是任务的附属状态，不是要单独查询的实体。
+pub const MIGRATION_WORK_TAKEOVER_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS work_takeover_tasks (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'general_work',
+    source TEXT NOT NULL DEFAULT 'manual',
+    source_message TEXT NOT NULL DEFAULT '',
+    contact TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    urgency TEXT NOT NULL DEFAULT 'normal',
+    priority INTEGER NOT NULL DEFAULT 50,
+    recommended_workflow TEXT NOT NULL DEFAULT '',
+    next_actions_json TEXT NOT NULL DEFAULT '[]',
+    current_action_index INTEGER NOT NULL DEFAULT 0,
+    draft_reply TEXT NOT NULL DEFAULT '',
+    artifacts_json TEXT NOT NULL DEFAULT '[]',
+    allowed_now_json TEXT NOT NULL DEFAULT '[]',
+    confirmation_required_json TEXT NOT NULL DEFAULT '[]',
+    blocked_by_json TEXT NOT NULL DEFAULT '[]',
+    risks_json TEXT NOT NULL DEFAULT '[]',
+    result TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'queued',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_wt_tasks_status ON work_takeover_tasks(status, priority DESC);
+
+CREATE TABLE IF NOT EXISTS work_takeover_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    workflow_id TEXT NOT NULL,
+    step_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    evidence_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_wt_evidence_task ON work_takeover_evidence(task_id);
+"#;
