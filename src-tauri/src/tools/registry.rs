@@ -49,6 +49,8 @@ pub enum ToolCategory {
     Cad,
     /// 行业场景模板
     Industry,
+    /// MCP（Model Context Protocol）外部工具转发
+    Mcp,
     /// 通用工具（始终加载）
     General,
 }
@@ -71,6 +73,7 @@ impl ToolCategory {
             ToolCategory::Skill => "skill",
             ToolCategory::Cad => "cad",
             ToolCategory::Industry => "industry",
+            ToolCategory::Mcp => "mcp",
             ToolCategory::General => "general",
         }
     }
@@ -370,6 +373,10 @@ impl ToolRegistry {
         // === Industry 类（行业场景模板）===
         self.register_with_category(Arc::new(executors::industry::IndustryScenariosTool), ToolCategory::Industry);
         self.register_with_category(Arc::new(executors::industry::IndustryGuideTool), ToolCategory::Industry);
+
+        // === Mcp 类（Model Context Protocol 外部工具转发）===
+        self.register_with_category(Arc::new(executors::mcp::McpListToolsTool), ToolCategory::Mcp);
+        self.register_with_category(Arc::new(executors::mcp::McpCallTool), ToolCategory::Mcp);
 
         // === Agents 类（任务编排：计划 / 步骤 / 断点）===
         self.register_with_category(Arc::new(executors::tasks::CreateTaskPlanTool), ToolCategory::Agents);

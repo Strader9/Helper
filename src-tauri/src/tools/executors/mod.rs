@@ -14,6 +14,7 @@ pub mod fs_extra;
 pub mod github;
 pub mod industry;
 pub mod knowledge;
+pub mod mcp;
 pub mod office;
 pub mod media;
 pub mod memory;

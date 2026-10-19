@@ -79,12 +79,18 @@ function readBody(req) {
   });
 }
 
+function sendJson(res, status, obj) {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(obj));
+}
+
 /**
  * 挂到 sidecar 的 http.Server 上。
  * @param {import('node:http').Server} httpServer
  * @param {import('./llm/router.js').ModelRouter} router
+ * @param {import('./mcp/index.js').McpManager} [mcp]
  */
-export function attachHttpApi(httpServer, router) {
+export function attachHttpApi(httpServer, router, mcp) {
   httpServer.on('request', async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
 
@@ -174,6 +180,47 @@ export function attachHttpApi(httpServer, router) {
       }
       res.write('data: [DONE]\n\n');
       res.end();
+      return;
+    }
+
+    // ===== MCP 转发 =====
+    if (req.method === 'GET' && url.pathname === '/mcp/tools') {
+      if (!mcp) {
+        sendJson(res, 200, { servers: [], tools: [] });
+        return;
+      }
+      try {
+        const result = await mcp.listAllTools();
+        sendJson(res, 200, result);
+      } catch (err) {
+        sendJson(res, 500, { error: err.message });
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/mcp/call') {
+      if (!mcp) {
+        sendJson(res, 503, { error: 'sidecar 未启用 MCP 模块' });
+        return;
+      }
+      let body;
+      try {
+        body = await readBody(req);
+      } catch (err) {
+        sendJson(res, 400, { error: `invalid json: ${err.message}` });
+        return;
+      }
+      const { name, arguments: args, server } = body;
+      if (typeof name !== 'string' || name.length === 0) {
+        sendJson(res, 400, { error: 'name is required' });
+        return;
+      }
+      try {
+        const result = await mcp.callTool({ name, arguments: args, server });
+        sendJson(res, result.isError ? 502 : 200, result);
+      } catch (err) {
+        sendJson(res, 500, { error: err.message });
+      }
       return;
     }
 

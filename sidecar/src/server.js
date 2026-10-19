@@ -5,9 +5,11 @@
 // 定时/自主调度、MCP 客户端与本地工具桥调用。
 
 import { createServer } from 'node:http';
+import { readFileSync, existsSync } from 'node:fs';
 import { Server } from 'socket.io';
 import { ModelRouter } from './llm/router.js';
 import { attachHttpApi } from './httpApi.js';
+import { McpManager, loadMcpServers } from './mcp/index.js';
 
 const PORT = Number(process.env.SIDECAR_PORT ?? 4770);
 const HOST = process.env.SIDECAR_HOST ?? '127.0.0.1';
@@ -41,8 +43,20 @@ export function loadProviders() {
 
 function buildServer() {
   const router = new ModelRouter(loadProviders());
+
+  // MCP 配置：SIDECAR_MCP_SERVERS 优先，否则读 ./mcp-servers.json（存在才读）。
+  let mcpServers = loadMcpServers();
+  if (mcpServers.length === 0 && existsSync('./mcp-servers.json')) {
+    try {
+      mcpServers = JSON.parse(readFileSync('./mcp-servers.json', 'utf8'));
+    } catch (err) {
+      console.error('[sidecar] 解析 mcp-servers.json 失败，忽略:', err.message);
+    }
+  }
+  const mcp = new McpManager(mcpServers);
+
   const httpServer = createServer();
-  attachHttpApi(httpServer, router);
+  attachHttpApi(httpServer, router, mcp);
   const io = new Server(httpServer, {
     cors: { origin: '*', methods: ['GET', 'POST'] },
     maxHttpBufferSize: 1e7,
@@ -80,12 +94,12 @@ function buildServer() {
     });
   });
 
-  return { httpServer, io, router };
+  return { httpServer, io, router, mcp };
 }
 
-const { httpServer, router } = buildServer();
+const { httpServer, router, mcp } = buildServer();
 httpServer.listen(PORT, HOST, () => {
   console.log(
-    `[sidecar] listening on http://${HOST}:${PORT} (providers=${router.count}, default=${router.defaultModel})`,
+    `[sidecar] listening on http://${HOST}:${PORT} (providers=${router.count}, default=${router.defaultModel}, mcp_servers=${mcp.count})`,
   );
 });

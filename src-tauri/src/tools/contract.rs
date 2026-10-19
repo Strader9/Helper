@@ -715,6 +715,26 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["found", "query"],
     },
+    // ============ Mcp ============
+    CapabilityContract {
+        // 列出外部工具是纯网络读；返回的清单本身无副作用。
+        tool: "mcp_list_tools",
+        side_effect: SideEffect::NetworkRead,
+        scope: "sidecar 已连接的 MCP server",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["servers", "tools"],
+    },
+    CapabilityContract {
+        // 调用外部工具会改变外部系统状态，副作用落点完全由远端决定，
+        // 本机契约无法穷举，只能拿到 sidecar 的调用回执作为 ProviderAck。
+        tool: "mcp_call",
+        side_effect: SideEffect::ExternalStateChange,
+        scope: "MCP server 远端（由用户配置）",
+        reversible: false,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["server", "tool", "isError"],
+    },
     // ============ Client ============
     CapabilityContract {
         tool: "client_state",
