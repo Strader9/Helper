@@ -1,0 +1,17 @@
+{
+  "name": "pc-guardian-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PC Guardian 常驻侧车：模型路由 + agent 编排 + 定时/自主 + MCP + 多端 Socket.IO 实时通道",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
+  }
+}
