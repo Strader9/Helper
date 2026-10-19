@@ -439,6 +439,9 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::skill::SkillMarketplaceSearchTool), ToolCategory::Skill);
         self.register_with_category(Arc::new(executors::skill::SkillMarketplaceInstallTool), ToolCategory::Skill);
 
+        // === General 类（JS 沙箱：纯计算 / 数据变换）===
+        self.register_with_category(Arc::new(executors::code::CodeExecutionTool), ToolCategory::General);
+
         // === Automation 类（常驻定时任务：到点自动跑一次完整 Agent 循环）===
         self.register_with_category(Arc::new(executors::scheduler::ScheduleJobTool), ToolCategory::Automation);
         self.register_with_category(Arc::new(executors::scheduler::ListScheduledJobsTool), ToolCategory::Automation);

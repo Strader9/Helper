@@ -1273,6 +1273,16 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::StateDiff,
         required_fields: &["ok", "status", "skill_id", "skill"],
     },
+    // ============ Code Execution（JS 沙箱）============
+    CapabilityContract {
+        // 隔离堆，无 fs/network/require；唯一副作用是临时分配一块可回收的堆内存
+        tool: "code_execution",
+        side_effect: SideEffect::LocalStateChange,
+        scope: "隔离 JS 引擎堆（可回收）",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["ok", "status", "output", "result"],
+    },
     // ============ Office 增量修改 ============
     CapabilityContract {
         // paragraphs_after 与 text_preview 都是写回后重新打开文件得出的：

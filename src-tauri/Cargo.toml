@@ -89,6 +89,12 @@ windows = { version = "0.52", features = [
 raw-window-handle = "0.6"
 lopdf = "0.34"
 
+# === JS 沙箱（纯 Rust ES 引擎）===
+# code_execution 用：隔离堆，无 fs/network/require，只做纯计算/数据变换。
+# 选纯 Rust 引擎（Boa）而非 C 绑定 QuickJS，避免再引入原生链接（此前
+# STATUS_ENTRYPOINT_NOT_FOUND 的教训：原生链接会把运行时符号拖进测试二进制）。
+boa_engine = "0.21"
+
 [package.metadata.tauri]
 # Tauri 构建元数据（桌面应用最小配置）
 
