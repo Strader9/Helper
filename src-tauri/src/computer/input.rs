@@ -18,7 +18,7 @@ use crate::tools::{AgentTool, RiskLevel, ToolResult};
 use async_trait::async_trait;
 
 #[cfg(windows)]
-mod win {
+pub(crate) mod win {
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP,
         KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,

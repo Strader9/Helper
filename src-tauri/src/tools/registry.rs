@@ -363,6 +363,12 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::client::CapabilityManifestTool), ToolCategory::Client);
         self.register_with_category(Arc::new(executors::client::ClientHealthCheckTool), ToolCategory::Client);
         self.register_with_category(Arc::new(executors::client::ClientUsageStatsTool), ToolCategory::Client);
+        // === Client 类（桌面 AI 目标：寻址 / 发现 / 注册 / 提问 / 收集答案）===
+        self.register_with_category(Arc::new(executors::desktop_ai::DesktopAiListTargetsTool), ToolCategory::Client);
+        self.register_with_category(Arc::new(executors::desktop_ai::DesktopAiDiscoveryPlanTool), ToolCategory::Client);
+        self.register_with_category(Arc::new(executors::desktop_ai::DesktopAiRegisterTargetTool), ToolCategory::Client);
+        self.register_with_category(Arc::new(executors::desktop_ai::DesktopAiAskTool), ToolCategory::Client);
+        self.register_with_category(Arc::new(executors::desktop_ai::DesktopAiCollectAnswerTool), ToolCategory::Client);
 
         // === Client 类（P3 运维簇：用量 / 模型配置 / 休眠 / 外部 CLI / 运行时工作）===
         self.register_with_category(Arc::new(executors::ops::UsageGetSummaryTool), ToolCategory::Client);

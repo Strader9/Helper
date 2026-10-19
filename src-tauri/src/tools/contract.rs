@@ -958,6 +958,49 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["total_receipts", "by_status"],
     },
+    // ============ Client（桌面 AI 目标）============
+    CapabilityContract {
+        tool: "desktop_ai_list_targets",
+        side_effect: SideEffect::LocalRead,
+        scope: "本地 settings 的 desktop_ai.targets + 内置清单",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["targets"],
+    },
+    CapabilityContract {
+        tool: "desktop_ai_discovery_plan",
+        side_effect: SideEffect::None,
+        scope: "只读发现计划",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["ok", "status", "focus", "candidateSchema"],
+    },
+    CapabilityContract {
+        tool: "desktop_ai_register_target",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本地 settings 的 desktop_ai.targets",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["ok", "status", "persisted", "target.id"],
+    },
+    CapabilityContract {
+        // 桌面控制 + 提交到别的工具，但提交本身不可验证
+        tool: "desktop_ai_ask",
+        side_effect: SideEffect::DesktopControl,
+        scope: "一个选中的桌面 AI 目标窗口 + 系统剪贴板",
+        reversible: false,
+        verification: VerificationStrategy::ProviderAck,
+        required_fields: &["ok", "status", "question", "send", "preparedCount", "submittedCount"],
+    },
+    CapabilityContract {
+        // 截图落临时目录 + 可选聚焦目标窗口，屏幕内容属隐私（对齐 ocr_screen 的 Medium）
+        tool: "desktop_ai_collect_answer",
+        side_effect: SideEffect::LocalWrite,
+        scope: "一个桌面 AI 目标窗口的可见区域（截图落临时 png + OCR）",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["status", "target", "answerText"],
+    },
     // ============ Agents ============
     CapabilityContract {
         tool: "create_task_plan",

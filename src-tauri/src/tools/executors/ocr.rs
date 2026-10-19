@@ -28,10 +28,10 @@ fn require_str<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
 
 /// OCR 结果：整段文本 + 逐行结果
 #[derive(Debug)]
-struct OcrOutput {
-    text: String,
-    lines: Vec<String>,
-    language: String,
+pub(crate) struct OcrOutput {
+    pub(crate) text: String,
+    pub(crate) lines: Vec<String>,
+    pub(crate) language: String,
 }
 
 /// 调 WinRT 做识别。
@@ -40,7 +40,7 @@ struct OcrOutput {
 /// 一次识别几十毫秒到几百毫秒。放 spawn_blocking 里跑，避免卡住 tokio 的
 /// 工作线程——截图+识别两秒，够把整个 runtime 的其他任务饿住。
 #[cfg(windows)]
-fn ocr_image_blocking(path: &str, language: Option<&str>) -> Result<OcrOutput, String> {
+pub(crate) fn ocr_image_blocking(path: &str, language: Option<&str>) -> Result<OcrOutput, String> {
     use windows::core::HSTRING;
     use windows::Graphics::Imaging::BitmapDecoder;
     use windows::Media::Ocr::OcrEngine;
@@ -123,7 +123,7 @@ fn ocr_image_blocking(path: &str, language: Option<&str>) -> Result<OcrOutput, S
 }
 
 #[cfg(not(windows))]
-fn ocr_image_blocking(_path: &str, _language: Option<&str>) -> Result<OcrOutput, String> {
+pub(crate) fn ocr_image_blocking(_path: &str, _language: Option<&str>) -> Result<OcrOutput, String> {
     Err("OCR 目前只在 Windows 上实现（依赖系统自带的 Windows.Media.Ocr）".to_string())
 }
 
@@ -148,7 +148,7 @@ fn available_languages_blocking() -> Result<Vec<String>, String> {
 }
 
 /// 截屏存临时 PNG，返回路径。与 `take_screenshot` 用同一套 GDI+ 方案。
-fn capture_screen_to_png() -> AppResult<String> {
+pub(crate) fn capture_screen_to_png() -> AppResult<String> {
     let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S_%3f");
     let path = std::env::temp_dir().join(format!("pcg_ocr_{}.png", stamp));
     let path_str = path.to_string_lossy().to_string();
