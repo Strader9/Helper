@@ -374,6 +374,54 @@ input, textarea {
 }
 
 /* ============================================================
+   设置页 Tab 条
+   ------------------------------------------------------------
+   这组类此前完全没有样式：七个按钮挤成一行裸按钮，看不出"当前在哪一页"。
+   风格与 .section-card 一致（等宽字体 + 霓虹下划线），选中态用强调色。
+   ============================================================ */
+.settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 20px;
+  padding: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+}
+
+.settings-tab {
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.6px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.settings-tab:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.settings-tab.active {
+  background: var(--bg-panel);
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+  box-shadow: 0 0 0 1px var(--neon-orange-glow) inset;
+}
+
+.settings-tab:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: 1px;
+}
+
+/* ============================================================
    通用卡片 — 机甲面板
    ============================================================ */
 .section-card {
