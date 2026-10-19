@@ -260,8 +260,24 @@ impl AgentTool for SendNotificationTool {
         let title = require_str(&args, "title")?;
         let body = require_str(&args, "body")?;
 
-        let script = format!(
-            r#"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+        let (ok, stderr) = show_toast(title, body)?;
+        if !ok {
+            return Ok(ToolResult::err("NOTIFICATION_FAILED", stderr.trim()));
+        }
+        Ok(ToolResult::ok(serde_json::json!({
+            "title": title,
+            "shown": true,
+        })))
+    }
+}
+
+/// 弹一条 Windows Toast 通知，返回 (是否成功, stderr)。
+///
+/// 抽成函数而不是留在工具里：工作流引擎的 notify 步骤也要发通知，
+/// 但它不该为了发一条通知再走一遍权限确认与回执（通知没有副作用）。
+pub(crate) fn show_toast(title: &str, body: &str) -> AppResult<(bool, String)> {
+    let script = format!(
+        r#"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 $title = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{title}'))
 $body  = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{body}'))
 $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
@@ -271,19 +287,11 @@ $nodes.Item(1).AppendChild($xml.CreateTextNode($body)) | Out-Null
 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('PC Guardian').Show($toast)
 'ok'"#,
-            title = literal(title),
-            body = literal(body)
-        );
-
-        let (ok, _stdout, stderr) = run_powershell(&script)?;
-        if !ok {
-            return Ok(ToolResult::err("NOTIFICATION_FAILED", stderr.trim()));
-        }
-        Ok(ToolResult::ok(serde_json::json!({
-            "title": title,
-            "shown": true,
-        })))
-    }
+        title = literal(title),
+        body = literal(body)
+    );
+    let (ok, _stdout, stderr) = run_powershell(&script)?;
+    Ok((ok, stderr))
 }
 
 // ============================================================

@@ -85,6 +85,7 @@ impl Database {
         self.run_knowledge_migration()?;
         self.run_scheduler_migration()?;
         self.run_devices_migration()?;
+        self.run_workflow_migration()?;
         self.ensure_memory_tier_columns()?;
         Ok(())
     }
@@ -230,6 +231,12 @@ impl Database {
     /// 建多端（设备）两张表。
     fn run_devices_migration(&self) -> AppResult<()> {
         self.conn.execute_batch(schema::MIGRATION_DEVICES_SQL)?;
+        Ok(())
+    }
+
+    /// 建工作流引擎的三张表（定义 / 运行 / 步骤）。
+    fn run_workflow_migration(&self) -> AppResult<()> {
+        self.conn.execute_batch(schema::MIGRATION_WORKFLOW_SQL)?;
         Ok(())
     }
 

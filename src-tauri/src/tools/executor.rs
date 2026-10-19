@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
-use tauri::Emitter;
 
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
@@ -18,6 +17,19 @@ use crate::security::{PermissionDecision, PermissionRequestPayload};
 use crate::tools::contract::{contract_for, CapabilityContract, VerificationStrategy};
 use crate::tools::receipt::{ProbeVerdict, VerificationOutcome, VerificationStatus};
 use crate::tools::{ToolRegistry, ToolResult, RiskLevel};
+
+/// 权限确认事件发射器。
+///
+/// 真实运行时捕获 `tauri::AppHandle` 把 `permission-request` 事件发给前端弹窗；
+/// 测试 / 无人值守环境不注入（None），权限确认直接拒绝。
+///
+/// 用 trait object 而不是让 `ToolExecutor` 直接持有 `tauri::AppHandle`，是
+/// 为了把 tauri 的 GUI 类型隔离在 `AppState::new`（测试从不调用）里。否则
+/// `ToolExecutor` 的字段里带着 `AppHandle`，任何一条调用 `execute` 的代码路径
+/// （比如工作流引擎的步骤）都会把 `tao` / `wry`（WebView2 + C++ 运行时）整条
+/// GUI 栈拉进测试二进制，导致 `STATUS_ENTRYPOINT_NOT_FOUND`。
+pub type PermissionEmitter =
+    Arc<dyn Fn(PermissionRequestPayload) -> Result<(), String> + Send + Sync + 'static>;
 
 /// 工具执行请求
 #[derive(Debug, Clone)]
@@ -43,7 +55,7 @@ pub struct ToolCallRequest {
 pub struct ToolExecutor {
     permission_manager: Arc<Mutex<PermissionManager>>,
     tool_registry: Arc<ToolRegistry>,
-    app_handle: std::sync::Mutex<Option<tauri::AppHandle>>,
+    permission_emitter: std::sync::Mutex<Option<PermissionEmitter>>,
     pending_permissions: std::sync::Mutex<Option<Arc<Mutex<HashMap<String, PendingPermission>>>>>,
     /// 数据库连接（用于审计日志）
     db: Arc<Mutex<Database>>,
@@ -70,16 +82,16 @@ impl ToolExecutor {
         Self {
             permission_manager,
             tool_registry,
-            app_handle: std::sync::Mutex::new(None),
+            permission_emitter: std::sync::Mutex::new(None),
             pending_permissions: std::sync::Mutex::new(None),
             db,
         }
     }
 
-    /// 设置 AppHandle（用于向前端发送事件）
-    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
-        let mut guard = self.app_handle.lock().unwrap();
-        *guard = Some(handle);
+    /// 设置权限确认事件发射器（用于向前端发送事件）
+    pub fn set_permission_emitter(&self, emitter: PermissionEmitter) {
+        let mut guard = self.permission_emitter.lock().unwrap();
+        *guard = Some(emitter);
     }
 
     /// 设置待处理权限请求映射
@@ -521,14 +533,14 @@ impl ToolExecutor {
         run_id: Option<&str>,
     ) -> AppResult<PermissionDecision> {
         // 缩小锁作用域：clone 所需值后立即释放 MutexGuard，避免跨越 await
-        let (app_handle_opt, pending_opt) = {
-            let app = self.app_handle.lock().unwrap();
+        let (emitter_opt, pending_opt) = {
+            let emitter = self.permission_emitter.lock().unwrap();
             let pending = self.pending_permissions.lock().unwrap();
-            (app.clone(), pending.clone())
+            (emitter.clone(), pending.clone())
         };
 
-        match (app_handle_opt.as_ref(), pending_opt.as_ref()) {
-            (Some(app_handle), Some(pending)) => {
+        match (emitter_opt.as_ref(), pending_opt.as_ref()) {
+            (Some(emitter), Some(pending)) => {
                 let request_id = uuid::Uuid::new_v4().to_string();
                 let (tx_perm, rx_perm) = tokio::sync::oneshot::channel();
 
@@ -561,7 +573,7 @@ impl ToolExecutor {
                 };
 
                 // 发送事件到前端
-                app_handle.emit("permission-request", &payload)
+                (emitter)(payload.clone())
                     .map_err(|e| AppError::Internal(format!("发送权限请求事件失败: {}", e)))?;
 
                 // 等待前端响应，60秒超时（给用户足够时间阅读和操作）
@@ -586,11 +598,53 @@ impl ToolExecutor {
                 Ok(decision)
             }
             _ => {
-                // 没有 AppHandle 或 pending map，权限确认不可用 → 默认拒绝（安全优先）
-                eprintln!("Warning: AppHandle 或 pending_permissions 未设置，权限确认不可用。默认拒绝。");
+                // 没有权限发射器或 pending map，权限确认不可用 → 默认拒绝（安全优先）
+                eprintln!("Warning: 权限发射器或 pending_permissions 未设置，权限确认不可用。默认拒绝。");
                 Ok(PermissionDecision::Deny)
             }
         }
+    }
+}
+
+// ============================================================
+// 全局执行器句柄
+// ============================================================
+
+/// 进程级执行器引用。
+///
+/// 工作流引擎要在步骤里调用其它工具，但 `AgentTool::execute` 只拿得到 args，
+/// 拿不到 ToolExecutor。挂一个进程级句柄，让工作流步骤走**同一条**三层闸门
+/// （权限判定 → 回执 → 审计），而不是自己另开一条绕过闸门的旁路。
+///
+/// 只在启动时写入一次。测试环境可能没有（`ToolRegistry::default()` 不经过
+/// AppState），所以读取返回 Option，由调用方决定怎么报错。
+///
+/// 存**裸指针**而不是 `OnceLock<Arc<ToolExecutor>>`，是防御性的：
+/// 一旦 `ToolExecutor` 的字段（直接或间接）引用到 tauri 的 GUI 类型，以 `Arc`
+/// 形式出现在 `static` 里就会让编译器为它生成完整 drop glue，把 `tao` / `wry`
+/// （WebView2 + C++ 运行时）整条 GUI 栈拉进二进制，测试二进制直接报
+/// `STATUS_ENTRYPOINT_NOT_FOUND`。第一道修复是把 `AppHandle` 换成
+/// `PermissionEmitter` trait object 隔离出 ToolExecutor；这里存裸指针是第二道
+/// 保险——裸指针没有 drop，`Arc::into_raw` 泄漏掉那一份引用计数（ToolExecutor
+/// 本就是进程级单例，泄漏一份无害），返回值用 `&'static` 借用，全程不触发 drop。
+static GLOBAL_EXECUTOR: std::sync::atomic::AtomicPtr<ToolExecutor> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+/// 启动时由 AppState::new 调用一次。
+pub fn publish_global_executor(executor: Arc<ToolExecutor>) {
+    let ptr = Arc::into_raw(executor) as *mut ToolExecutor;
+    GLOBAL_EXECUTOR.store(ptr, std::sync::atomic::Ordering::Release);
+}
+
+/// 取全局执行器；未初始化时返回 None。
+pub fn global_executor() -> Option<&'static ToolExecutor> {
+    let ptr = GLOBAL_EXECUTOR.load(std::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: publish_global_executor 只在启动时 set 一次，此后指针稳定
+        // 指向一个被 Arc::into_raw 泄漏的 ToolExecutor，生命周期贯穿进程。
+        unsafe { Some(&*ptr) }
     }
 }
 

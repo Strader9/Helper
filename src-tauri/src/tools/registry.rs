@@ -423,6 +423,22 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::scheduler::RunJobNowTool), ToolCategory::Automation);
         self.register_with_category(Arc::new(executors::scheduler::JobRunHistoryTool), ToolCategory::Automation);
 
+        // === Automation 类（工作流引擎：定义 / 校验 / 运行 / 历史）===
+        self.register_with_category(Arc::new(executors::workflow::WorkflowCreateTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowListTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowGetTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowUpdateTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowDeleteTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowValidateTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowRunTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowRunsTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowRunDetailTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowSetEnabledTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowCloneTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowExportTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowImportTool), ToolCategory::Automation);
+        self.register_with_category(Arc::new(executors::workflow::WorkflowTemplatesTool), ToolCategory::Automation);
+
         // === Office 类（Word / Excel / PowerPoint 读写）===
         self.register_with_category(Arc::new(executors::office::ReadDocxTool), ToolCategory::Office);
         self.register_with_category(Arc::new(executors::office::ReadXlsxTool), ToolCategory::Office);

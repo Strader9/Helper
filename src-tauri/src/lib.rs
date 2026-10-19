@@ -24,6 +24,7 @@ pub mod tools;
 pub mod utils;
 pub mod webgen;
 pub mod webpublish;
+pub mod workflow;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -252,8 +253,21 @@ impl AppState {
             tool_registry.clone(),
             db_arc.clone(),
         ));
-        tool_executor.set_app_handle(app.handle().clone());
+        // 权限确认事件发射器：把 AppHandle 捕获进闭包，隔离 tauri GUI 类型
+        // （ToolExecutor 只持 trait object，避免测试二进制拉进 wry/WebView2）。
+        let permission_emitter: crate::tools::executor::PermissionEmitter = {
+            let handle = app.handle().clone();
+            Arc::new(move |payload| {
+                use tauri::Emitter;
+                handle
+                    .emit("permission-request", &payload)
+                    .map_err(|e| e.to_string())
+            })
+        };
+        tool_executor.set_permission_emitter(permission_emitter.clone());
         tool_executor.set_pending_permissions(pending_permissions.clone());
+        // 工作流引擎的步骤要走同一条闸门，需要拿到执行器
+        crate::tools::executor::publish_global_executor(tool_executor.clone());
 
         let agent = AgentRuntime::new(
             ollama.clone(),
@@ -265,9 +279,8 @@ impl AppState {
             max_iterations,
         );
 
-        // Phase 4: 设置 ToolExecutor 的 app_handle 和 pending_permissions
-        let app_handle = app.handle().clone();
-        agent.set_app_handle(app_handle);
+        // Phase 4: 设置 agent 的权限发射器和 pending_permissions
+        agent.set_permission_emitter(permission_emitter.clone());
         agent.set_pending_permissions(pending_permissions.clone());
 
         // V18: 创建 Proactive Engine（在 main.rs setup 中启动）

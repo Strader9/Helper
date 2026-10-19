@@ -507,3 +507,68 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_kchunks_doc ON knowledge_chunks(document_id, ordinal);
 "#;
+
+/// 工作流引擎迁移 SQL
+///
+/// 与 `agent_tasks` / `scheduled_jobs` 的分工：
+/// - `agent_tasks`：一次对话里"我要做这几件事"的临时台账，随对话推进；
+/// - `scheduled_jobs`：到点跑**一次完整 Agent 循环**，目标由模型自己拆；
+/// - 这里：**步骤与依赖写死的固定流程**，每步调哪个工具、谁依赖谁都是确定的。
+///   适合"每天备份某目录 → 压缩 → 上传 → 发通知"这类不需要临场判断的活。
+///
+/// `steps_json` 存的是 DAG（每步含 id / kind / tool / arguments / depends_on）。
+/// 结构一旦被引用就不该原地改语义，所以更新时按"整体替换 + runs 保留旧快照"
+/// 处理：历史运行记录里的步骤结果不随定义变更而失真。
+pub const MIGRATION_WORKFLOW_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS workflow_defs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    steps_json TEXT NOT NULL DEFAULT '[]',
+    variables_json TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    run_count INTEGER NOT NULL DEFAULT 0,
+    last_run_at TEXT,
+    last_status TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_wf_defs_updated ON workflow_defs(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    workflow_name TEXT NOT NULL DEFAULT '',
+    session_id TEXT,
+    trigger_kind TEXT NOT NULL DEFAULT 'manual',
+    status TEXT NOT NULL DEFAULT 'running',
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT,
+    step_count INTEGER NOT NULL DEFAULT 0,
+    ok_count INTEGER NOT NULL DEFAULT 0,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    summary TEXT,
+    error TEXT,
+    FOREIGN KEY (workflow_id) REFERENCES workflow_defs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_wf_runs_flow ON workflow_runs(workflow_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS workflow_steps (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    step_id TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'tool',
+    seq INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at TEXT,
+    finished_at TEXT,
+    output_json TEXT,
+    error TEXT,
+    FOREIGN KEY (run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_wf_steps_run ON workflow_steps(run_id, seq);
+"#;

@@ -174,9 +174,9 @@ impl AgentRuntime {
         }
     }
 
-    /// 设置 AppHandle（用于权限确认弹窗）
-    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
-        self.executor.set_app_handle(handle);
+    /// 设置权限确认事件发射器（用于权限确认弹窗）
+    pub fn set_permission_emitter(&self, emitter: crate::tools::executor::PermissionEmitter) {
+        self.executor.set_permission_emitter(emitter);
     }
 
     /// 设置待处理权限请求映射

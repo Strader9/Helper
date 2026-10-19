@@ -27,4 +27,5 @@ pub mod program;
 pub mod scheduler;
 pub mod system;
 pub mod web;
+pub mod workflow;
 pub mod tasks;
