@@ -175,12 +175,8 @@ impl PermissionManager {
         tool_name: &str,
         path: Option<&str>,
     ) -> PermissionResult {
-        // 1. 检查 trusted_tools 白名单
-        if self.is_tool_trusted(tool_name, risk_level, path) {
-            return PermissionResult::Allowed;
-        }
-
-        // 2. 路径安全校验（如果提供了路径）
+        // 1. 路径硬性边界必须先于用户信任规则。可信工具只能免除
+        // 风险确认，不能绕过保护目录、UNC 或路径遍历限制。
         if let Some(path_str) = path {
             // 根据工具类型推断访问类型
             let access_type = infer_access_type(tool_name);
@@ -196,6 +192,11 @@ impl PermissionManager {
                     return PermissionResult::Denied { reason, code };
                 }
             }
+        }
+
+        // 2. 路径已通过硬性策略后，可信工具才可以免除风险确认。
+        if self.is_tool_trusted(tool_name, risk_level, path) {
+            return PermissionResult::Allowed;
         }
 
         // 3. 按风险等级判定
@@ -225,10 +226,15 @@ impl PermissionManager {
                     // 检查路径模式（如果存在）
                     if let Some(pattern) = &entry.path_pattern {
                         if let Some(path_str) = path {
-                            // 简单前缀匹配（大小写不敏感）
-                            let path_lower = path_str.to_lowercase();
-                            let pattern_lower = pattern.to_lowercase();
-                            if path_lower.starts_with(&pattern_lower) {
+                            // 按规范化路径组件匹配：`C:\\Safe-Evil` 不是
+                            // `C:\\Safe` 的子目录，`..` 也不能逃出受信任目录。
+                            let matches = crate::security::path_policy::normalize_path(path_str)
+                                .ok()
+                                .zip(crate::security::path_policy::normalize_path(pattern).ok())
+                                .is_some_and(|(path, root)| {
+                                    crate::security::path_policy::path_is_within(&path, &root)
+                                });
+                            if matches {
                                 return true;
                             }
                         } else {
@@ -338,6 +344,40 @@ mod tests {
         );
         assert!(matches!(
             permissions.check_permission(RiskLevel::Safe, "read_file", Some(qq)),
+            PermissionResult::Denied { ref code, .. } if code == PATH_DENY_PROTECTED
+        ));
+    }
+
+    #[test]
+    fn trusted_path_requires_a_directory_boundary() {
+        let mut permissions = PermissionManager::new();
+        permissions.trusted_tools.push(TrustedToolEntry {
+            tool_name: "read_file".to_string(),
+            path_pattern: Some(r"C:\\Safe".to_string()),
+            risk_level: "HIGH".to_string(),
+        });
+
+        assert_eq!(
+            permissions.check_permission(RiskLevel::High, "read_file", Some(r"C:\\Safe\\note.txt")),
+            PermissionResult::Allowed
+        );
+        assert_eq!(
+            permissions.check_permission(RiskLevel::High, "read_file", Some(r"C:\\Safe-Evil\\note.txt")),
+            PermissionResult::ConfirmationRequired
+        );
+    }
+
+    #[test]
+    fn trusted_path_cannot_bypass_protected_directory() {
+        let mut permissions = PermissionManager::new();
+        permissions.trusted_tools.push(TrustedToolEntry {
+            tool_name: "read_file".to_string(),
+            path_pattern: Some(r"C:\\Windows".to_string()),
+            risk_level: "HIGH".to_string(),
+        });
+
+        assert!(matches!(
+            permissions.check_permission(RiskLevel::High, "read_file", Some(r"C:\\Windows\\win.ini")),
             PermissionResult::Denied { ref code, .. } if code == PATH_DENY_PROTECTED
         ));
     }

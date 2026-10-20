@@ -392,7 +392,7 @@ impl Default for PathPolicy {
 ///
 /// 不能使用字符串前缀：`C:\\Program Files-Evil` 不是
 /// `C:\\Program Files` 的子目录。Windows 路径按组件做大小写不敏感比较。
-fn path_is_within(path: &Path, root: &Path) -> bool {
+pub(crate) fn path_is_within(path: &Path, root: &Path) -> bool {
     let mut path_components = path.components();
     for root_component in root.components() {
         let Some(path_component) = path_components.next() else {
@@ -446,7 +446,7 @@ fn validate_executable_target(path: &Path) -> PathPolicyResult {
 // ============================================================
 
 /// 规范化路径（使用 dunce 处理 Windows UNC 前缀）
-fn normalize_path(path: &str) -> AppResult<PathBuf> {
+pub(crate) fn normalize_path(path: &str) -> AppResult<PathBuf> {
     let path = PathBuf::from(path);
 
     // 使用 dunce 规范化（处理 Windows 的 UNC 前缀和路径分隔符）
