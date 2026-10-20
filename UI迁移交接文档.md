@@ -1,4 +1,4 @@
-# PC Guardian UI 迁移交接文档（对齐 LumiCore）
+# PC Guardian UI 重构交接文档
 
 > 状态：**代码层全部完成**，`tsc --noEmit` / `vite build` / `cargo check --lib` 均通过。
 > 唯一未完成项：**运行时视觉目验**（被执行环境三个坑堵死，见第六节），需你开窗口确认。
@@ -8,13 +8,13 @@
 
 ## 〇、总览：这次计划做了什么
 
-一次完整的「诊断 → 建设 → 校准 → 清场」四阶段迁移，把 pc-guardian 的前端从自研赛博朋克皮肤换成 LumiCore 的视觉体系。
+一次完整的「诊断 → 建设 → 校准 → 清场」四阶段迁移，把 pc-guardian 的前端从自研赛博朋克皮肤换成统一的深空星云视觉体系。
 
 | 阶段 | 触发 | 做了什么 | 结果 |
 |------|------|----------|------|
-| 1. 规模对比 | 「再来一次规模对比」 | 重口径统计 pc-guardian vs LumiCore | 定位到差距在 UI 层（1:11.8），工具层仅差 4% |
-| 2. UI 建设 | 「把 ui 补上行，我要跟 lumi 一样高级」 | 从零搭设计系统 + 组件库 + 14 页面 + 后端闸门 | 前端从 12 文件 6,125 行扩到 27 文件 16,000+ 行 |
-| 3. 视觉校准 | 「太丑了，我建议直接照搬 lumi」 | 定位三条根因，整套 token 换成 Lumi 写法 | 中性灰阶 + 近白主按钮 + 无影卡片 |
+| 1. 规模对比 | 「再来一次规模对比」 | 重口径统计 pc-guardian vs 参考实现 | 定位到差距在 UI 层（1:11.8），工具层仅差 4% |
+| 2. UI 建设 | 「把 ui 补上行，要跟参考实现一样高级」 | 从零搭设计系统 + 组件库 + 14 页面 + 后端闸门 | 前端从 12 文件 6,125 行扩到 27 文件 16,000+ 行 |
+| 3. 视觉校准 | 「太丑了，我建议直接照搬参考实现」 | 定位三条根因，整套 token 换成参考写法 | 中性灰阶 + 近白主按钮 + 无影卡片 |
 | 4. 彻底清场 | 「彻底抛弃原来 helper 的 ui，整个外观全部套用」 | 删除 5,556 行旧 CSS 与 4 个孤儿文件 | CSS 产物 149.78 kB → 58.42 kB |
 
 **净改动：+5,522 / −10,314 行**（`git diff --stat HEAD`，24 个跟踪文件）。
@@ -27,7 +27,7 @@
 
 上一轮我用「全项目行数 ÷ 工具数」得出 337 vs 1,329，**这个口径是错的**，已纠正。按工具层实际代码统计：
 
-| 指标 | pc-guardian | LumiCore | 比值 |
+| 指标 | pc-guardian | 参考实现 | 比值 |
 |------|------------|----------|------|
 | 工具契约数 | 221 | 242 | 91% |
 | 工具实现层行数 | 29,476（44 个 .rs 文件） | — | — |
@@ -39,7 +39,7 @@
 
 - **工具面无数量级差距**（134 vs 129 行/工具，仅差 4%），这正是本轮「只动 UI、工具层不改」的依据。
 - 真正差距在前端：12 个文件、5,773 行手写 CSS、无组件库、无设计系统。
-- Lumi 多出的代码在它自己的桌面壳（socket 19.7k + routes 7.4k），这些在 Tauri 里由 IPC + 原生窗口替代，不需要搬。
+- 参考实现多出的代码在它自己的桌面壳（socket 19.7k + routes 7.4k），这些在 Tauri 里由 IPC + 原生窗口替代，不需要搬。
 
 ---
 
@@ -139,13 +139,13 @@
 
 ---
 
-## 三、阶段 3：视觉校准（对齐 Lumi）
+## 三、阶段 3：视觉校准
 
 ### 3.1 触发点
 
-截图目验发现「太丑了」，你指示「直接照搬 lumi」。逐项读取 LumiCore 的 `src/index.css`（3,658 行）与 shadcn 原语后，定位到**三条根因**：
+截图目验发现「太丑了」，你指示「直接照搬参考实现」。逐项读取参考实现的 `src/index.css`（3,658 行）与 shadcn 原语后，定位到**三条根因**：
 
-| # | 根因 | 具体表现 | Lumi 的做法 |
+| # | 根因 | 具体表现 | 参考做法 |
 |---|------|----------|-------------|
 | 1 | **底色偏暖褐** | `#0a0908`、`#141312` 中 R>G>B，界面显脏 | 纯中性灰 `oklch(0.145 0 0)` 无彩度 |
 | 2 | **阴影太重** | 多层阴影 alpha 达 0.62 | 卡片**不用阴影**，只靠 `ring-1 ring-foreground/10` |
@@ -159,12 +159,12 @@
 
 ### 3.3 具体改动
 
-- `system.css` 重写为 Lumi 的 oklch token + shadcn 标准别名（`--color-primary/-secondary/-muted/-border/-radius/-sidebar-*/-chart-1..5`），补全侧栏系列与图表系列 token；
+- `system.css` 重写为 oklch token + shadcn 标准别名（`--color-primary/-secondary/-muted/-border/-radius/-sidebar-*/-chart-1..5`），补全侧栏系列与图表系列 token；
 - `card.tsx` 改 `rounded-xl + ring-1 ring-foreground/10`、`py-3.5 gap-3`、无投影；
 - `button.tsx` 改近白主按钮、`h-8` 默认高、`rounded-lg`，去掉 inset 高光与多层阴影；
 - `badge.tsx` 改全圆角胶囊形；
 - `page.tsx` 收紧留白（px-6→px-5、标题 18px、图标盒 32px）；
-- `Sidebar.tsx` 换 Lumi 侧栏配色体系，去掉 logo 橙色外发光。
+- `Sidebar.tsx` 换侧栏配色体系，去掉 logo 橙色外发光。
 
 ---
 
@@ -238,7 +238,7 @@ D  src/pages/SettingsAutomation.tsx / src/pages/SettingsModel.tsx
 
 ### 6.2 视觉微调（非本轮 scope）
 
-1. **信息密度**：token 已对齐 Lumi，但 14 个页面的密度是按我的判断重排的，与 Lumi 原版面板（如 CommandCenterPanel 的 8px 紧凑间距）可能仍差一档。要 1:1 需逐页对照 Lumi 组件间距再收一轮。
+1. **信息密度**：token 已对齐参考实现，但 14 个页面的密度是按我的判断重排的，与参考实现原版面板（如 CommandCenterPanel 的 8px 紧凑间距）可能仍差一档。要 1:1 需逐页对照其组件间距再收一轮。
 2. **Settings.tsx** 8 个分区建议重点看表单分派是否正确（bool→Switch / number→数字+unit / select→下拉）。
 3. **Logs.tsx** 依赖 `get_audit_logs` / `get_tool_receipts` 真实数据，空库时看不到效果。
 4. **工具层未动**：按阶段 1 的诊断（134 vs 129 行/工具，仅差 4%），本轮只改 UI。
@@ -262,6 +262,6 @@ git clean -fd src/components/ui src/components/CommandPalette.tsx src/components
 ## 七、交接后建议的推进顺序
 
 1. `npm run tauri dev` 逐页目验 14 个页面，记录观感异常的页号；
-2. 对异常页对照 `D:\_refs\LumiCore\src\components\` 下同名面板收密度；
+2. 对异常页对照参考实现的 `src/components/` 下同名面板收密度；
 3. 目验通过后按文件名精确 `git add` 提交（**禁用 `git add .`**）；
 4. 之后若要继续扩，工具层是下一个富矿（221 vs 242 契约的 21 个缺口）。
