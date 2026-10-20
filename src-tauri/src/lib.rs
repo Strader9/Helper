@@ -3552,6 +3552,11 @@ pub mod commands {
 
         let mut cmd = std::process::Command::new(&py);
         cmd.current_dir(&wd)
+            // Jarvis only reads the deployed native-worker configuration from
+            // this environment variable. Without it, it falls back to the
+            // repository's fake native mode.
+            .env("JARVIS_CONFIG", r"E:\\jarvis\\config\\test.toml")
+            .env("PYTHONPATH", "src")
             .arg("-m")
             .arg("uvicorn")
             .arg("jarvis_backend.app:app")
