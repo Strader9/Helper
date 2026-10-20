@@ -775,7 +775,25 @@ fn save_last_run(v: &Value) -> AppResult<()> {
     upsert_setting("external_cli.last_run", &v.to_string())
 }
 
-/// 带超时的外部命令执行：读输出在独立线程，超时 kill 子进程，避免死锁与进程泄漏。
+/// Terminate a command that belongs to this invocation. On Windows, a CLI may
+/// leave descendants behind (for example, an interpreter launching a helper),
+/// so terminate the tree rooted at the child PID rather than only its parent.
+#[cfg(windows)]
+fn terminate_cli_process_tree(child: &mut std::process::Child) {
+    let pid = child.id().to_string();
+    let _ = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", pid.as_str()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    let _ = child.kill();
+}
+
+#[cfg(not(windows))]
+fn terminate_cli_process_tree(child: &mut std::process::Child) {
+    let _ = child.kill();
+}
+
+/// 带超时的外部命令执行：读输出在独立线程，超时终止该命令的进程树，避免死锁与进程泄漏。
 fn run_cli(program: &str, args: &[String], timeout_ms: u64) -> AppResult<(Option<i32>, String, String, bool)> {
     use std::io::Read;
 
@@ -809,7 +827,7 @@ fn run_cli(program: &str, args: &[String], timeout_ms: u64) -> AppResult<(Option
             Some(s) => break (s.code(), false),
             None => {
                 if Instant::now() >= deadline {
-                    let _ = child.kill();
+                    terminate_cli_process_tree(&mut child);
                     let _ = child.wait();
                     break (None, true);
                 }
@@ -895,7 +913,7 @@ impl AgentTool for ExternalCliRunTool {
 
 #[cfg(test)]
 mod tests {
-    use super::truncate_cli_output;
+    use super::{run_cli, truncate_cli_output};
 
     #[test]
     fn truncate_cli_output_keeps_utf8_boundaries() {
@@ -904,6 +922,17 @@ mod tests {
 
         assert!(output.starts_with(&"中".repeat(4000)));
         assert!(output.ends_with("... (截断，共 4001 字符)"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn run_cli_timeout_stops_a_process_tree() {
+        let args = vec!["/c".to_string(), "ping 127.0.0.1 -n 20 > nul".to_string()];
+        let started = std::time::Instant::now();
+        let (_, _, _, timed_out) = run_cli("cmd", &args, 50).expect("CLI should start");
+
+        assert!(timed_out);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
     }
 }
 
