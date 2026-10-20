@@ -41,6 +41,17 @@ fn upsert_setting(key: &str, value: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// 截断 CLI 输出时按 Unicode 字符而非 UTF-8 字节计数，避免中文或 emoji 正好
+/// 落在边界上时对字符串切片产生 panic。
+fn truncate_cli_output(text: String, limit: usize) -> String {
+    let total_chars = text.chars().count();
+    if total_chars <= limit {
+        return text;
+    }
+    let head: String = text.chars().take(limit).collect();
+    format!("{head}... (截断，共 {total_chars} 字符)")
+}
+
 // ============================================================
 // 能力用量统计
 // ============================================================
@@ -868,25 +879,31 @@ impl AgentTool for ExternalCliRunTool {
         .await
         .map_err(|e| AppError::Internal(format!("执行任务失败: {}", e)))??;
 
-        let trunc = |s: String| -> String {
-            if s.len() > 4000 {
-                format!("{}... (截断，共 {} 字符)", &s[..4000], s.len())
-            } else {
-                s
-            }
-        };
-
         let result = json!({
             "ok": !timed_out && code == Some(0),
             "command": program,
             "exit_code": code,
             "timed_out": timed_out,
-            "stdout": trunc(stdout),
-            "stderr": trunc(stderr),
+            "stdout": truncate_cli_output(stdout, 4000),
+            "stderr": truncate_cli_output(stderr, 4000),
         });
         save_last_run(&result)?;
 
         Ok(ToolResult::ok(result))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_cli_output;
+
+    #[test]
+    fn truncate_cli_output_keeps_utf8_boundaries() {
+        let input = "中".repeat(4001);
+        let output = truncate_cli_output(input, 4000);
+
+        assert!(output.starts_with(&"中".repeat(4000)));
+        assert!(output.ends_with("... (截断，共 4001 字符)"));
     }
 }
 
