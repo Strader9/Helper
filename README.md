@@ -4,17 +4,94 @@
 
 ## 技术栈
 
-- **前端**：React 18 + TypeScript + Vite
-- **桌面框架**：Tauri 2
-- **后端**：Rust
-- **数据库**：SQLite（rusqlite + bundled）
-- **AI 模型**：Ollama (qwen3:8b)
+- **前端**：React 18 + TypeScript 5 + Vite 5 + Tailwind v4 + Radix 原语 + lucide 图标
+- **桌面框架**：Tauri 2（WebView2）
+- **后端**：Rust 2021
+- **数据库**：SQLite（rusqlite + bundled），35 张表
+- **本地 LLM**：Ollama（默认 `qwen3:8b`）
+- **全模态感知**：Jarvis（MiniCPM-o 4.5，独立 sidecar 进程，可选用）
+- **媒体生成**：火山方舟（图像 / 视频）、可切换其它 OpenAI 兼容端点
+- **工具层**：221 个能力契约，37 个能力域
 
 ## 核心原则
 
 1. **极致效率** — 最高效的代码实现，避免不必要的抽象和依赖
 2. **最小体积** — 严格控制依赖数量和大小，安装包尽量小
 3. **Security > Correctness > Reliability > Maintainability > Performance > Features**
+
+## 界面
+
+界面整体套用 **Lumi 设计体系**：深空星云主题（背景 oklch 暗调、蓝紫 hue 264），四层星点 + 四层星云气团铺在 `body::before` 上，配玻璃质感底板与线性图标。
+
+入口是 `src/LumiApp.tsx`（HashRouter），13 条路由：
+
+| 路由 | 页面 | 路由 | 页面 |
+|------|------|------|------|
+| `/` | 指挥中心 | `/tasks` | 任务 |
+| `/chat` | 对话 | `/media` | 媒体生成 |
+| `/settings` | 设置（6 个 Tab） | `/mail` | 邮件 |
+| `/logs` | 日志 | `/automation` | 自动化 |
+| `/tools` | 工具 | `/devices` | 多端 |
+| `/skills` | 技能 | `/jarvis` | 贾维斯 |
+| `/memory` | 记忆 | | |
+
+样式全部落在 `src/index.css`（3685 行，Tailwind v4 + oklch token），另有 `src/styles/` 三个辅助样式表。
+
+> **字号一律用绝对 px，不要用 rem 缩放。** 早期文件顶部的 `:root{font-size:14px}` 会让整条字体阶梯缩到 87.5%，全站视觉同时错位——这是"界面看起来哪里都不对"的根因。
+
+## Jarvis：全模态桌面感知
+
+`LyHub/pub-local-jarvis` 以**独立进程**接入，本侧只负责生命周期托管与 HTTP 桥接（`src-tauri/src/lib.rs` 里 5 个命令：`jarvis_health` / `jarvis_start` / `jarvis_stop` / `jarvis_chat` / `jarvis_duplex`）。它每秒看一帧屏幕、听一秒系统声音，由 MiniCPM-o 4.5 判定该 `LISTEN` 还是 `SPEAK`。
+
+后端路由前缀是 `/api/v1`（**不带会 404**），默认 `http://127.0.0.1:8000`。停止用 `taskkill /T` 而不是 `Child::kill`，否则 uvicorn 派生的子进程会留成孤儿占住端口。
+
+### 显存让路
+
+8 GiB 显存装不下两套模型，这是物理上限不是配置问题：
+
+| 组件 | 显存 |
+|------|------|
+| Jarvis 三模型（LLM Q4_K_M + 视觉塔 F16 + 音频塔 F16） | 约 7.2 GiB |
+| Ollama `qwen3:8b` | 约 5.4 GiB |
+| RTX 4060 Laptop 总量 | 8 GiB |
+
+因此管家在拉起 Jarvis 之前会主动让路，两个设置项控制：
+
+| 设置键 | 默认 | 说明 |
+|--------|------|------|
+| `llm.warmup_on_start` | `true` | 启动时是否预热本地 LLM。为 `false` 时不占显存 |
+| `llm.keep_alive` | `30m` | 推理结束后的模型驻留时长，`0` 表示用完立即卸载 |
+
+`jarvis_start` 在拉起后端之前调 `ollama.unload()`（空 `generate` + `keep_alive:"0"`，Ollama 没有专门卸载接口，这是官方等价写法），失败只告警不阻塞。
+
+**代价要说清**：Jarvis 占着显卡时，管家再请求本地 LLM 会因显存不足失败。现有机制保证的是"谁在被使用谁拿到显存"，不是"两个同时可用"。
+
+### 实测数字
+
+RTX 4060 Laptop 8 GiB 上，原版 Q4_K_M **无需量化即可全量 offload**：
+
+| 项 | 数值 |
+|---|---|
+| `ollama stop` 后桌面基线 | 647 MiB |
+| worker 加载峰值 | 7778 MiB / 余 179 MiB（三模型全上卡） |
+| 持续感知循环 2 分钟 | 余量稳定 77–124 MiB，无 OOM、无 CPU 回退 |
+| `/assistant/chat` 单条 | 0.8 s |
+
+> **注意 `n_gpu_layers=-1` 不等于"自动按显存适配"。** 在 llama.cpp 里 `-1` 的语义是**全量**（`include/llama.h` 原文："a negative value means all layers"），真正的自适应走 `common_fit_params()`，而 omni 的加载路径不经过它。所以显存一旦不够，worker 会整体退回 CPU，没有"少放几层"的中间态。
+
+## 语音播报
+
+TTS 引擎在 `src/lib/tts.ts`（约 500 行），`src/hooks/useVoice.ts` 的 `speak` / `stopSpeaking` 签名不变、内部委托给它。绕的是 WebView2 `speechSynthesis` 三个实测缺陷：
+
+| 缺陷 | 处理 |
+|------|------|
+| 长文本静默截断 | 分句队列：段落 → 句末标点 → 逗号 → 硬切，默认 90 字/句 |
+| 长朗读卡在 `paused` | 每 6 秒 `resume()` 心跳 |
+| Markdown 符号被逐字念出 | `stripMarkupForSpeech()` |
+
+音色优先级 `Huihui > Xiaoxiao > Yunxi > Yaoyao > Kangkang`（OneCore 通道，WebView2 走这条）。
+
+> **`stop()` 必须先 `finish` 再清 hooks。** 反过来的话调用方永远收不到 `onEnd`，实时对话循环会静默断掉。
 
 ## 网页工坊
 
@@ -175,6 +252,16 @@ ToolRegistry → PermissionManager → ToolExecutor
 2. **PermissionManager** — 权限判定中心，五级风险体系，白名单机制
 3. **ToolExecutor** — 实际执行层，超时控制，审计日志
 
+### 能力契约
+
+每个工具的"会做什么、可能造成什么副作用、怎么验证"都写在 `src-tauri/src/tools/contract.rs` 里，启动时核对覆盖率并打日志：
+
+```
+[Capability] 契约覆盖 221/221，实质副作用 110/122 已声明验证策略
+```
+
+契约覆盖率是硬指标——新增工具没写契约，启动日志里的分母就会掉，比代码评审更早发现遗漏。
+
 ### 五级风险体系
 
 | 等级 | 策略 |
@@ -185,71 +272,70 @@ ToolRegistry → PermissionManager → ToolExecutor
 | 🟠 HIGH | 弹窗 + 二次确认 |
 | 🔴 CRITICAL | 禁止执行 |
 
+### 能力域
+
+37 个执行器域（`src-tauri/src/tools/executors/`）：文件与系统（file_ops / fs_extra / os_extra / system）、办公文档（office / pdf / ocr / diff）、媒体（media / image_gen / video_gen / media_provider）、研发（git / github / code / browser / web / mcp）、业务（mail_read / messaging / calendar / industry / industry_ecommerce / cad）、自动化（scheduler / workflow / work_takeover / autonomy / desktop_ai / tasks）、知识（knowledge / memory / skill / extension / program），以及 client 兜底域。
+
 ## 项目结构
 
 ```
 Helper/
-├── src/                          # 前端 React 代码
-│   ├── components/               # 通用组件
-│   ├── pages/                    # 页面组件
-│   ├── App.tsx                   # 主应用组件
-│   ├── main.tsx                  # 入口文件
-│   ├── index.css                 # 全局样式
-│   └── vite-env.d.ts             # Vite 类型声明
-├── src-tauri/                    # Rust 后端代码
-│   ├── src/
-│   │   ├── main.rs               # Tauri 入口
-│   │   ├── lib.rs                # 库入口 + 模块声明
-│   │   ├── error.rs              # 错误类型
-│   │   ├── db/                   # 数据库模块
-│   │   │   ├── mod.rs            # 连接管理 + CRUD
-│   │   │   └── schema.rs         # 表结构定义
-│   │   ├── tools/                # 工具模块
-│   │   │   ├── mod.rs
-│   │   │   └── registry.rs       # ToolRegistry + AgentTool trait
-│   │   ├── security/             # 安全模块
-│   │   │   └── mod.rs            # PermissionManager
-│   │   ├── agent/                # Agent 运行时
-│   │   │   └── mod.rs
-│   │   └── monitoring/           # 监控服务
-│   │       └── mod.rs
-│   ├── capabilities/             # Tauri Capability 配置
-│   │   └── default.json
-│   ├── Cargo.toml                # Rust 依赖配置
-│   ├── build.rs                  # Tauri 构建脚本
-│   └── tauri.conf.json           # Tauri 配置
-├── package.json                  # 前端依赖
-├── vite.config.ts                # Vite 配置
-├── tsconfig.json                 # TypeScript 配置
-├── index.html                    # HTML 入口
-├── .gitignore
+├── src/                              # 前端
+│   ├── LumiApp.tsx                   # 真正入口（HashRouter，13 路由）
+│   ├── pages/lumi/                   # 12 个页面（Lumi 版）
+│   ├── components/lumi/              # 玻璃卡 / 图标盒 / 页头 / 徽标 / 开关
+│   ├── components/ui/                # Radix 原语封装
+│   ├── lib/                          # tts 引擎、工具函数
+│   ├── hooks/                        # useVoice 等
+│   ├── pets/                         # 桌宠
+│   ├── index.css                     # 设计系统（3685 行）
+│   ├── styles/                       # 辅助样式表
+│   └── i18n/ core/ services/ contexts/
+├── src-tauri/src/
+│   ├── lib.rs                        # 命令注册 + 状态装配（含 jarvis 桥接）
+│   ├── main.rs                       # 启动、预热策略、托盘
+│   ├── llm/                          # Ollama 客户端（keep_alive / unload）
+│   ├── tools/                        # registry + contract + 37 个 executors/
+│   ├── security/ agent/ workflow/ work_takeover/
+│   ├── webgen/ webpublish/           # 网页工坊
+│   ├── scheduler/ proactive/ devices/
+│   ├── mail_mime.rs webpublish.rs
+│   └── db/                           # 连接 + schema（35 表）
+├── .cargo/config.toml                # target-dir 指向 E 盘，避免撑爆系统盘
+├── 交接文档-2026-10-20-详细版.md      # 环境硬约束 / 全链路 / 14 条踩坑
 └── README.md
 ```
 
 ## 数据库
 
-共 11 张表：
+35 张表，按用途分组：
 
-1. `migrations` — 迁移版本记录
-2. `settings` — 配置项
-3. `audit_logs` — 审计日志
-4. `trusted_apps` — 可信应用白名单
-5. `allowed_directories` — 允许目录白名单
-6. `system_events` — 系统事件
-7. `chat_sessions` — 对话会话
-8. `chat_messages` — 对话消息
-9. `automation_rules` — 自动化规则
-10. `github_snapshots` — GitHub 趋势快照元数据
-11. `notification_logs` — 通知日志
+| 分组 | 表 |
+|------|-----|
+| 基础 | `migrations` `settings` `audit_logs` |
+| 安全 | `trusted_apps` `allowed_directories` `trusted_tools` `system_events` |
+| 对话 | `chat_sessions` `chat_messages` `agent_tasks` `agent_observations` |
+| 工具 | `tool_receipts` `extensions` `extension_receipts` |
+| 技能与记忆 | `skills` `memory_items` `knowledge_documents` `knowledge_chunks` |
+| 自动化 | `automation_rules` `proactive_rules` `scheduled_jobs` `scheduled_job_runs` |
+| 编排 | `workflow_defs` `workflow_runs` `workflow_steps` `work_takeover_tasks` `work_takeover_evidence` |
+| 多端 | `devices` `device_pairing_codes` |
+| 业务 | `calendar_events` `industry_snapshots` `media_generations` `github_snapshots` `notification_logs` |
+
+数据库落在 `%APPDATA%\pc-guardian\pc-guardian.db`。
+
+> 同一个机器上还有 `%APPDATA%\ai.pcguardian.app\` 目录，里面是 4 KB 的空库，**不是真正的数据库**，手动改配置时不要写错地方。
 
 ## 开发
 
 ### 前置要求
 
 - Node.js >= 18
-- Rust >= 1.77
+- Rust >= 1.77（edition 2021）
 - Windows 10/11（目标平台）
-- Ollama（运行 AI 模型）
+- Ollama（运行本地模型）
+- 可选：ffmpeg（音视频工具链，放在 `D:\ffmpeg\bin` 或任意 PATH 目录）
+- 可选：Jarvis 运行时（`E:\jarvis\runtime`，含 `jarvis-native-worker-cuda.exe` 与 CUDA 13 运行库）
 
 ### 安装依赖
 
@@ -269,24 +355,41 @@ npm run tauri dev
 npm run tauri build
 ```
 
+### 与 Jarvis 共存
+
+先起 worker，再起后端，最后在界面 `/jarvis` 页点启动：
+
+```bash
+# 1. 原生 worker（占显存，先停掉 Ollama 或让它让路）
+jarvis-native-worker-cuda.exe \\.\pipe\JarvisSidecar.v1 E:\jarvis\models\MiniCPM-o-4_5-gguf
+
+# 2. Python 后端（配置路径必须显式传，仓库里没有 local.toml 覆盖机制）
+JARVIS_CONFIG=E:\jarvis\config\test.toml PYTHONPATH=src <venv>\python.exe -m uvicorn jarvis_backend.app:app --port 8000
+```
+
+配置里 `[native] mode` 必须是 `process` 才会连真 worker；默认 `fake` 只跑假后端。
+
 ## 开发路线图
 
 | Phase | 内容 | 状态 |
 |-------|------|------|
 | Phase 0 | 架构设计 | ✅ 完成 |
-| Phase 1 | 项目骨架初始化 | 🚧 进行中 |
-| Phase 2 | Agent Runtime + Tool Calling 基础 | ⏳ 待开始 |
-| Phase 3 | 系统监控服务 | ⏳ 待开始 |
-| Phase 4 | 系统工具集 | ⏳ 待开始 |
-| Phase 5 | Ollama 集成 + 完整对话 | ⏳ 待开始 |
-| Phase 6 | 浏览器工具 | ⏳ 待开始 |
-| Phase 7 | GitHub 工具 + 趋势分析 | ⏳ 待开始 |
-| Phase 8 | 自动化 + 通知 | ⏳ 待开始 |
+| Phase 1 | 项目骨架初始化 | ✅ 完成 |
+| Phase 2 | Agent Runtime + Tool Calling 基础 | ✅ 完成 |
+| Phase 3 | 系统监控服务 | ✅ 完成 |
+| Phase 4 | 系统工具集（221 契约 / 37 域） | ✅ 完成 |
+| Phase 5 | Ollama 集成 + 完整对话 | ✅ 完成 |
+| Phase 6 | 浏览器工具 | ✅ 完成 |
+| Phase 7 | GitHub 工具 + 趋势分析 | ✅ 完成 |
+| Phase 8 | 自动化 + 通知 | ✅ 完成 |
+| Phase 9 | Lumi 界面体系切换 | ✅ 完成 |
+| Phase 10 | Jarvis 全模态感知接入 | 🚧 界面启动链路待补配置注入 |
+| Phase 11 | 媒体生成（图像 / 视频） | 🚧 待开通方舟模型权限 |
 
 ## 安全红线
 
 1. ❌ 不向 LLM 暴露任何 shell/powershell/cmd 执行入口
-2. ❌ 密钥不写入配置文件、日志、数据库（存 Windows Credential Manager）
+2. ⚠️ 凭据当前存在本地 SQLite 的 `settings` 表，读出给界面时一律走 `mask_secret()` 掩码（只留末 4 位）。**目标态是 Windows Credential Manager**，尚未实现——因此不要把生产密钥填进来，且一旦把带凭据的数据库或日志分享出去，必须立刻轮换
 3. ❌ CRITICAL 级操作一律禁止执行
 4. ✅ MEDIUM+ 风险操作必须用户弹窗确认
 5. ✅ 文件操作严格校验路径，防止路径穿越
