@@ -1,0 +1,393 @@
+/* ============================================================
+ * PC Guardian · Design System
+ *
+ * 对齐 LumiCore（shadcn base-nova / neutral）：
+ *   1. 中性灰阶，oklch 无彩度，靠明度台阶分层（底色 0.145，卡片 0.205）
+ *   2. 主按钮用近白，橙色只做强调（激活条、状态点、聚焦环、图表）
+ *   3. 卡片不用阴影，只用 1px ring-foreground/10；阴影只留给浮层
+ *   4. 圆角统一 10px 基准，卡片 rounded-xl = 14px
+ *   5. 动效只用一条曲线 cubic-bezier(.16,1,.3,1)
+ *
+ * 刻意不引入 preflight：仓库里还有手写 CSS 跑旧页面，
+ * 元素级重置会连带改掉旧页面的 h1/button 默认值。这里只取
+ * theme + utilities 两层，旧页面不受影响。
+ * ============================================================ */
+
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@theme {
+  /* ---- 字体 ----
+   * 不引外链字体：桌面应用断网时不能变成宋体。 */
+  --font-sans: "Inter", "SF Pro Text", -apple-system, BlinkMacSystemFont,
+    "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", Consolas,
+    "Liberation Mono", monospace;
+
+  /* ---- 间距基准 ----
+   * 必须写成绝对 px：index.css 里有 :root{font-size:14px}，
+   * 用 rem 会让整条间距阶梯缩到 87.5%，4px 网格全乱。 */
+  --spacing: 4px;
+
+  /* ---- 字号阶梯（绝对值，不受根字号影响）---- */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 1.45;
+  --text-xs: 12px;
+  --text-xs--line-height: 1.5;
+  --text-sm: 13px;
+  --text-sm--line-height: 1.5;
+  --text-base: 14px;
+  --text-base--line-height: 1.55;
+  --text-lg: 16px;
+  --text-lg--line-height: 1.5;
+  --text-xl: 18px;
+  --text-xl--line-height: 1.4;
+  --text-2xl: 22px;
+  --text-2xl--line-height: 1.3;
+  --text-3xl: 28px;
+  --text-3xl--line-height: 1.2;
+
+  /* ---- 圆角（10px 基准，与 Lumi 的 --radius 一致）---- */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+  --radius-3xl: 22px;
+  --radius: 0.625rem;
+
+  /* ---- 语义色：中性灰阶（oklch 无彩度）---- */
+  --color-canvas: oklch(0.115 0 0);
+  --color-background: oklch(0.145 0 0);
+  --color-surface: oklch(0.175 0 0);
+  --color-card: oklch(0.205 0 0);
+  --color-elevated: oklch(0.235 0 0);
+  --color-hover: oklch(0.269 0 0);
+  --color-active: oklch(0.305 0 0);
+
+  --color-foreground: oklch(0.985 0 0);
+  --color-ink: oklch(0.985 0 0);
+  --color-muted-foreground: oklch(0.708 0 0);
+  --color-subtle-foreground: oklch(0.556 0 0);
+
+  --color-line: oklch(1 0 0 / 10%);
+  --color-line-strong: oklch(1 0 0 / 16%);
+  --color-line-faint: oklch(1 0 0 / 5%);
+
+  /* ---- shadcn 标准别名：便于直接套用 Lumi 组件代码 ---- */
+  --color-border: oklch(1 0 0 / 10%);
+  --color-input: oklch(1 0 0 / 15%);
+  --color-ring: oklch(0.556 0 0);
+  --color-primary: oklch(0.922 0 0);
+  --color-primary-foreground: oklch(0.205 0 0);
+  --color-secondary: oklch(0.269 0 0);
+  --color-secondary-foreground: oklch(0.985 0 0);
+  --color-muted: oklch(0.269 0 0);
+  --color-accent: oklch(0.269 0 0);
+  --color-accent-foreground: oklch(0.985 0 0);
+  --color-destructive: oklch(0.704 0.191 22.216);
+  --color-popover: oklch(0.205 0 0);
+  --color-popover-foreground: oklch(0.985 0 0);
+  --color-card-foreground: oklch(0.985 0 0);
+
+  /* ---- shadcn sidebar / chart（Lumi 原版命名）---- */
+  --color-sidebar: oklch(0.205 0 0);
+  --color-sidebar-foreground: oklch(0.985 0 0);
+  --color-sidebar-primary: oklch(0.488 0.243 264.376);
+  --color-sidebar-primary-foreground: oklch(0.985 0 0);
+  --color-sidebar-accent: oklch(0.269 0 0);
+  --color-sidebar-accent-foreground: oklch(0.985 0 0);
+  --color-sidebar-border: oklch(1 0 0 / 10%);
+  --color-sidebar-ring: oklch(0.556 0 0);
+
+  --color-chart-1: oklch(0.87 0 0);
+  --color-chart-2: oklch(0.556 0 0);
+  --color-chart-3: oklch(0.439 0 0);
+  --color-chart-4: oklch(0.371 0 0);
+  --color-chart-5: oklch(0.269 0 0);
+
+  /* ---- 品牌色：只做强调，不做主按钮底色 ---- */
+  --color-brand: #ff8c00;
+  --color-brand-soft: rgba(255, 140, 0, 0.12);
+  --color-brand-line: rgba(255, 140, 0, 0.32);
+  --color-brand-foreground: #1a1000;
+
+  --color-info: #4a9eff;
+  --color-success: #34c759;
+  --color-warning: #ffb020;
+  --color-danger: #ff453a;
+
+  /* 图表 / 分类色 */
+  --color-cat-1: #ff8c00;
+  --color-cat-2: #4a9eff;
+  --color-cat-3: #34c759;
+  --color-cat-4: #bf6cff;
+  --color-cat-5: #ffd60a;
+  --color-cat-6: #ff6b9d;
+  --color-cat-7: #5eead4;
+  --color-cat-8: #a3a3a3;
+
+  /* ---- 阴影：卡片不用，只给浮层 ---- */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 32px -6px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 16px 48px -10px rgba(0, 0, 0, 0.6);
+
+  /* ---- 动效 ---- */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out-soft: cubic-bezier(0.4, 0, 0.2, 1);
+  --duration-fast: 140ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+
+  /* ---- 布局 ---- */
+  --spacing-sidebar: 224px;
+  --spacing-sidebar-collapsed: 60px;
+  --spacing-topbar: 52px;
+}
+
+/* ============================================================
+ * 浅色主题
+ * 只换色，不换尺寸与阴影几何——切换主题时版式不能位移。
+ * ============================================================ */
+[data-theme="light"] {
+  --color-canvas: oklch(0.955 0 0);
+  --color-background: oklch(0.97 0 0);
+  --color-surface: oklch(0.985 0 0);
+  --color-card: oklch(0.985 0 0);
+  --color-elevated: oklch(1 0 0);
+  --color-hover: oklch(0.93 0 0);
+  --color-active: oklch(0.9 0 0);
+
+  --color-foreground: oklch(0.145 0 0);
+  --color-ink: oklch(0.145 0 0);
+  --color-muted-foreground: oklch(0.45 0 0);
+  --color-subtle-foreground: oklch(0.6 0 0);
+
+  --color-line: oklch(0 0 0 / 10%);
+  --color-line-strong: oklch(0 0 0 / 16%);
+  --color-line-faint: oklch(0 0 0 / 5%);
+
+  --color-border: oklch(0 0 0 / 10%);
+  --color-input: oklch(0 0 0 / 12%);
+  --color-ring: oklch(0.556 0 0);
+  --color-primary: oklch(0.205 0 0);
+  --color-primary-foreground: oklch(0.985 0 0);
+  --color-secondary: oklch(0.93 0 0);
+  --color-secondary-foreground: oklch(0.145 0 0);
+  --color-muted: oklch(0.93 0 0);
+  --color-accent: oklch(0.93 0 0);
+  --color-accent-foreground: oklch(0.145 0 0);
+  --color-destructive: oklch(0.577 0.245 27.325);
+  --color-popover: oklch(1 0 0);
+  --color-popover-foreground: oklch(0.145 0 0);
+  --color-card-foreground: oklch(0.145 0 0);
+
+  --color-sidebar: oklch(0.97 0 0);
+  --color-sidebar-foreground: oklch(0.145 0 0);
+  --color-sidebar-primary: oklch(0.205 0 0);
+  --color-sidebar-primary-foreground: oklch(0.985 0 0);
+  --color-sidebar-accent: oklch(0.93 0 0);
+  --color-sidebar-accent-foreground: oklch(0.145 0 0);
+  --color-sidebar-border: oklch(0 0 0 / 8%);
+  --color-sidebar-ring: oklch(0.556 0 0);
+
+  --color-brand: #c25c00;
+  --color-brand-soft: rgba(194, 92, 0, 0.09);
+  --color-brand-line: rgba(194, 92, 0, 0.26);
+  --color-brand-foreground: #ffffff;
+
+  --color-info: #0b6bcb;
+  --color-success: #0e8a3e;
+  --color-warning: #a86a00;
+  --color-danger: #cf1f2e;
+
+  --shadow-xs: 0 1px 2px rgba(16, 18, 22, 0.06);
+  --shadow-sm: 0 1px 2px rgba(16, 18, 22, 0.07);
+  --shadow-md: 0 4px 12px -2px rgba(16, 18, 22, 0.1);
+  --shadow-lg: 0 10px 32px -6px rgba(16, 18, 22, 0.14);
+  --shadow-xl: 0 16px 48px -10px rgba(16, 18, 22, 0.18);
+}
+
+/* ============================================================
+ * 基础层
+ * 只作用于新页面容器 `.ds`，不碰旧的 body/#root 规则。
+ * ============================================================ */
+@layer base {
+  .ds {
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.55;
+    color: var(--color-foreground);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  .ds ::selection {
+    background: rgba(255, 140, 0, 0.24);
+    color: var(--color-foreground);
+  }
+
+  .ds :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+
+  .ds ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .ds ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .ds ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border: 2px solid transparent;
+    background-clip: content-box;
+    border-radius: 99px;
+  }
+  .ds ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+    background-clip: content-box;
+  }
+  [data-theme="light"] .ds ::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.14);
+    background-clip: content-box;
+  }
+}
+
+/* ============================================================
+ * 复合效果
+ * ============================================================ */
+
+/* 面板：Lumi 的做法——纯色底 + 1px 半透明环，不加阴影 */
+@utility surface-glass {
+  background: var(--color-card);
+  border: 1px solid var(--color-line);
+}
+
+[data-theme="light"] .surface-glass,
+[data-theme="light"] [class*="surface-glass"] {
+  background: var(--color-card);
+}
+
+/* 品牌色描边高光：用于选中态、当前步骤 */
+@utility ring-brand {
+  box-shadow:
+    0 0 0 1px var(--color-brand-line),
+    0 0 0 3px var(--color-brand-soft);
+}
+
+/* 网格纹理：极淡，只做背景暗示 */
+@utility bg-grid {
+  background-image:
+    linear-gradient(to right, var(--color-line-faint) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-line-faint) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* 环境光：顶部一道极淡的径向，制造纵深（不是发光） */
+@utility ambient-brand {
+  background-image: radial-gradient(
+    120% 60% at 50% -10%,
+    rgba(255, 140, 0, 0.05) 0%,
+    rgba(255, 140, 0, 0.012) 42%,
+    transparent 72%
+  );
+}
+
+/* ============================================================
+ * 关键帧（统一命名 ds-*，避免与旧 cyberpunk.css 的 keyframes 撞名）
+ * ============================================================ */
+@keyframes ds-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes ds-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ds-scale-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes ds-slide-left {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes ds-slide-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes ds-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes ds-pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
+}
+
+@keyframes ds-spin {
+  to { transform: rotate(360deg); }
+}
+
+@utility animate-ds-fade-in { animation: ds-fade-in var(--duration-base) var(--ease-out-expo) both; }
+@utility animate-ds-rise { animation: ds-rise var(--duration-slow) var(--ease-out-expo) both; }
+@utility animate-ds-scale-in { animation: ds-scale-in var(--duration-base) var(--ease-out-expo) both; }
+@utility animate-ds-spin { animation: ds-spin 0.8s linear infinite; }
+
+/* 骨架屏 */
+@utility skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 25%,
+    rgba(255, 255, 255, 0.08) 37%,
+    rgba(255, 255, 255, 0.04) 63%
+  );
+  background-size: 200% 100%;
+  animation: ds-shimmer 1.6s ease-in-out infinite;
+}
+[data-theme="light"] .ds .skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.04) 25%,
+    rgba(0, 0, 0, 0.07) 37%,
+    rgba(0, 0, 0, 0.04) 63%
+  );
+  background-size: 200% 100%;
+}
+
+/* ============================================================
+ * 排版小工具
+ * ============================================================ */
+@utility label-caps {
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-subtle-foreground);
+}
+
+@utility num-tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* 长文本渐隐，用于摘要 */
+@utility fade-bottom {
+  mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+}

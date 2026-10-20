@@ -2,8 +2,20 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import CyberIcon from "../components/CyberIcon";
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Maximize2,
+  Send,
+  ShieldCheck,
+  X,
+  XCircle,
+} from "lucide-react";
 import { createChatRunId, formatToolResult, humanizeError, parseEventEnvelope } from "../chatUi";
+import { cn } from "../lib/cn";
+import "../styles/mini.css";
 
 // ============================================================
 // 类型定义（与 Chat.tsx 保持一致）
@@ -38,6 +50,9 @@ const AVATAR_SRC = "/assets/avatar/avatar_animated.webp";
 
 // ============================================================
 // MiniChat 组件 —— 无边框透明浮窗
+//
+// 和主界面共用一套设计 token，但布局逻辑不同：这里没有页面骨架，
+// 只有一个可拖动的头像和一张按需展开的对话面板。
 // ============================================================
 
 function MiniChat() {
@@ -340,55 +355,66 @@ function MiniChat() {
   // 点击头像展开聊天面板，鼠标悬停显示控制按钮
 
   return (
-    <div className="mini-chat transparent">
+    <div className="ds mini-window group relative flex h-screen w-screen flex-col overflow-hidden bg-transparent text-[var(--color-foreground)]">
       {/* 悬浮控制按钮 —— 默认隐藏，鼠标悬停淡入 */}
-      <div className="mini-float-controls">
-        <button className="mini-float-btn expand" onClick={handleExpand} title="展开主窗口">
-          <CyberIcon name="expand" size={14} />
-        </button>
-        <button className="mini-float-btn close" onClick={handleClose} title="关闭浮窗">
-          <CyberIcon name="close" size={14} />
-        </button>
+      <div className="pointer-events-none absolute right-2 top-2 z-30 flex gap-1.5 opacity-0 transition-opacity duration-300 group-hover:pointer-events-auto group-hover:opacity-100">
+        <FloatBtn onClick={handleExpand} title="展开主窗口">
+          <Maximize2 className="size-3.5" />
+        </FloatBtn>
+        <FloatBtn onClick={handleClose} title="关闭浮窗" danger>
+          <X className="size-3.5" />
+        </FloatBtn>
       </div>
 
       {/* 动态人像区域 —— 原生 mousedown 调用 startDragging，onClick 处理展开/收起 */}
       <div
         ref={avatarAreaRef}
-        className={`mini-avatar-area ${showChat ? "chat-open" : ""}`}
         data-tauri-drag-region
         onClick={() => setShowChat((prev) => !prev)}
         title={showChat ? "点击收起 / 拖动移动" : "点击对话 / 拖动移动"}
+        className={cn(
+          "relative flex cursor-grab items-center justify-center transition-transform duration-200",
+          // 分层窗口中完全透明的区域鼠标事件会穿透，这里保留一点底色来接收事件
+          "bg-[rgba(13,12,11,0.15)] hover:scale-[1.03] active:scale-[0.97]",
+          showChat ? "h-[104px] shrink-0 pt-2" : "min-h-0 flex-1"
+        )}
       >
         {!avatarError ? (
           <img
             src={AVATAR_SRC}
             alt="AI Assistant"
-            className={`mini-avatar ${thinking || isLoading ? "speaking" : ""}`}
+            className={cn(
+              "select-none object-contain drop-shadow-[0_0_12px_rgba(255,140,0,0.28)]",
+              showChat ? "h-[90px] w-auto max-w-[90%]" : "max-h-[90%] max-w-[90%]",
+              (thinking || isLoading) && "mini-avatar-glow"
+            )}
             onError={() => setAvatarError(true)}
             draggable={false}
           />
         ) : (
-          <div className="mini-avatar-fallback">
-            <span className="fallback-icon"><CyberIcon name="shield" size={28} /></span>
+          <div className="flex size-28 items-center justify-center rounded-full bg-[radial-gradient(circle,rgba(255,140,0,0.14),transparent_70%)]">
+            <ShieldCheck className="size-11 text-[var(--color-brand)] drop-shadow-[0_0_10px_rgba(255,140,0,0.5)]" />
           </div>
         )}
 
         {/* 思考/说话状态指示器 */}
         {(thinking || isLoading) && (
-          <div className="mini-status-ring">
-            <span className="ring-pulse" />
+          <div className="absolute bottom-2.5 left-1/2 -translate-x-1/2">
+            <span className="block size-2 animate-[ds-pulse-dot_1.2s_ease-in-out_infinite] rounded-full bg-[var(--color-brand)] shadow-[0_0_10px_var(--color-brand)]" />
           </div>
         )}
       </div>
 
       {/* 展开的聊天面板 —— 点击头像后显示 */}
       {showChat && (
-        <div className="mini-chat-panel">
+        <div className="flex min-h-0 flex-1 animate-ds-rise flex-col overflow-hidden rounded-t-[var(--radius-xl)] border border-b-0 border-[var(--color-line-strong)] bg-[var(--color-background)]/95 shadow-[var(--shadow-lg)] backdrop-blur-xl">
           {/* 消息区域 */}
-          <div className="mini-messages">
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-2.5">
             {messages.length === 0 && !streamingText && toolExecutions.length === 0 && (
-              <div className="mini-welcome">
-                <p>有什么可以帮你的？</p>
+              <div className="flex h-full items-center justify-center">
+                <p className="text-[var(--text-xs)] text-[var(--color-subtle-foreground)]">
+                  有什么可以帮你的？
+                </p>
               </div>
             )}
 
@@ -397,19 +423,29 @@ function MiniChat() {
             ))}
 
             {isLoading && streamingText && (
-              <div className="mini-bubble assistant">
-                <div className="mini-bubble-content">{streamingText}</div>
-                <div className="message-cursor" />
+              <div className="flex justify-start">
+                <div className="max-w-[92%] rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-elevated)] px-2.5 py-2">
+                  <div className="whitespace-pre-wrap break-words text-[var(--text-xs)] leading-relaxed text-[var(--color-foreground)]">
+                    {streamingText}
+                    <span className="ml-0.5 inline-block h-3 w-0.5 translate-y-0.5 animate-[ds-pulse-dot_1s_ease-in-out_infinite] bg-[var(--color-brand)]" />
+                  </div>
+                </div>
               </div>
             )}
 
             {isLoading && thinking && !streamingText && (
-              <div className="mini-bubble assistant">
-                <div className="thinking-indicator">
-                  <span className="dot" />
-                  <span className="dot" />
-                  <span className="dot" />
-                  <span>思考中...</span>
+              <div className="flex justify-start">
+                <div className="flex items-center gap-1.5 rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[var(--color-elevated)] px-2.5 py-2">
+                  {[0, 1, 2].map((i) => (
+                    <span
+                      key={i}
+                      className="mini-dot size-1.5 rounded-full bg-[var(--color-brand)]"
+                      style={{ animationDelay: `${i * 160}ms` }}
+                    />
+                  ))}
+                  <span className="ml-1 text-[var(--text-2xs)] text-[var(--color-muted-foreground)]">
+                    思考中
+                  </span>
                 </div>
               </div>
             )}
@@ -426,28 +462,72 @@ function MiniChat() {
           </div>
 
           {/* 输入区域 */}
-          <div className="mini-input-area">
+          <div className="flex shrink-0 items-end gap-1.5 border-t border-[var(--color-line)] bg-[var(--color-surface)]/60 px-2.5 py-2">
             <textarea
               ref={inputRef}
-              className="mini-input"
-              placeholder="输入消息..."
+              className={cn(
+                "max-h-24 min-h-8 flex-1 resize-none rounded-[var(--radius-sm)] border border-[var(--color-line)]",
+                "bg-[var(--color-surface)] px-2 py-1.5 text-[var(--text-xs)] leading-relaxed text-[var(--color-foreground)]",
+                "placeholder:text-[var(--color-subtle-foreground)]",
+                "transition-[border-color,box-shadow] duration-150",
+                "hover:border-[var(--color-line-strong)] focus:border-[var(--color-brand-line)]",
+                "focus:shadow-[0_0_0_3px_var(--color-brand-soft)] focus:outline-none"
+              )}
+              placeholder="输入消息…"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={handleKeyDown}
               rows={1}
             />
             <button
-              className="mini-send-btn"
               onClick={handleSendMessage}
               disabled={!inputText.trim()}
               title={isLoading ? "发送新指令并取消上一条" : "发送"}
+              className={cn(
+                "inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-sm)]",
+                "bg-[var(--color-brand)] text-[var(--color-brand-foreground)]",
+                "shadow-[inset_0_1px_0_rgba(255,255,255,.22)] transition-all duration-150",
+                "hover:brightness-110 active:translate-y-px",
+                "disabled:pointer-events-none disabled:opacity-40"
+              )}
             >
-              <CyberIcon name="send" size={16} />
+              <Send className="size-3.5" />
             </button>
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+/* ---------------------------------------------------------------- 小组件 */
+
+function FloatBtn({
+  children,
+  onClick,
+  title,
+  danger,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  title: string;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={cn(
+        "inline-flex size-7 cursor-pointer items-center justify-center rounded-[var(--radius-sm)]",
+        "border border-[var(--color-line-strong)] bg-[var(--color-canvas)]/72 backdrop-blur-md",
+        "text-[var(--color-muted-foreground)] transition-colors duration-150",
+        danger
+          ? "hover:border-[var(--color-danger)]/50 hover:bg-[var(--color-danger)]/15 hover:text-[var(--color-danger)]"
+          : "hover:border-[var(--color-brand-line)] hover:text-[var(--color-brand)]"
+      )}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -459,27 +539,33 @@ function MiniMessageBubble({ message }: { message: ConversationMessage }) {
 
   if (isTool) {
     return (
-      <div className="mini-bubble tool">
-        <div className="mini-tool-result">
-          <span className="mini-tool-label">工具结果</span>
-          <pre className="mini-tool-code">
-            {(() => {
-              try {
-                const parsed = JSON.parse(message.content);
-                return JSON.stringify(parsed, null, 2);
-              } catch {
-                return message.content;
-              }
-            })()}
-          </pre>
-        </div>
+      <div className="rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-card)] px-2.5 py-1.5">
+        <span className="label-caps">工具结果</span>
+        <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono text-[var(--text-2xs)] leading-relaxed text-[var(--color-muted-foreground)]">
+          {(() => {
+            try {
+              const parsed = JSON.parse(message.content);
+              return JSON.stringify(parsed, null, 2);
+            } catch {
+              return message.content;
+            }
+          })()}
+        </pre>
       </div>
     );
   }
 
   return (
-    <div className={`mini-bubble ${isUser ? "user" : "assistant"}`}>
-      <div className="mini-bubble-content">
+    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+      <div
+        className={cn(
+          "max-w-[92%] rounded-[var(--radius-lg)] px-2.5 py-2",
+          "text-[var(--text-xs)] leading-relaxed whitespace-pre-wrap break-words",
+          isUser
+            ? "bg-[var(--color-brand-soft)] text-[var(--color-foreground)] border border-[var(--color-brand-line)]"
+            : "bg-[var(--color-elevated)] text-[var(--color-foreground)] border border-[var(--color-line)]"
+        )}
+      >
         {message.content.split("\n").map((line, i, arr) => (
           <span key={i}>
             {line}
@@ -500,13 +586,7 @@ function MiniToolCard({
   tool: ToolExecution;
   onToggle: () => void;
 }) {
-  const statusIcon =
-    tool.status === "running" ? <CyberIcon name="clock" size={14} /> :
-    tool.status === "success" ? <CyberIcon name="check" size={14} /> : <CyberIcon name="xCircle" size={14} />;
-
-  const statusText =
-    tool.status === "running" ? "执行中..." :
-    tool.status === "success" ? "成功" : "失败";
+  const running = tool.status === "running";
 
   const displayArgs = (() => {
     try {
@@ -527,32 +607,76 @@ function MiniToolCard({
   })();
 
   return (
-    <div className={`mini-tool-card ${tool.status}`}>
-      <div className="mini-tool-header" onClick={onToggle}>
-        <span>{statusIcon}</span>
-        <span className="mini-tool-name">{tool.name}</span>
-        <span className="mini-tool-status">{statusText}</span>
-        <span>{tool.collapsed ? <CyberIcon name="chevronRight" size={14} /> : <CyberIcon name="chevronDown" size={14} />}</span>
-      </div>
+    <div
+      className={cn(
+        "overflow-hidden rounded-[var(--radius-md)] border bg-[var(--color-card)]",
+        running
+          ? "border-[var(--color-brand-line)]"
+          : tool.status === "success"
+          ? "border-[var(--color-success)]/25"
+          : "border-[var(--color-danger)]/30"
+      )}
+    >
+      <button
+        onClick={onToggle}
+        className="flex w-full cursor-pointer items-center gap-1.5 px-2 py-1.5 text-left transition-colors hover:bg-[var(--color-hover)]/50"
+      >
+        {running ? (
+          <Loader2 className="size-3 shrink-0 animate-ds-spin text-[var(--color-brand)]" />
+        ) : tool.status === "success" ? (
+          <CheckCircle2 className="size-3 shrink-0 text-[var(--color-success)]" />
+        ) : (
+          <XCircle className="size-3 shrink-0 text-[var(--color-danger)]" />
+        )}
+        <span className="min-w-0 flex-1 truncate font-mono text-[var(--text-2xs)] text-[var(--color-foreground)]">
+          {tool.name}
+        </span>
+        <span
+          className={cn(
+            "shrink-0 text-[var(--text-2xs)]",
+            running
+              ? "text-[var(--color-brand)]"
+              : tool.status === "success"
+              ? "text-[var(--color-success)]"
+              : "text-[var(--color-danger)]"
+          )}
+        >
+          {running ? "执行中" : tool.status === "success" ? "成功" : "失败"}
+        </span>
+        {tool.collapsed ? (
+          <ChevronRight className="size-3 shrink-0 text-[var(--color-subtle-foreground)]" />
+        ) : (
+          <ChevronDown className="size-3 shrink-0 text-[var(--color-subtle-foreground)]" />
+        )}
+      </button>
 
       {!tool.collapsed && (
-        <div className="mini-tool-body">
-          <div className="mini-tool-section">
-            <span className="mini-section-label">参数</span>
-            <pre className="mini-tool-code">{displayArgs}</pre>
-          </div>
+        <div className="border-t border-[var(--color-line-faint)] px-2 py-1.5">
+          <span className="label-caps">参数</span>
+          <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-all font-mono text-[var(--text-2xs)] leading-relaxed text-[var(--color-subtle-foreground)]">
+            {displayArgs}
+          </pre>
 
-          {tool.status !== "running" && displayResult && (
-            <div className="mini-tool-section">
-              <span className="mini-section-label">结果</span>
-              <pre className={`mini-tool-code ${tool.status}`}>{displayResult}</pre>
-            </div>
+          {!running && displayResult && (
+            <>
+              <span className="label-caps mt-2 block">结果</span>
+              <pre
+                className={cn(
+                  "mt-1 max-h-28 overflow-auto whitespace-pre-wrap break-all font-mono text-[var(--text-2xs)] leading-relaxed",
+                  tool.status === "error"
+                    ? "text-[var(--color-danger)]"
+                    : "text-[var(--color-muted-foreground)]"
+                )}
+              >
+                {displayResult}
+              </pre>
+            </>
           )}
 
-          {tool.status === "running" && (
-            <div className="mini-tool-running">
-              <span className="tool-spinner" />
-              <span>正在执行...</span>
+          {running && (
+            <div className="mt-1.5 flex items-center gap-1.5 text-[var(--text-2xs)] text-[var(--color-muted-foreground)]">
+              <Loader2 className="size-2.5 animate-ds-spin" />
+              正在执行
             </div>
           )}
         </div>

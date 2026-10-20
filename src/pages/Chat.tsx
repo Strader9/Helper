@@ -1,10 +1,34 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import CyberIcon from "../components/CyberIcon";
+import {
+  AlertTriangle,
+  Ban,
+  Bot,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  Trash2,
+  User,
+  X,
+} from "lucide-react";
 import ExecutionEvidence from "../components/ExecutionEvidence";
 import { createChatRunId, formatToolResult, humanizeError, parseEventEnvelope } from "../chatUi";
 import { fetchTaskTruth, type ReceiptStatus, type TaskTruthResponse } from "../lib/taskTruth";
+import { Button } from "../components/ui/button";
+import { Badge, StatusDot } from "../components/ui/badge";
+import { Progress } from "../components/ui/feedback";
+import { Tooltip } from "../components/ui/primitives";
+import { PermissionGate } from "../components/PermissionGate";
+import { cn } from "../lib/cn";
 
 // ============================================================
 // 类型定义
@@ -56,8 +80,6 @@ interface ToolExecution {
   collapsed: boolean;
 }
 
-// ---- Task 相关类型 ----
-
 interface TaskUpdateEvent {
   task_id: string;
   session_id: string;
@@ -78,7 +100,6 @@ interface ActionStatusEvent {
   message: string;
 }
 
-// V21: Recovery 恢复事件
 interface RecoveryEvent {
   task_id: string;
   step_id: number;
@@ -89,7 +110,6 @@ interface RecoveryEvent {
   timestamp: number;
 }
 
-// Phase 4: 权限确认弹窗类型
 interface PermissionRequestPayload {
   request_id: string;
   session_id: string;
@@ -105,7 +125,6 @@ interface PermissionRequestPayload {
 // ============================================================
 
 function Chat() {
-  // ---- 状态 ----
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
@@ -118,17 +137,13 @@ function Chat() {
   const [thinking, setThinking] = useState(false);
   const [toolExecutions, setToolExecutions] = useState<ToolExecution[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
-  /** 本轮任务的判决书：由后端按回执聚合，前端只负责显示 */
   const [taskTruth, setTaskTruth] = useState<TaskTruthResponse | null>(null);
 
-  // ---- Task 状态 ----
   const [currentTask, setCurrentTask] = useState<TaskUpdateEvent | null>(null);
   const [taskExpanded, setTaskExpanded] = useState(false);
   const [actionStatuses, setActionStatuses] = useState<ActionStatusEvent[]>([]);
-  // V21: Recovery 恢复事件
   const [recoveryEvents, setRecoveryEvents] = useState<RecoveryEvent[]>([]);
 
-  // Phase 4: 权限确认弹窗状态
   const [permissionRequest, setPermissionRequest] = useState<PermissionRequestPayload | null>(null);
   const [permissionResponding, setPermissionResponding] = useState(false);
 
@@ -138,13 +153,9 @@ function Chat() {
   const listenerSetupGenerationRef = useRef(0);
   const activeRunIdRef = useRef<string | null>(null);
   const permissionUnlistenRef = useRef<UnlistenFn | null>(null);
-  // 用 ref 存储当前对话 ID，避免 setupEventListeners 闭包捕获旧值
   const currentConversationIdRef = useRef<string | null>(null);
-  // 本轮已生成的回复正文。事件回调注册在 [] 依赖上，读不到最新的 state，
-  // 而判定"模型有没有多报"必须拿到完整回复。
   const lastAssistantTextRef = useRef("");
 
-  // ---- 对话状态重置（切换/新建对话时必须调用，防止旧对话残留）----
   const resetConversationState = useCallback(() => {
     setMessages([]);
     setStreamingText("");
@@ -161,12 +172,10 @@ function Chat() {
     lastAssistantTextRef.current = "";
   }, []);
 
-  // ---- 初始化 ----
   useEffect(() => {
     loadConversations();
     checkOllama();
 
-    // Phase 4: 监听权限请求事件
     const setupPermissionListener = async () => {
       const unlisten = await listen("permission-request", (event) => {
         const payload = event.payload as PermissionRequestPayload;
@@ -188,9 +197,7 @@ function Chat() {
   }, []);
 
   useEffect(() => {
-    // 同步 ref，确保 setupEventListeners 闭包始终拿到最新对话 ID
     currentConversationIdRef.current = currentConversationId;
-    // 切换对话时先重置所有运行时状态，防止旧对话残留
     resetConversationState();
     if (currentConversationId) {
       loadMessages(currentConversationId);
@@ -202,7 +209,14 @@ function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingText, toolExecutions, actionStatuses, recoveryEvents, permissionRequest]);
 
-  // 全局超时保护：isLoading 超过 90 秒自动重置，防止永久卡死
+  // 输入框自动增高：单行起，最多 8 行后内部滚动
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [inputText]);
+
   useEffect(() => {
     if (!isLoading) return;
     const timer = setTimeout(() => {
@@ -234,9 +248,7 @@ function Chat() {
 
   async function loadMessages(conversationId: string) {
     try {
-      const data = await invoke<ConversationMessage[]>("get_messages", {
-        conversationId,
-      });
+      const data = await invoke<ConversationMessage[]>("get_messages", { conversationId });
       setMessages(data);
     } catch (e) {
       console.error("Failed to load messages:", e);
@@ -245,9 +257,7 @@ function Chat() {
 
   async function loadActiveTask(conversationId: string) {
     try {
-      const task = await invoke<TaskUpdateEvent | null>("get_active_task", {
-        conversationId,
-      });
+      const task = await invoke<TaskUpdateEvent | null>("get_active_task", { conversationId });
       setCurrentTask(task);
     } catch (e) {
       console.error("Failed to load active task:", e);
@@ -285,7 +295,7 @@ function Chat() {
     }
   }
 
-  // ---- 事件监听 ----
+  // ---- 事件监听（逻辑保持原样，只换渲染）----
 
   const setupEventListeners = useCallback(async () => {
     const generation = ++listenerSetupGenerationRef.current;
@@ -315,9 +325,7 @@ function Chat() {
           const event: ChatEvent = JSON.parse(payload);
           if (event.data && typeof event.data === "object" && "name" in event.data) {
             const data = event.data as { name: string; arguments: string | object };
-            const argsStr = typeof data.arguments === "string"
-              ? data.arguments
-              : JSON.stringify(data.arguments);
+            const argsStr = typeof data.arguments === "string" ? data.arguments : JSON.stringify(data.arguments);
             const newExec: ToolExecution = {
               id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
               name: data.name,
@@ -339,9 +347,7 @@ function Chat() {
             const verification = extractVerification(data.content);
             setToolExecutions((prev) => {
               const reversed = [...prev].reverse();
-              const revIndex = reversed.findIndex(
-                (e) => e.name === data.name && e.status === "running"
-              );
+              const revIndex = reversed.findIndex((e) => e.name === data.name && e.status === "running");
               if (revIndex === -1) return prev;
               const actualIndex = prev.length - 1 - revIndex;
               const updated = [...prev];
@@ -365,8 +371,6 @@ function Chat() {
         setIsLoading(false);
         setThinking(false);
         setStreamingText("");
-        // 收尾时向账本要一份判决书：这一轮到底有没有证据、模型那句话算不算数。
-        // 没有产生任何回执的纯对话不显示面板，避免每句回答都挂一块仪表盘。
         if (finishedRunId) {
           fetchTaskTruth(finishedRunId, finalText).then((truth) => {
             if (truth && truth.snapshot.counts.total > 0) {
@@ -384,17 +388,13 @@ function Chat() {
       ["chat:error", (payload) => {
         setIsLoading(false);
         setThinking(false);
-        // 解析错误消息：可能是纯字符串或 JSON 格式
         const errorMsg = humanizeError(payload, "AI 响应出错");
         activeRunIdRef.current = null;
         setChatError(errorMsg);
         console.error("Chat error:", payload);
         const cid = currentConversationIdRef.current;
-        if (cid) {
-          loadActiveTask(cid);
-        }
+        if (cid) loadActiveTask(cid);
       }],
-      // ---- Task 状态事件 ----
       ["agent:task_update", (payload) => {
         try {
           const event: TaskUpdateEvent = JSON.parse(payload);
@@ -414,7 +414,6 @@ function Chat() {
           console.error("Action status parse error:", e);
         }
       }],
-      // V21: Recovery 恢复事件
       ["agent:recovery", (payload) => {
         try {
           const event: RecoveryEvent = JSON.parse(payload);
@@ -426,37 +425,27 @@ function Chat() {
     ];
 
     const newUnlisteners = await Promise.all(
-      listeners.map(([eventName, handler]) => listen(eventName, (event) => {
-        const payloadStr = String(event.payload);
-        // V21: session_id 深度防御过滤——所有对话事件必须携带 session_id 且匹配当前对话
-        const cid = currentConversationIdRef.current;
-        try {
-          const parsed = parseEventEnvelope(payloadStr);
-          if (cid) {
-            // 有当前对话时：事件必须有 session_id 且必须匹配，否则忽略（防止旧对话/无主事件污染）
-            if (!parsed.session_id || parsed.session_id !== cid) {
-              return;
+      listeners.map(([eventName, handler]) =>
+        listen(eventName, (event) => {
+          const payloadStr = String(event.payload);
+          const cid = currentConversationIdRef.current;
+          try {
+            const parsed = parseEventEnvelope(payloadStr);
+            if (cid) {
+              if (!parsed.session_id || parsed.session_id !== cid) return;
             }
+            if (eventName === "chat:thinking" && parsed.run_id) {
+              activeRunIdRef.current = parsed.run_id;
+            }
+            if (parsed.run_id && parsed.run_id !== activeRunIdRef.current) return;
+          } catch {
+            if (cid) return;
           }
-          // 主窗口与浮窗共享会话；新的 thinking 事件代表该会话已被新指令接管。
-          if (eventName === "chat:thinking" && parsed.run_id) {
-            activeRunIdRef.current = parsed.run_id;
-          }
-          // 同一会话只接收当前发送的运行；被新指令取代的旧流无法污染 UI。
-          if (parsed.run_id && parsed.run_id !== activeRunIdRef.current) {
-            return;
-          }
-        } catch {
-          // 非 JSON payload（理论上不应发生），有当前对话时忽略，无对话时放行兼容
-          if (cid) {
-            return;
-          }
-        }
-        handler(payloadStr);
-      }))
+          handler(payloadStr);
+        })
+      )
     );
 
-    // React StrictMode 会重复执行 effect；丢弃已过期的异步注册结果，防止重复监听。
     if (generation !== listenerSetupGenerationRef.current) {
       newUnlisteners.forEach((unlisten) => unlisten());
       return;
@@ -465,7 +454,6 @@ function Chat() {
     unlistenRef.current = newUnlisteners;
   }, []);
 
-  // 聊天事件监听器常驻，避免每次发送前串行注册多组 IPC 监听器。
   useEffect(() => {
     setupEventListeners().catch((e) => {
       console.error("Failed to set up chat listeners:", e);
@@ -481,11 +469,8 @@ function Chat() {
 
   async function handleCreateConversation(): Promise<string | null> {
     try {
-      const conv = await invoke<Conversation>("create_conversation", {
-        title: null,
-      });
+      const conv = await invoke<Conversation>("create_conversation", { title: null });
       setConversations((prev) => [conv, ...prev]);
-      // 先重置所有状态，再切换到新对话（useEffect 会再次重置，双重保险）
       resetConversationState();
       setCurrentConversationId(conv.id);
       return conv.id;
@@ -519,30 +504,22 @@ function Chat() {
       await invoke("cancel_task", { conversationId: currentConversationId });
       setCurrentTask(null);
       setActionStatuses([]);
-      if (currentConversationId) {
-        loadActiveTask(currentConversationId);
-      }
+      loadActiveTask(currentConversationId);
     } catch (e) {
       console.error("Failed to cancel task:", e);
     }
   }
 
-  // Phase 4: 权限确认操作
   async function handlePermissionResponse(decision: "allow_once" | "always_allow" | "deny") {
     if (!permissionRequest || permissionResponding) return;
-
     setPermissionResponding(true);
     try {
       await invoke("respond_permission", {
-        response: {
-          request_id: permissionRequest.request_id,
-          decision: decision,
-        },
+        response: { request_id: permissionRequest.request_id, decision },
       });
       setPermissionRequest(null);
     } catch (e) {
       console.error("Failed to respond to permission request:", e);
-      // 请求已超时或不存在，关闭弹窗并重置加载状态
       setPermissionRequest(null);
       setIsLoading(false);
       setChatError("权限确认已超时，请重试");
@@ -560,7 +537,6 @@ function Chat() {
       if (!newId) return;
       convId = newId;
     }
-    // 立即更新 ref，确保 setupEventListeners 闭包拿到最新对话 ID
     currentConversationIdRef.current = convId;
 
     const content = inputText.trim();
@@ -569,13 +545,12 @@ function Chat() {
     setInputText("");
     setIsLoading(true);
     setStreamingText("");
-    // 立即给用户反馈，并乐观显示刚发送的消息；不再为了发送而先重读整段会话。
     setThinking(true);
     setMessages((prev) => [
       ...prev,
       {
         id: -Date.now(),
-        session_id: convId,
+        session_id: convId!,
         role: "user",
         content,
         timestamp: new Date().toISOString(),
@@ -608,7 +583,7 @@ function Chat() {
     }
   }
 
-  function handleKeyDown(e: React.KeyboardEvent) {
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
@@ -616,339 +591,339 @@ function Chat() {
   }
 
   function toggleToolCollapse(id: string) {
-    setToolExecutions((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, collapsed: !t.collapsed } : t))
-    );
+    setToolExecutions((prev) => prev.map((t) => (t.id === id ? { ...t, collapsed: !t.collapsed } : t)));
   }
 
-  // ---- 渲染辅助 ----
-
   const isTaskActive = currentTask && !["COMPLETED", "FAILED", "CANCELLED"].includes(currentTask.status);
-  const statusColor =
-    currentTask?.status === "COMPLETED" ? "#4caf50" :
-    currentTask?.status === "FAILED" ? "#f44336" :
-    currentTask?.status === "CANCELLED" ? "#9e9e9e" :
-    "#2196f3";
+  const taskTone =
+    currentTask?.status === "COMPLETED"
+      ? "success"
+      : currentTask?.status === "FAILED"
+      ? "danger"
+      : currentTask?.status === "CANCELLED"
+      ? "muted"
+      : "brand";
 
-  // ---- 渲染 ----
+  const hasContent = messages.length > 0 || !!streamingText || toolExecutions.length > 0;
 
   return (
-    <div className="chat-page">
-      {/* 对话列表侧边栏 */}
-      <aside className="chat-sidebar">
-        <div className="chat-sidebar-header">
-          <button className="new-chat-btn" onClick={handleCreateConversation}>
-            + 新对话
-          </button>
+    <div className="ds flex h-full overflow-hidden">
+      {/* ---------------- 会话列表 ---------------- */}
+      <aside className="flex w-56 shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-surface)]">
+        <div className="p-2.5">
+          <Button variant="secondary" size="sm" className="w-full justify-start gap-1.5" onClick={handleCreateConversation}>
+            <Plus className="size-3.5" />
+            新对话
+          </Button>
         </div>
 
-        <div className="conversations-list">
-          {conversations.map((conv) => (
-            <div
-              key={conv.id}
-              className={`conversation-item ${
-                conv.id === currentConversationId ? "active" : ""
-              }`}
-              onClick={() => setCurrentConversationId(conv.id)}
-            >
-              <div className="conv-title">{conv.title}</div>
-              <div className="conv-meta">
-                {conv.last_message && (
-                  <span className="conv-preview">{conv.last_message}</span>
-                )}
-                <button
-                  className="conv-delete"
-                  onClick={(e) => handleDeleteConversation(conv.id, e)}
-                  title="删除对话"
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+          {conversations.length === 0 ? (
+            <p className="px-2 py-6 text-center text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+              点「新对话」开始
+            </p>
+          ) : (
+            conversations.map((conv) => {
+              const active = conv.id === currentConversationId;
+              return (
+                <div
+                  key={conv.id}
+                  onClick={() => setCurrentConversationId(conv.id)}
+                  className={cn(
+                    "group relative mb-0.5 cursor-pointer rounded-[8px] px-2.5 py-2 transition-colors",
+                    active ? "bg-[var(--color-elevated)]" : "hover:bg-[var(--color-hover)]/60"
+                  )}
                 >
-                  ×
-                </button>
-              </div>
-            </div>
-          ))}
-          {conversations.length === 0 && (
-            <div className="empty-conversations">点击"新对话"开始</div>
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={cn(
+                        "min-w-0 flex-1 truncate text-[var(--text-xs)]",
+                        active ? "font-medium text-[var(--color-foreground)]" : "text-[var(--color-muted-foreground)]"
+                      )}
+                    >
+                      {conv.title || "未命名对话"}
+                    </span>
+                    <button
+                      onClick={(e) => handleDeleteConversation(conv.id, e)}
+                      className="shrink-0 rounded-[4px] p-0.5 text-[var(--color-subtle-foreground)] opacity-0 transition-opacity hover:text-[var(--color-danger)] group-hover:opacity-100"
+                      title="删除对话"
+                    >
+                      <Trash2 className="size-3" />
+                    </button>
+                  </div>
+                  {conv.last_message && (
+                    <p className="mt-0.5 truncate text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+                      {conv.last_message}
+                    </p>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
 
-        {/* 模型选择 */}
-        <div className="model-selector">
-          <label>模型</label>
+        {/* 模型 */}
+        <div className="border-t border-[var(--color-line-faint)] p-2.5">
+          <div className="label-caps mb-1 px-1">模型</div>
           <select
             value={selectedModel}
             onChange={(e) => setSelectedModel(e.target.value)}
             disabled={!ollamaAvailable || ollamaModels.length === 0}
+            className="w-full cursor-pointer rounded-[7px] border border-[var(--color-line)] bg-[var(--color-card)] px-2 py-1.5 text-[var(--text-xs)] text-[var(--color-foreground)] outline-none transition-colors hover:border-[var(--color-line-strong)] disabled:opacity-50"
           >
             {ollamaModels.map((m) => (
-              <option key={m.model} value={m.model}>
+              <option key={m.model} value={m.model} className="bg-[var(--color-card)]">
                 {m.name}
               </option>
             ))}
-            {ollamaModels.length === 0 && (
-              <option>未检测到模型</option>
-            )}
+            {ollamaModels.length === 0 && <option>未检测到模型</option>}
           </select>
         </div>
       </aside>
 
-      {/* 主聊天区域 */}
-      <div className="chat-main">
-        {/* Ollama 状态提示 */}
+      {/* ---------------- 主区 ---------------- */}
+      <div className="flex min-w-0 flex-1 flex-col">
         {!ollamaAvailable && (
-          <div className="ollama-warning">
-            <CyberIcon name="alertTriangle" size={14} /> Ollama 未运行，请启动 Ollama 服务（默认 http://localhost:11434）
-            <button onClick={checkOllama}>重试</button>
+          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-warning)]/25 bg-[var(--color-warning)]/8 px-4 py-2">
+            <AlertTriangle className="size-3.5 shrink-0 text-[var(--color-warning)]" />
+            <span className="min-w-0 flex-1 text-[var(--text-xs)] text-[var(--color-warning)]">
+              Ollama 未运行。启动本地模型服务后即可对话（默认 http://localhost:11434）
+            </span>
+            <Button variant="ghost" size="xs" onClick={checkOllama} className="gap-1">
+              <RefreshCw className="size-3" />
+              重试
+            </Button>
           </div>
         )}
 
-        {/* 错误提示 */}
         {chatError && (
-          <div className="chat-error-banner">
-            <span className="chat-error-icon"><CyberIcon name="alertTriangle" size={14} /></span>
-            <span className="chat-error-text">{chatError}</span>
-            <button className="chat-error-close" onClick={() => setChatError(null)}>
-              <CyberIcon name="close" size={14} />
+          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--color-danger)]/25 bg-[var(--color-danger)]/8 px-4 py-2">
+            <AlertTriangle className="size-3.5 shrink-0 text-[var(--color-danger)]" />
+            <span className="min-w-0 flex-1 text-[var(--text-xs)] text-[var(--color-danger)]">{chatError}</span>
+            <button
+              onClick={() => setChatError(null)}
+              className="shrink-0 rounded p-0.5 text-[var(--color-danger)] hover:bg-[var(--color-danger)]/15"
+            >
+              <X className="size-3.5" />
             </button>
           </div>
         )}
 
-        {/* 任务状态卡片 */}
+        {/* 任务条 */}
         {currentTask && (
-          <div className="task-card" style={{ borderLeftColor: statusColor }}>
-            <div className="task-card-header" onClick={() => setTaskExpanded(!taskExpanded)}>
-              <span className="task-status-dot" style={{ backgroundColor: statusColor }} />
-              <span className="task-goal">{currentTask.goal}</span>
-              <span className="task-status-badge" style={{ backgroundColor: statusColor + "20", color: statusColor }}>
-                {currentTask.status}
+          <div className="shrink-0 border-b border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-2">
+            <div className="flex items-center gap-2.5">
+              <StatusDot tone={taskTone} pulse={!!isTaskActive} />
+              <span className="min-w-0 flex-1 truncate text-[var(--text-xs)] text-[var(--color-foreground)]">
+                {currentTask.goal}
+              </span>
+              <Badge tone={taskTone === "muted" ? "neutral" : taskTone}>{currentTask.status}</Badge>
+              <span className="num-tabular shrink-0 text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+                {currentTask.current_step}/{currentTask.total_steps}
               </span>
               {isTaskActive && (
-                <button
-                  className="task-cancel-btn"
-                  onClick={(e) => { e.stopPropagation(); handleCancelTask(); }}
-                  title="取消任务"
-                >
-                  <CyberIcon name="close" size={14} />
-                </button>
+                <Button variant="ghost" size="icon-sm" onClick={handleCancelTask} title="取消任务">
+                  <Ban className="size-3.5" />
+                </Button>
               )}
-              <span className="task-toggle">{taskExpanded ? <CyberIcon name="chevronDown" size={14} /> : <CyberIcon name="chevronRight" size={14} />}</span>
+              <button
+                onClick={() => setTaskExpanded((v) => !v)}
+                className="shrink-0 rounded p-0.5 text-[var(--color-subtle-foreground)] hover:text-[var(--color-foreground)]"
+              >
+                {taskExpanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              </button>
             </div>
-
-            <div className="task-progress">
-              <div className="task-progress-bar">
-                <div
-                  className="task-progress-fill"
-                  style={{ width: `${currentTask.progress_percent}%`, backgroundColor: statusColor }}
-                />
-              </div>
-              <span className="task-progress-text">
-                {currentTask.current_step} / {currentTask.total_steps} 步
-              </span>
-            </div>
-
+            <Progress
+              value={currentTask.progress_percent}
+              tone={taskTone === "muted" ? "info" : taskTone}
+              height={2}
+              className="mt-1.5"
+            />
             {taskExpanded && (
-              <div className="task-card-body">
+              <div className="mt-2 space-y-1">
                 {currentTask.current_action && (
-                  <div className="task-current-action">
-                    <span className="task-action-label">当前步骤：</span>
-                    <span>{currentTask.current_action}</span>
-                  </div>
+                  <p className="text-[var(--text-2xs)] text-[var(--color-muted-foreground)]">
+                    当前：{currentTask.current_action}
+                  </p>
                 )}
-
-                {actionStatuses.length > 0 && (
-                  <div className="task-action-log">
-                    {actionStatuses.slice(-5).map((action, idx) => (
-                      <div key={idx} className={`task-action-item ${action.status}`}>
-                        <span className="task-action-icon">
-                          {action.status === "completed" ? <CyberIcon name="check" size={14} /> :
-                           action.status === "failed" ? <CyberIcon name="xCircle" size={14} /> :
-                           action.status === "thinking" ? <CyberIcon name="brain" size={14} /> :
-                           action.status === "planning" ? <CyberIcon name="logs" size={14} /> :
-                           action.status === "finished" ? <CyberIcon name="checkCircle" size={14} /> : <CyberIcon name="chevronRight" size={14} />}
-                        </span>
-                        <span className="task-action-name">{action.action}</span>
-                        <span className="task-action-msg">{action.message}</span>
-                      </div>
-                    ))}
+                {actionStatuses.slice(-5).map((a, i) => (
+                  <div key={i} className="flex items-center gap-1.5 text-[var(--text-2xs)]">
+                    <span
+                      className={cn(
+                        "size-1 shrink-0 rounded-full",
+                        a.status === "completed"
+                          ? "bg-[var(--color-success)]"
+                          : a.status === "failed"
+                          ? "bg-[var(--color-danger)]"
+                          : "bg-[var(--color-brand)]"
+                      )}
+                    />
+                    <span className="truncate text-[var(--color-muted-foreground)]">{a.action}</span>
+                    <span className="truncate text-[var(--color-subtle-foreground)]">{a.message}</span>
                   </div>
-                )}
+                ))}
               </div>
             )}
           </div>
         )}
 
-        {/* 消息列表 */}
-        <div className="messages-container">
-          {messages.length === 0 && !streamingText && toolExecutions.length === 0 && (
-            <div className="chat-welcome">
-              <div className="welcome-icon"><CyberIcon name="shieldCheck" size={56} /></div>
-              <h2>PC Guardian AI</h2>
-              <p>我是你的本地 AI 助手，可以直接操作你的电脑：</p>
-              <ul>
-                <li>打开文件和应用程序</li>
-                <li>查看目录内容和读取文件</li>
-                <li>执行系统命令</li>
-                <li>截取屏幕</li>
-              </ul>
-              <p className="welcome-note">
-                所有操作经过三层闸门权限校验，确保系统安全。
-              </p>
-            </div>
-          )}
-
-          {messages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} />
-          ))}
-
-          {/* 流式输出 */}
-          {isLoading && streamingText && (
-            <div className="message-bubble assistant">
-              <div className="message-avatar"><CyberIcon name="bot" size={18} /></div>
-              <div className="message-content">
-                <div className="message-text">{streamingText}</div>
-                <div className="message-cursor" />
-              </div>
-            </div>
-          )}
-
-          {/* 思考中 */}
-          {isLoading && thinking && !streamingText && (
-            <div className="message-bubble assistant">
-              <div className="message-avatar"><CyberIcon name="bot" size={18} /></div>
-              <div className="message-content">
-                <div className="thinking-indicator">
-                  <span className="dot" />
-                  <span className="dot" />
-                  <span className="dot" />
-                  <span>思考中...</span>
+        {/* 消息流 */}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-[760px] px-5 py-6">
+            {!hasContent && (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="mb-4 flex size-12 items-center justify-center rounded-[14px] border border-[var(--color-line)] bg-[var(--color-card)] shadow-[inset_0_1px_0_rgba(255,255,255,.05)]">
+                  <ShieldCheck className="size-6 text-[var(--color-brand)]" />
+                </div>
+                <h2 className="text-[var(--text-lg)] font-semibold tracking-[-0.01em]">今天想做什么</h2>
+                <p className="mt-1.5 max-w-sm text-[var(--text-xs)] leading-relaxed text-[var(--color-muted-foreground)]">
+                  我能直接操作这台电脑：读写文件、执行命令、截屏、查资料、生成图像。
+                  每个动作都会经过权限闸门，并在账本里留下回执。
+                </p>
+                <div className="mt-5 flex flex-wrap justify-center gap-1.5">
+                  {["整理一下下载目录", "看看 D 盘还剩多少空间", "读一下我的收件箱", "生成一张赛博朋克城市图"].map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => {
+                        setInputText(s);
+                        inputRef.current?.focus();
+                      }}
+                      className="cursor-pointer rounded-full border border-[var(--color-line)] bg-[var(--color-card)] px-3 py-1.5 text-[var(--text-2xs)] text-[var(--color-muted-foreground)] transition-colors hover:border-[var(--color-line-strong)] hover:text-[var(--color-foreground)]"
+                    >
+                      {s}
+                    </button>
+                  ))}
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* 工具执行列表 */}
-          {toolExecutions.map((tool) => {
-            const toolRecoveries = recoveryEvents.filter((r) => r.tool_name === tool.name);
-            return (
+            {messages.map((msg) => (
+              <MessageBubble key={msg.id} message={msg} />
+            ))}
+
+            {toolExecutions.map((tool) => (
               <ToolExecutionCard
                 key={tool.id}
                 tool={tool}
-                recoveries={toolRecoveries}
+                recoveries={recoveryEvents.filter((r) => r.tool_name === tool.name)}
                 onToggle={() => toggleToolCollapse(tool.id)}
               />
-            );
-          })}
+            ))}
 
-          {taskTruth && (
-            <ExecutionEvidence snapshot={taskTruth.snapshot} claim={taskTruth.claim} />
-          )}
+            {isLoading && streamingText && (
+              <AssistantRow>
+                <p className="whitespace-pre-wrap break-words text-[var(--text-sm)] leading-[1.75] text-[var(--color-foreground)]">
+                  {streamingText}
+                  <span className="ml-0.5 inline-block h-4 w-[2px] translate-y-0.5 animate-[ds-pulse-dot_1s_ease-in-out_infinite] bg-[var(--color-brand)]" />
+                </p>
+              </AssistantRow>
+            )}
 
-          <div ref={messagesEndRef} />
+            {isLoading && thinking && !streamingText && (
+              <AssistantRow>
+                <div className="flex items-center gap-1.5 py-1 text-[var(--text-xs)] text-[var(--color-muted-foreground)]">
+                  {[0, 1, 2].map((i) => (
+                    <span
+                      key={i}
+                      className="size-1.5 rounded-full bg-[var(--color-subtle-foreground)] animate-[ds-pulse-dot_1.4s_ease-in-out_infinite]"
+                      style={{ animationDelay: `${i * 0.18}s` }}
+                    />
+                  ))}
+                  <span className="ml-1">思考中</span>
+                </div>
+              </AssistantRow>
+            )}
+
+            {taskTruth && <ExecutionEvidence snapshot={taskTruth.snapshot} claim={taskTruth.claim} />}
+
+            <div ref={messagesEndRef} className="h-1" />
+          </div>
         </div>
 
-        {/* 输入框 */}
-        <div className="chat-input-area">
-          <textarea
-            ref={inputRef}
-            className="chat-input"
-            placeholder={ollamaAvailable ? "输入消息..." : "请启动 Ollama 后使用"}
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={!ollamaAvailable}
-            rows={1}
-          />
-          <button
-            className="send-btn"
-            onClick={handleSendMessage}
-            disabled={!inputText.trim() || !ollamaAvailable}
-            title={isLoading ? "发送新指令并取消上一条" : "发送"}
-          >
-            <CyberIcon name="send" size={18} />
-          </button>
+        {/* 输入区 */}
+        <div className="shrink-0 px-5 pb-4">
+          <div className="mx-auto w-full max-w-[760px]">
+            <div className="rounded-[14px] border border-[var(--color-line)] bg-[var(--color-card)] shadow-[inset_0_1px_0_rgba(255,255,255,.04),var(--shadow-sm)] transition-colors focus-within:border-[var(--color-line-strong)]">
+              <textarea
+                ref={inputRef}
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={ollamaAvailable ? "输入指令，Enter 发送，Shift+Enter 换行" : "启动 Ollama 后即可对话"}
+                disabled={!ollamaAvailable}
+                rows={1}
+                className="max-h-[200px] w-full resize-none bg-transparent px-3.5 pb-1 pt-3 text-[var(--text-sm)] leading-relaxed text-[var(--color-foreground)] outline-none placeholder:text-[var(--color-subtle-foreground)] disabled:opacity-50"
+              />
+              <div className="flex items-center gap-1.5 px-2 pb-2">
+                <span className="flex items-center gap-1 truncate rounded-[6px] px-1.5 py-0.5 text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+                  <Sparkles className="size-3" />
+                  {selectedModel}
+                </span>
+                <span className="ml-auto text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+                  {inputText.length > 0 ? `${inputText.length} 字` : ""}
+                </span>
+                {isLoading ? (
+                  <Button variant="secondary" size="icon-sm" onClick={handleCancelTask} title="停止">
+                    <Square className="size-3 fill-current" />
+                  </Button>
+                ) : (
+                  <Button
+                    variant="primary"
+                    size="icon-sm"
+                    onClick={handleSendMessage}
+                    disabled={!inputText.trim() || !ollamaAvailable}
+                    title="发送"
+                  >
+                    <Send className="size-3.5" />
+                  </Button>
+                )}
+              </div>
+            </div>
+            <p className="mt-1.5 text-center text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+              操作会先过权限闸门；MEDIUM 及以上会在执行前询问你
+            </p>
+          </div>
         </div>
       </div>
 
-      {/* Phase 4: 权限确认弹窗 */}
-      {permissionRequest && (
-        <div className="permission-overlay" onClick={() => !permissionResponding && handlePermissionResponse("deny")}>
-          <div className="permission-dialog" onClick={(e) => e.stopPropagation()}>
-            <div className="permission-header">
-              <div className="permission-icon"><CyberIcon name="lock" size={24} /></div>
-              <h3>权限确认</h3>
-            </div>
-            <div className="permission-body">
-              <div className="permission-section">
-                <span className="permission-label">操作</span>
-                <span className="permission-value">{permissionRequest.description}</span>
-              </div>
-              <div className="permission-section">
-                <span className="permission-label">工具</span>
-                <span className="permission-value">{permissionRequest.tool_name}</span>
-              </div>
-              {permissionRequest.path && (
-                <div className="permission-section">
-                  <span className="permission-label">路径</span>
-                  <span className="permission-value path">{permissionRequest.path}</span>
-                </div>
-              )}
-              <div className="permission-section">
-                <span className="permission-label">风险等级</span>
-                <span className={`permission-risk ${permissionRequest.risk_level.toLowerCase()}`}>
-                  {permissionRequest.risk_level}
-                </span>
-              </div>
-              {permissionRequest.risk_level === "HIGH" && (
-                <div className="permission-warning">
-                  <CyberIcon name="alertTriangle" size={14} /> 此操作风险等级较高，请确认是否执行。
-                </div>
-              )}
-            </div>
-            <div className="permission-actions">
-              <button
-                className="permission-btn deny"
-                onClick={() => handlePermissionResponse("deny")}
-                disabled={permissionResponding}
-              >
-                拒绝
-              </button>
-              <button
-                className="permission-btn allow-once"
-                onClick={() => handlePermissionResponse("allow_once")}
-                disabled={permissionResponding}
-              >
-                允许一次
-              </button>
-              <button
-                className="permission-btn allow-always"
-                onClick={() => handlePermissionResponse("always_allow")}
-                disabled={permissionResponding}
-              >
-                始终允许
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <PermissionGate
+        request={permissionRequest}
+        onRespond={permissionResponding ? () => {} : handlePermissionResponse}
+      />
     </div>
   );
 }
 
-// ---- 消息气泡组件 ----
+// ============================================================
+// 消息
+// ============================================================
+
+function AssistantRow({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mb-5 flex gap-3">
+      <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-[7px] border border-[var(--color-line)] bg-[var(--color-card)]">
+        <Bot className="size-3.5 text-[var(--color-brand)]" />
+      </div>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
 
 function MessageBubble({ message }: { message: ConversationMessage }) {
   const isUser = message.role === "user";
-  const isTool = message.role === "tool";
+  const [copied, setCopied] = useState(false);
 
-  if (isTool) {
+  if (message.role === "tool") {
     return (
-      <div className="message-bubble tool">
-        <div className="tool-result-inline">
-          <span className="tool-label">工具结果</span>
-          <pre className="tool-content">
+      <div className="mb-4 ml-9">
+        <div className="rounded-[8px] border border-[var(--color-line)] bg-[var(--color-surface)]">
+          <div className="flex items-center gap-1.5 border-b border-[var(--color-line-faint)] px-2.5 py-1.5">
+            <span className="label-caps">工具结果</span>
+          </div>
+          <pre className="max-h-48 overflow-auto px-2.5 py-2 font-mono text-[var(--text-2xs)] leading-relaxed text-[var(--color-muted-foreground)]">
             {(() => {
               try {
-                const parsed = JSON.parse(message.content);
-                return JSON.stringify(parsed, null, 2);
+                return JSON.stringify(JSON.parse(message.content), null, 2);
               } catch {
                 return message.content;
               }
@@ -959,24 +934,53 @@ function MessageBubble({ message }: { message: ConversationMessage }) {
     );
   }
 
-  return (
-    <div className={`message-bubble ${isUser ? "user" : "assistant"}`}>
-      <div className="message-avatar">{isUser ? <CyberIcon name="user" size={18} /> : <CyberIcon name="bot" size={18} />}</div>
-      <div className="message-content">
-        <div className="message-text">
-          {message.content.split("\n").map((line, i, arr) => (
-            <span key={i}>
-              {line}
-              {i < arr.length - 1 && <br />}
-            </span>
-          ))}
+  if (isUser) {
+    return (
+      <div className="mb-5 flex justify-end gap-3">
+        <div className="max-w-[80%] rounded-[14px] rounded-tr-[4px] border border-[var(--color-line)] bg-[var(--color-elevated)] px-3.5 py-2.5">
+          <p className="whitespace-pre-wrap break-words text-[var(--text-sm)] leading-[1.7] text-[var(--color-foreground)]">
+            {message.content}
+          </p>
         </div>
-        {message.tool_calls && (
-          <div className="message-tool-calls">
-            <span className="tool-badge"><CyberIcon name="zap" size={14} /> 调用了工具</span>
-          </div>
-        )}
+        <div className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-[7px] border border-[var(--color-line)] bg-[var(--color-surface)]">
+          <User className="size-3.5 text-[var(--color-muted-foreground)]" />
+        </div>
       </div>
+    );
+  }
+
+  return (
+    <div className="mb-5">
+      <AssistantRow>
+        <div className="group relative">
+          <p className="whitespace-pre-wrap break-words text-[var(--text-sm)] leading-[1.75] text-[var(--color-foreground)]">
+            {message.content}
+          </p>
+          {message.tool_calls && (
+            <div className="mt-2 flex items-center gap-1.5">
+              <Badge tone="outline">调用了工具</Badge>
+            </div>
+          )}
+          <div className="absolute -right-1 top-0 opacity-0 transition-opacity group-hover:opacity-100">
+            <Tooltip content="复制">
+              <button
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(message.content);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1200);
+                  } catch {
+                    /* 剪贴板不可用时静默失败，不打断阅读 */
+                  }
+                }}
+                className="rounded-[5px] border border-[var(--color-line)] bg-[var(--color-card)] p-1 text-[var(--color-subtle-foreground)] hover:text-[var(--color-foreground)]"
+              >
+                {copied ? <Check className="size-3 text-[var(--color-success)]" /> : <Copy className="size-3" />}
+              </button>
+            </Tooltip>
+          </div>
+        </div>
+      </AssistantRow>
     </div>
   );
 }
@@ -985,13 +989,6 @@ function MessageBubble({ message }: { message: ConversationMessage }) {
 
 type ToolTone = "running" | "success" | "unverified" | "contradicted" | "error";
 
-/**
- * 工具卡片的标题栏文案。
- *
- * 优先级固定：回执结论 > 工具自报。工具返回 success=true 只说明它自己
- * 认为成了；没有回执（老能力/未登记契约）时才退回旧文案，并把这一点
- * 如实说出来，而不是继续写"执行成功"。
- */
 function toolStatusPresentation(tool: ToolExecution): { label: string; tone: ToolTone } {
   if (tool.status === "running") return { label: "执行中…", tone: "running" };
   switch (tool.verification?.status) {
@@ -1012,7 +1009,6 @@ function toolStatusPresentation(tool: ToolExecution): { label: string; tone: Too
   }
 }
 
-/** 从工具返回内容里取出后端附带的验证结论。 */
 function extractVerification(content: string): ToolVerification | undefined {
   try {
     const parsed: unknown = JSON.parse(content);
@@ -1030,8 +1026,6 @@ function extractVerification(content: string): ToolVerification | undefined {
   }
 }
 
-// ---- 工具执行卡片组件 ----
-
 function ToolExecutionCard({
   tool,
   recoveries,
@@ -1043,11 +1037,14 @@ function ToolExecutionCard({
 }) {
   const presentation = toolStatusPresentation(tool);
 
-  const statusIcon =
-    presentation.tone === "running" ? <CyberIcon name="clock" size={14} /> :
-    presentation.tone === "success" ? <CyberIcon name="check" size={14} /> :
-    presentation.tone === "unverified" ? <CyberIcon name="alertTriangle" size={14} /> :
-    <CyberIcon name="xCircle" size={14} />;
+  const toneMap: Record<ToolTone, { badge: "brand" | "success" | "warning" | "danger" | "neutral"; icon: React.ReactNode }> = {
+    running: { badge: "brand", icon: <Loader2 className="size-3 animate-ds-spin" /> },
+    success: { badge: "success", icon: <Check className="size-3" /> },
+    unverified: { badge: "warning", icon: <AlertTriangle className="size-3" /> },
+    contradicted: { badge: "danger", icon: <AlertTriangle className="size-3" /> },
+    error: { badge: "danger", icon: <X className="size-3" /> },
+  };
+  const tone = toneMap[presentation.tone];
 
   const strategyLabels: Record<string, string> = {
     retry: "重试",
@@ -1081,40 +1078,61 @@ function ToolExecutionCard({
   })();
 
   return (
-    <div className={`tool-execution-card ${presentation.tone}`}>
-      <div className="tool-execution-header" onClick={onToggle}>
-        <span className="tool-status-icon">{statusIcon}</span>
-        <span className="tool-name">{tool.name}</span>
-        <span className="tool-status-text">{presentation.label}</span>
+    <div className="mb-3 ml-9 overflow-hidden rounded-[9px] border border-[var(--color-line)] bg-[var(--color-card)]">
+      <button
+        onClick={onToggle}
+        className="flex w-full cursor-pointer items-center gap-2 px-2.5 py-2 text-left transition-colors hover:bg-[var(--color-hover)]/40"
+      >
+        <span
+          className={cn(
+            "flex size-4 items-center justify-center rounded-full",
+            presentation.tone === "running" && "text-[var(--color-brand)]",
+            presentation.tone === "success" && "text-[var(--color-success)]",
+            presentation.tone === "unverified" && "text-[var(--color-warning)]",
+            (presentation.tone === "error" || presentation.tone === "contradicted") && "text-[var(--color-danger)]"
+          )}
+        >
+          {tone.icon}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[var(--text-xs)] text-[var(--color-foreground)]">
+          {tool.name}
+        </span>
         {recoveries.length > 0 && (
-          <span className="tool-recovery-badge" title={`已恢复 ${recoveries.length} 次`}>
-            <CyberIcon name="refresh" size={14} /> {recoveries.length}
-          </span>
+          <Tooltip content={`已恢复 ${recoveries.length} 次`}>
+            <span className="flex items-center gap-0.5 text-[var(--text-2xs)] text-[var(--color-muted-foreground)]">
+              <RefreshCw className="size-2.5" />
+              {recoveries.length}
+            </span>
+          </Tooltip>
         )}
-        <span className="tool-toggle">{tool.collapsed ? <CyberIcon name="chevronRight" size={14} /> : <CyberIcon name="chevronDown" size={14} />}</span>
-      </div>
+        <Badge tone={tone.badge}>{presentation.label}</Badge>
+        {tool.collapsed ? (
+          <ChevronRight className="size-3.5 shrink-0 text-[var(--color-subtle-foreground)]" />
+        ) : (
+          <ChevronDown className="size-3.5 shrink-0 text-[var(--color-subtle-foreground)]" />
+        )}
+      </button>
 
       {!tool.collapsed && (
-        <div className="tool-execution-body">
-          <div className="tool-section">
-            <span className="tool-section-label">参数</span>
-            <pre className="tool-code">{displayArgs}</pre>
+        <div className="space-y-2.5 border-t border-[var(--color-line-faint)] px-2.5 py-2.5">
+          <div>
+            <div className="label-caps mb-1">参数</div>
+            <pre className="max-h-40 overflow-auto rounded-[6px] bg-[var(--color-surface)] px-2 py-1.5 font-mono text-[var(--text-2xs)] leading-relaxed text-[var(--color-muted-foreground)]">
+              {displayArgs}
+            </pre>
           </div>
 
-          {/* V21: Recovery 恢复状态展示 */}
           {recoveries.length > 0 && (
-            <div className="tool-section recovery-section">
-              <span className="tool-section-label">
-                <CyberIcon name="zap" size={14} /> 恢复过程（{recoveries.length} 次）
-              </span>
-              <div className="recovery-list">
+            <div>
+              <div className="label-caps mb-1">恢复过程（{recoveries.length} 次）</div>
+              <div className="space-y-1">
                 {recoveries.map((r, idx) => (
-                  <div key={idx} className="recovery-item">
-                    <span className="recovery-attempt">第 {r.attempt} 次</span>
-                    <span className={`recovery-strategy strategy-${r.strategy}`}>
+                  <div key={idx} className="flex items-start gap-1.5 text-[var(--text-2xs)]">
+                    <Badge tone="outline">第 {r.attempt} 次</Badge>
+                    <span className="shrink-0 text-[var(--color-muted-foreground)]">
                       {strategyLabels[r.strategy] || r.strategy}
                     </span>
-                    <span className="recovery-message">{r.message}</span>
+                    <span className="min-w-0 flex-1 truncate text-[var(--color-subtle-foreground)]">{r.message}</span>
                   </div>
                 ))}
               </div>
@@ -1122,26 +1140,34 @@ function ToolExecutionCard({
           )}
 
           {tool.status !== "running" && displayResult && (
-            <div className="tool-section">
-              <span className="tool-section-label">结果</span>
-              <pre className={`tool-code ${presentation.tone === "unverified" ? "error" : presentation.tone}`}>{displayResult}</pre>
+            <div>
+              <div className="label-caps mb-1">结果</div>
+              <pre
+                className={cn(
+                  "max-h-56 overflow-auto rounded-[6px] bg-[var(--color-surface)] px-2 py-1.5 font-mono text-[var(--text-2xs)] leading-relaxed",
+                  presentation.tone === "error" || presentation.tone === "contradicted"
+                    ? "text-[var(--color-danger)]"
+                    : "text-[var(--color-muted-foreground)]"
+                )}
+              >
+                {displayResult}
+              </pre>
             </div>
           )}
 
           {tool.verification && (
-            <div className="tool-section">
-              <span className="tool-section-label">判据</span>
-              <p className="tool-verification-note">
-                {tool.verification.evidence
-                  ?? "这一轮没有拿到可以核对的证据"}
+            <div>
+              <div className="label-caps mb-1">判据</div>
+              <p className="text-[var(--text-2xs)] leading-relaxed text-[var(--color-muted-foreground)]">
+                {tool.verification.evidence ?? "这一轮没有拿到可以核对的证据"}
               </p>
             </div>
           )}
 
           {tool.status === "running" && (
-            <div className="tool-running-indicator">
-              <span className="tool-spinner" />
-              <span>正在执行 {tool.name}...</span>
+            <div className="flex items-center gap-1.5 text-[var(--text-2xs)] text-[var(--color-muted-foreground)]">
+              <Loader2 className="size-3 animate-ds-spin" />
+              正在执行 {tool.name}
             </div>
           )}
         </div>

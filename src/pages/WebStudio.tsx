@@ -1,7 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import "./WebStudio.css";
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  Copy,
+  Download,
+  ExternalLink,
+  FileUp,
+  Loader2,
+  MousePointerClick,
+  PanelsTopLeft,
+  RotateCcw,
+  Sparkles,
+} from "lucide-react";
+import { Page, PageBody, PageHeader } from "../components/ui/page";
+import { Card } from "../components/ui/card";
+import { Badge } from "../components/ui/badge";
+import { Button } from "../components/ui/button";
+import { cn } from "../lib/cn";
 
 const MAX_FILE_BYTES = 30 * 1024 * 1024;
 // 清洗与梳理都是纯规则处理，十万字也是毫秒级；这里只做一次兜底上限。
@@ -163,7 +181,7 @@ async function readRequirementFile(file: File): Promise<string> {
   throw new Error("暂支持 PDF、DOCX、Markdown 和 TXT 文档。");
 }
 
-function WebStudio() {
+export default function WebStudio() {
   const fileInput = useRef<HTMLInputElement>(null);
   const [requirements, setRequirements] = useState("");
   const [fileName, setFileName] = useState("");
@@ -431,224 +449,489 @@ function WebStudio() {
     URL.revokeObjectURL(url);
   }
 
+  const overLimit = requirements.length > MAX_REQUIREMENT_CHARS;
+
   return (
-    <div className="page-container web-studio-page">
-      <header className="page-header">
-        <div>
-          <h1>网页工坊</h1>
-          <p className="page-subtitle">从需求文档直接生成网页，自动发布成可分享的公网网址</p>
-        </div>
-        <span className="studio-model-chip"><i /> 当前配置的 Ollama 模型</span>
-      </header>
+    <Page wide>
+      <PageHeader
+        title="网页工坊"
+        icon={PanelsTopLeft}
+        description="从需求文档直接生成网页，生成完自动发布成可分享的公网地址。预览里点一下元素，就只改那一处。"
+        actions={
+          <>
+            <Badge tone="success" dot>
+              本地模型
+            </Badge>
+            {html && (
+              <Button variant="secondary" size="sm" onClick={exportHtml}>
+                <Download />
+                下载 HTML
+              </Button>
+            )}
+          </>
+        }
+      />
 
-      <div className="studio-workspace">
-        <section className="section-card studio-brief">
-          <div className="studio-section-heading">
-            <div><span className="studio-step">01</span><h2>需求文档</h2></div>
-            <span className="studio-muted">PDF · DOCX · MD · TXT</span>
-          </div>
-          <input ref={fileInput} className="studio-file-input" type="file" accept=".pdf,.docx,.md,.markdown,.txt" onChange={(event) => { void handleFile(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-          <button className="studio-upload" onClick={() => fileInput.current?.click()}>
-            <span className="studio-upload-icon">↑</span>
-            <strong>{fileName || "选择需求文档"}</strong>
-            <span>点击选择文件，或直接粘贴需求内容</span>
-          </button>
-          <textarea
-            className="studio-requirements"
-            value={requirements}
-            onChange={(event) => { setRequirements(event.target.value); resetDerived(); }}
-            placeholder="例如：做一个个人记账网页，支持收入支出记录、分类统计、月度趋势图，整体简洁明亮……"
-            aria-label="网页需求内容"
-          />
-          <div className="studio-count">{requirements.length.toLocaleString()} / {MAX_REQUIREMENT_CHARS.toLocaleString()}</div>
-          {digest && (
-            <details className="studio-digest" open={digest.length < 3_000}>
-              <summary>梳理稿 · {digest.length.toLocaleString()} 字（可直接编辑，改完再生成）</summary>
-              <textarea
-                className="studio-digest-editor"
-                value={digest}
-                onChange={(event) => handleDigestChange(event.target.value)}
-                aria-label="梳理稿，可编辑"
-              />
-              <p className="studio-digest-note">这是从原文档中筛出的需求相关内容，模型只会读到它。有遗漏可以直接补在这里。</p>
-            </details>
-          )}
-          {error && <div className="studio-error" role="alert">{error}</div>}
-          <button className="studio-generate" disabled={loading || !requirements.trim() || requirements.length > MAX_REQUIREMENT_CHARS} onClick={generate}>
-            {loading ? <><span className="studio-spinner" />正在生成网页…</> : <><span>✦</span> 根据文档生成网页</>}
-          </button>
-          <p className="studio-local-note">导入的文档会先清洗（去页眉页脚、拼回硬换行）再由规则梳理成"梳理稿"，模型只对梳理稿做一次加工并生成网页，所以 PDF / DOCX 的排版不影响结果，十万字的文档也能处理。文档会发送到设置中配置的 Ollama 地址；若配置远程服务，文档也会发送到该服务。生成没有固定时间上限，请保持本页和 PC Guardian 开启；模型无法访问电脑文件或运行命令。</p>
-        </section>
-
-        <section className="section-card studio-preview-card">
-          <div className="studio-section-heading">
-            <div><span className="studio-step">02</span><h2>网页预览</h2></div>
-            <div className="studio-address" title={publishError || publishedUrl || undefined}>
-              <span className={`studio-address-dot ${publishedUrl ? "is-live" : publishing ? "is-pending" : "is-off"}`} />
-              {publishedUrl && publishedProvider && (
-                <span className="studio-address-provider">{publishedProvider}</span>
-              )}
-              {publishedUrl ? (
-                <input
-                  className="studio-address-input"
-                  readOnly
-                  value={publishedUrl}
-                  onFocus={(event) => event.currentTarget.select()}
-                  aria-label="已发布的网页地址"
-                />
-              ) : (
-                <span className="studio-address-text">
-                  {publishing
-                    ? "正在发布到公网…"
-                    : publishError || (html ? "尚未发布" : "生成完成后这里显示公网网址")}
+      <PageBody className="pb-6">
+        <div className="grid min-h-0 gap-4 xl:grid-cols-[minmax(320px,0.85fr)_minmax(440px,1.15fr)]">
+          {/* ------------------------------------------------ 01 需求文档 */}
+          <Card className="flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between gap-3 border-b border-[var(--color-line)] px-4 py-3">
+              <div className="flex items-center gap-2">
+                <StepBadge>01</StepBadge>
+                <span className="text-[var(--text-sm)] font-semibold text-[var(--color-foreground)]">
+                  需求文档
                 </span>
-              )}
-              {publishedUrl && (
-                <button className="studio-address-button" onClick={() => void copyAddress()}>
-                  {copied ? "已复制" : "复制"}
-                </button>
-              )}
-              {publishedUrl && (
-                <button className="studio-address-button" onClick={openAddress}>打开</button>
-              )}
-              {!publishing && !publishedUrl && publishError && (
-                <button className="studio-address-button" onClick={() => void publish(html)}>重试</button>
-              )}
-              {html && (
-                <button className="studio-address-button" onClick={exportHtml} title="下载 HTML 文件">下载</button>
-              )}
+              </div>
+              <span className="text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+                PDF · DOCX · MD · TXT
+              </span>
             </div>
-          </div>
-          {publishError && (
-            <p className="studio-address-note is-error">发布失败：{publishError}</p>
-          )}
-          {publishedUrl.includes("github.io") && (
-            <p className="studio-address-note">
-              链接已固定，以后每次生成都覆盖同一个仓库，网址不变。GitHub Pages 首次开启需要构建几十秒到一分钟，这期间打开会显示 404，稍后刷新即可。
-            </p>
-          )}
-          {spec && (
-            <details className="studio-spec-details">
-              <summary>标准格式规格 · {spec.length.toLocaleString()} 字（模型实际读到的内容）</summary>
-              <pre>{spec}</pre>
-            </details>
-          )}
-          {html ? (
-            <>
-              <div className="studio-browser-bar"><span /><span /><span /><label>PC Guardian Preview</label></div>
-              <iframe className="studio-preview" title="生成网页预览" srcDoc={previewDocument(html)} sandbox="allow-scripts" />
-              <details className="studio-source-details" open={loading}><summary>查看模型生成的 HTML 源码</summary><pre>{streamedOutput || html}</pre></details>
-              {generationLogs.length > 0 && <div className="studio-live-log" aria-live="polite"><div className="studio-log-heading"><span>实时生成日志</span><span>{loading ? "生成中" : "已完成"}</span></div><div className="studio-log-list">{generationLogs.map((entry) => <div className="studio-log-entry" key={entry.id}><time>{entry.time}</time><span>{entry.message}</span></div>)}</div></div>}
-              <div className="studio-refine">
-                {/* 点选了元素就把锚点显式摆出来，让用户确认"程序确实知道我说的是哪个"。
-                    没有这一步，用户会怀疑自己点的那一下到底有没有生效。 */}
-                {pickedTarget ? (
-                  <div className="studio-target" aria-live="polite">
-                    <div className="studio-target-head">
-                      <span className="studio-target-dot" />
-                      <strong>已选中要修改的位置</strong>
-                      <button
-                        className="studio-target-clear"
-                        onClick={() => setPickedTarget("")}
-                        title="取消选中，改回整页修改"
-                      >
-                        取消选中
-                      </button>
-                    </div>
-                    <pre className="studio-target-body">{pickedTarget}</pre>
-                  </div>
-                ) : (
-                  html && (
-                    <p className="studio-refine-hint">
-                      在预览里点一下要改的地方，就能只改那一处；不点则按整页修改。
-                    </p>
-                  )
+
+            <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+              <input
+                ref={fileInput}
+                className="hidden"
+                type="file"
+                accept=".pdf,.docx,.md,.markdown,.txt"
+                onChange={(event) => {
+                  void handleFile(event.target.files?.[0]);
+                  event.currentTarget.value = "";
+                }}
+              />
+
+              <button
+                onClick={() => fileInput.current?.click()}
+                className={cn(
+                  "flex w-full cursor-pointer items-center gap-3 rounded-[var(--radius-sm)] border border-dashed border-[var(--color-line-strong)]",
+                  "px-3 py-2.5 text-left transition-colors duration-150",
+                  "hover:border-[var(--color-brand-line)] hover:bg-[var(--color-hover)]/60"
                 )}
-                <textarea
-                  className="studio-feedback"
-                  value={feedback}
-                  onChange={(event) => setFeedback(event.target.value)}
-                  onKeyDown={(event) => {
-                    // Ctrl/Cmd + Enter 提交：多行输入里回车要留给换行。
-                    if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && feedback.trim() && !loading) {
-                      void generate();
-                    }
-                  }}
-                  placeholder={pickedTarget
-                    ? "说明这个元素要怎么改，例如：把这个按钮的文字改成「再摇一次」，颜色换成 #2f6feb"
-                    : "说明要怎么改，例如：把主色调改成绿色，并给收藏列表加上删除按钮（Ctrl + Enter 提交）"}
-                  aria-label="修改意见"
-                  rows={3}
-                />
-                <div className="studio-refine-actions">
-                  <span className="studio-refine-mode">
-                    {pickedTarget ? "定向修改 · 只改选中元素" : "整页修改"}
+              >
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-elevated)]">
+                  <FileUp className="size-4 text-[var(--color-brand)]" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-[var(--text-xs)] font-medium text-[var(--color-foreground)]">
+                    {fileName || "选择需求文档"}
                   </span>
-                  <button disabled={loading || !feedback.trim()} onClick={generate}>
-                    {loading ? "生成中" : pickedTarget ? "改这一处 ↗" : "继续修改 ↗"}
-                  </button>
-                </div>
+                  <span className="mt-0.5 block text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+                    点击选择文件，或直接在下方粘贴需求
+                  </span>
+                </span>
+              </button>
+
+              <textarea
+                value={requirements}
+                onChange={(event) => { setRequirements(event.target.value); resetDerived(); }}
+                placeholder="例如：做一个个人记账网页，支持收入支出记录、分类统计、月度趋势图，整体简洁明亮……"
+                aria-label="网页需求内容"
+                className={cn(
+                  "min-h-[160px] flex-1 resize-y rounded-[var(--radius-sm)] border bg-[var(--color-surface)] p-3",
+                  "text-[var(--text-sm)] leading-relaxed text-[var(--color-foreground)]",
+                  "placeholder:text-[var(--color-subtle-foreground)] focus:outline-none",
+                  "transition-[border-color,box-shadow] duration-150",
+                  overLimit
+                    ? "border-[var(--color-danger)]/50"
+                    : "border-[var(--color-line)] hover:border-[var(--color-line-strong)] focus:border-[var(--color-brand-line)] focus:shadow-[0_0_0_3px_var(--color-brand-soft)]"
+                )}
+              />
+
+              <div className="flex items-center justify-between text-[var(--text-2xs)]">
+                <span className="text-[var(--color-subtle-foreground)]">
+                  需求原文越长，梳理越慢
+                </span>
+                <span
+                  className={cn(
+                    "num-tabular",
+                    overLimit ? "text-[var(--color-danger)]" : "text-[var(--color-subtle-foreground)]"
+                  )}
+                >
+                  {requirements.length.toLocaleString()} / {MAX_REQUIREMENT_CHARS.toLocaleString()}
+                </span>
               </div>
 
-              {/* 历史版本：每次生成/修改都留一版，改坏了可以退回去。
-                  health 越小越健康，列表里直接显示出来，回退就不是碰运气。 */}
-              {versions.length > 1 && (
-                <details className="studio-history" open={false}>
-                  <summary>历史版本 · {versions.length} 版（改坏了可以退回去）</summary>
-                  <div className="studio-history-list">
-                    {[...versions].reverse().map((item, index) => {
-                      // 最新一版就是当前预览里的内容 —— 列表是倒序的，所以 index === 0。
-                      const isCurrent = index === 0;
-                      return (
-                        <div className={`studio-history-row ${isCurrent ? "is-current" : ""}`} key={item.version}>
-                          <span className="studio-history-version">v{item.version}</span>
-                          <span className="studio-history-time">{item.created_at}</span>
-                          <span className="studio-history-note" title={item.note}>{item.note}</span>
-                          <span className="studio-history-metrics">
-                            {item.issues === 0 ? (
-                              <em className="is-clean">自检通过</em>
-                            ) : (
-                              <>
-                                <em className={item.functional_issues > 0 ? "is-warn" : ""}>
-                                  {item.issues} 项问题
-                                </em>
-                                {item.functional_issues > 0 && (
-                                  <em className="is-warn">其中 {item.functional_issues} 项影响功能</em>
-                                )}
-                              </>
-                            )}
-                            <em>{item.chars.toLocaleString()} 字符</em>
-                          </span>
-                          <button
-                            className="studio-history-restore"
-                            disabled={restoring !== 0 || loading}
-                            onClick={() => void restoreVersion(item.version)}
-                          >
-                            {restoring === item.version ? "取回中" : "回到这一版"}
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </details>
+              {digest && (
+                <Fold
+                  title="梳理稿"
+                  meta={`${digest.length.toLocaleString()} 字 · 可编辑`}
+                  defaultOpen={digest.length < 3000}
+                >
+                  <textarea
+                    value={digest}
+                    onChange={(event) => handleDigestChange(event.target.value)}
+                    aria-label="梳理稿，可编辑"
+                    className="max-h-[260px] min-h-[150px] w-full resize-y border-0 bg-transparent p-2.5 font-mono text-[var(--text-2xs)] leading-relaxed text-[var(--color-muted-foreground)] focus:outline-none"
+                  />
+                  <p className="px-2.5 pb-2 text-[var(--text-2xs)] leading-relaxed text-[var(--color-subtle-foreground)]">
+                    这是从原文档里筛出的需求相关内容，模型只会读到它。有遗漏可以直接补在这里。
+                  </p>
+                </Fold>
               )}
-            </>
-          ) : generationLogs.length > 0 ? (
-            <div className="studio-generation-stage">
-              <div className="studio-live-log studio-live-log-empty" aria-live="polite"><div className="studio-log-heading"><span>实时生成日志</span><span>{loading ? "生成中" : "已停止"}</span></div><div className="studio-log-list">{generationLogs.map((entry) => <div className="studio-log-entry" key={entry.id}><time>{entry.time}</time><span>{entry.message}</span></div>)}</div></div>
-              <div className="studio-stream-output"><div className="studio-log-heading"><span>模型正在生成的 HTML</span><span>{streamedOutput.length.toLocaleString()} 字符</span></div><pre>{streamedOutput || "等待模型开始输出……"}</pre></div>
+
+              {error && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 rounded-[var(--radius-sm)] border border-[var(--color-danger)]/30 bg-[var(--color-danger)]/8 p-2.5"
+                >
+                  <AlertTriangle className="mt-px size-3.5 shrink-0 text-[var(--color-danger)]" />
+                  <span className="break-words text-[var(--text-2xs)] leading-relaxed text-[var(--color-danger)]">
+                    {error}
+                  </span>
+                </div>
+              )}
+
+              <Button
+                variant="primary"
+                size="md"
+                className="w-full"
+                loading={loading}
+                disabled={!requirements.trim() || overLimit}
+                onClick={generate}
+              >
+                {!loading && <Sparkles />}
+                {loading ? "正在生成网页…" : "根据文档生成网页"}
+              </Button>
+
+              <p className="text-[var(--text-2xs)] leading-relaxed text-[var(--color-subtle-foreground)]">
+                导入的文档会先清洗（去页眉页脚、拼回硬换行）再由规则梳理成「梳理稿」，模型只对梳理稿做一次加工。
+                文档会发送到设置中配置的模型地址；若配置远程服务，文档也会发送到该服务。生成没有固定时间上限，
+                请保持本页开启。模型无法访问电脑文件或运行命令。
+              </p>
             </div>
-          ) : (
-            <div className="studio-empty">
-              <div className="studio-empty-art"><span>⌘</span><i /><i /><i /></div>
-              <strong>网页预览会显示在这里</strong>
-              <p>导入需求文档后开始生成。生成完成会自动发布到公网，这里会直接给出一个能打开的网址。</p>
+          </Card>
+
+          {/* ------------------------------------------------ 02 网页预览 */}
+          <Card className="flex flex-col overflow-hidden">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-line)] px-4 py-3">
+              <div className="flex items-center gap-2">
+                <StepBadge>02</StepBadge>
+                <span className="text-[var(--text-sm)] font-semibold text-[var(--color-foreground)]">
+                  网页预览
+                </span>
+              </div>
+
+              {/* 地址栏：状态点 + 服务商 + 链接，或者一句状态说明 */}
+              <div className="flex min-w-0 flex-1 items-center justify-end gap-1.5">
+                <span
+                  className={cn(
+                    "size-1.5 shrink-0 rounded-full",
+                    publishedUrl
+                      ? "bg-[var(--color-success)] shadow-[0_0_6px_var(--color-success)]"
+                      : publishing
+                      ? "animate-[ds-pulse-dot_1.4s_ease-in-out_infinite] bg-[var(--color-warning)]"
+                      : "bg-[var(--color-subtle-foreground)]"
+                  )}
+                  title={publishError || publishedUrl || undefined}
+                />
+                {publishedUrl && publishedProvider && (
+                  <Badge tone="outline" className="shrink-0">
+                    {publishedProvider}
+                  </Badge>
+                )}
+                {publishedUrl ? (
+                  <input
+                    readOnly
+                    value={publishedUrl}
+                    onFocus={(event) => event.currentTarget.select()}
+                    aria-label="已发布的网页地址"
+                    className="h-6 min-w-0 flex-1 rounded-[6px] border border-[var(--color-line)] bg-[var(--color-surface)] px-2 font-mono text-[var(--text-2xs)] text-[var(--color-foreground)] focus:border-[var(--color-brand-line)] focus:outline-none"
+                  />
+                ) : (
+                  <span className="truncate text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+                    {publishing ? "正在发布到公网…" : publishError || (html ? "尚未发布" : "生成完成后这里显示公网网址")}
+                  </span>
+                )}
+                {publishedUrl && (
+                  <Button variant="ghost" size="xs" onClick={() => void copyAddress()}>
+                    {copied ? <Check className="text-[var(--color-success)]" /> : <Copy />}
+                    {copied ? "已复制" : "复制"}
+                  </Button>
+                )}
+                {publishedUrl && (
+                  <Button variant="ghost" size="xs" onClick={openAddress}>
+                    <ExternalLink />
+                    打开
+                  </Button>
+                )}
+                {!publishing && !publishedUrl && publishError && (
+                  <Button variant="ghost" size="xs" onClick={() => void publish(html)}>
+                    <RotateCcw />
+                    重试
+                  </Button>
+                )}
+              </div>
             </div>
+
+            <div className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto p-4">
+              {publishError && (
+                <p className="text-[var(--text-2xs)] leading-relaxed text-[var(--color-danger)]">
+                  发布失败：{publishError}
+                </p>
+              )}
+              {publishedUrl.includes("github.io") && (
+                <p className="text-[var(--text-2xs)] leading-relaxed text-[var(--color-subtle-foreground)]">
+                  链接已固定，以后每次生成都覆盖同一个仓库，网址不变。GitHub Pages 首次开启需要构建几十秒到一分钟，
+                  这期间打开会显示 404，稍后刷新即可。
+                </p>
+              )}
+
+              {spec && (
+                <Fold title="标准格式规格" meta={`${spec.length.toLocaleString()} 字 · 模型实际读到的内容`}>
+                  <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[var(--text-2xs)] leading-relaxed text-[var(--color-muted-foreground)]">
+                    {spec}
+                  </pre>
+                </Fold>
+              )}
+
+              {html ? (
+                <>
+                  {/* 浏览器外框：让预览有"这是一张网页"的视觉边界 */}
+                  <div className="flex h-7 shrink-0 items-center gap-1.5 rounded-t-[var(--radius-sm)] border border-b-0 border-[var(--color-line)] bg-[var(--color-surface)] px-2.5">
+                    {["#ff5f57", "#febc2e", "#28c840"].map((c) => (
+                      <span key={c} className="size-1.5 rounded-full" style={{ background: c }} />
+                    ))}
+                    <span className="ml-1.5 truncate text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+                      PC Guardian Preview
+                    </span>
+                  </div>
+                  <iframe
+                    title="生成网页预览"
+                    srcDoc={previewDocument(html)}
+                    sandbox="allow-scripts"
+                    className="h-[46vh] min-h-[260px] w-full shrink-0 rounded-b-[var(--radius-sm)] border border-[var(--color-line)] bg-white"
+                  />
+
+                  <Fold title="模型生成的 HTML 源码" meta={`${(streamedOutput || html).length.toLocaleString()} 字符`}>
+                    <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[var(--text-2xs)] leading-relaxed text-[var(--color-muted-foreground)]">
+                      {streamedOutput || html}
+                    </pre>
+                  </Fold>
+
+                  {generationLogs.length > 0 && (
+                    <LogPanel logs={generationLogs} state={loading ? "生成中" : "已完成"} />
+                  )}
+
+                  <div className="rounded-[var(--radius-md)] border border-[var(--color-line)] bg-[var(--color-surface)]/60 p-2.5">
+                    {/* 点选了元素就把锚点显式摆出来，让用户确认"程序确实知道我说的是哪个"。
+                        没有这一步，用户会怀疑自己点的那一下到底有没有生效。 */}
+                    {pickedTarget ? (
+                      <div aria-live="polite">
+                        <div className="flex items-center gap-1.5">
+                          <span className="size-1.5 rounded-full bg-[var(--color-brand)] shadow-[0_0_6px_var(--color-brand)]" />
+                          <strong className="text-[var(--text-xs)] font-medium text-[var(--color-foreground)]">
+                            已选中要修改的位置
+                          </strong>
+                          <Button
+                            variant="ghost"
+                            size="xs"
+                            className="ml-auto"
+                            onClick={() => setPickedTarget("")}
+                            title="取消选中，改回整页修改"
+                          >
+                            取消选中
+                          </Button>
+                        </div>
+                        <pre className="mt-1.5 max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-[var(--radius-sm)] bg-[var(--color-canvas)]/60 p-2 font-mono text-[var(--text-2xs)] leading-relaxed text-[var(--color-muted-foreground)]">
+                          {pickedTarget}
+                        </pre>
+                      </div>
+                    ) : (
+                      <p className="flex items-center gap-1.5 text-[var(--text-2xs)] leading-relaxed text-[var(--color-subtle-foreground)]">
+                        <MousePointerClick className="size-3 shrink-0" />
+                        在预览里点一下要改的地方，就能只改那一处；不点则按整页修改。
+                      </p>
+                    )}
+
+                    <textarea
+                      value={feedback}
+                      onChange={(event) => setFeedback(event.target.value)}
+                      onKeyDown={(event) => {
+                        // Ctrl/Cmd + Enter 提交：多行输入里回车要留给换行。
+                        if (event.key === "Enter" && (event.ctrlKey || event.metaKey) && feedback.trim() && !loading) {
+                          void generate();
+                        }
+                      }}
+                      placeholder={pickedTarget
+                        ? "说明这个元素要怎么改，例如：把这个按钮的文字改成「再摇一次」，颜色换成 #2f6feb"
+                        : "说明要怎么改，例如：把主色调改成绿色，并给收藏列表加上删除按钮（Ctrl + Enter 提交）"}
+                      aria-label="修改意见"
+                      rows={3}
+                      className="mt-2 w-full resize-y rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-surface)] px-2.5 py-2 text-[var(--text-xs)] leading-relaxed text-[var(--color-foreground)] placeholder:text-[var(--color-subtle-foreground)] transition-[border-color,box-shadow] focus:border-[var(--color-brand-line)] focus:shadow-[0_0_0_3px_var(--color-brand-soft)] focus:outline-none"
+                    />
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <span className="text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+                        {pickedTarget ? "定向修改 · 只改选中元素" : "整页修改"}
+                      </span>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        loading={loading}
+                        disabled={!feedback.trim()}
+                        onClick={generate}
+                      >
+                        {pickedTarget ? "改这一处" : "继续修改"}
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* 历史版本：每次生成/修改都留一版，改坏了可以退回去。
+                      health 越小越健康，列表里直接显示出来，回退就不是碰运气。 */}
+                  {versions.length > 1 && (
+                    <Fold title="历史版本" meta={`${versions.length} 版 · 改坏了可以退回去`}>
+                      <div className="max-h-56 overflow-y-auto px-2.5 pb-2">
+                        {[...versions].reverse().map((item, index) => {
+                          // 最新一版就是当前预览里的内容 —— 列表是倒序的，所以 index === 0。
+                          const isCurrent = index === 0;
+                          return (
+                            <div
+                              key={item.version}
+                              className={cn(
+                                "grid grid-cols-[36px_56px_minmax(0,1fr)_auto] items-center gap-2 border-t border-[var(--color-line-faint)] py-1.5 first:border-0",
+                                isCurrent && "bg-[var(--color-brand-soft)]/40"
+                              )}
+                            >
+                              <span className="num-tabular text-[var(--text-2xs)] font-medium text-[var(--color-foreground)]">
+                                v{item.version}
+                              </span>
+                              <span className="num-tabular truncate text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+                                {item.created_at}
+                              </span>
+                              <span className="min-w-0">
+                                <span className="block truncate text-[var(--text-2xs)] text-[var(--color-muted-foreground)]" title={item.note}>
+                                  {item.note}
+                                </span>
+                                <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[var(--text-2xs)]">
+                                  {item.issues === 0 ? (
+                                    <em className="not-italic text-[var(--color-success)]">自检通过</em>
+                                  ) : (
+                                    <em className={cn("not-italic", item.functional_issues > 0 ? "text-[var(--color-warning)]" : "text-[var(--color-muted-foreground)]")}>
+                                      {item.issues} 项问题
+                                      {item.functional_issues > 0 && ` · ${item.functional_issues} 项影响功能`}
+                                    </em>
+                                  )}
+                                  <em className="not-italic text-[var(--color-subtle-foreground)]">
+                                    {item.chars.toLocaleString()} 字符
+                                  </em>
+                                </span>
+                              </span>
+                              <Button
+                                variant={isCurrent ? "ghost" : "secondary"}
+                                size="xs"
+                                disabled={restoring !== 0 || loading || isCurrent}
+                                onClick={() => void restoreVersion(item.version)}
+                              >
+                                {restoring === item.version ? "取回中" : isCurrent ? "当前" : "回到这一版"}
+                              </Button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </Fold>
+                  )}
+                </>
+              ) : generationLogs.length > 0 ? (
+                <div className="flex min-h-0 flex-col gap-2.5">
+                  <LogPanel logs={generationLogs} state={loading ? "生成中" : "已停止"} />
+                  <div className="flex min-h-[240px] flex-col overflow-hidden rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-card)]">
+                    <div className="flex items-center justify-between border-b border-[var(--color-line-faint)] px-2.5 py-1.5">
+                      <span className="label-caps">模型正在生成的 HTML</span>
+                      <span className="num-tabular text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+                        {streamedOutput.length.toLocaleString()} 字符
+                      </span>
+                    </div>
+                    <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words p-2.5 font-mono text-[var(--text-2xs)] leading-relaxed text-[var(--color-muted-foreground)]">
+                      {streamedOutput || "等待模型开始输出……"}
+                    </pre>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex min-h-[300px] flex-1 flex-col items-center justify-center px-6 py-12 text-center">
+                  <div className="relative mb-4 flex size-16 items-center justify-center rounded-[var(--radius-lg)] border border-[var(--color-line)] bg-[linear-gradient(140deg,var(--color-brand-soft),transparent)]">
+                    <PanelsTopLeft className="size-6 text-[var(--color-brand)]" />
+                  </div>
+                  <p className="text-[var(--text-sm)] font-medium text-[var(--color-foreground)]">
+                    网页预览会显示在这里
+                  </p>
+                  <p className="mt-1.5 max-w-sm text-[var(--text-xs)] leading-relaxed text-[var(--color-muted-foreground)]">
+                    导入需求文档后开始生成。生成完成会自动发布到公网，这里会直接给出一个能打开的网址。
+                  </p>
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+      </PageBody>
+    </Page>
+  );
+}
+
+/* ---------------------------------------------------------------- 小组件 */
+
+function StepBadge({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="num-tabular inline-flex h-5 items-center rounded-[5px] border border-[var(--color-brand-line)] bg-[var(--color-brand-soft)] px-1.5 text-[var(--text-2xs)] font-semibold text-[var(--color-brand)]">
+      {children}
+    </span>
+  );
+}
+
+/** 折叠块：把原生 details 包一层，换成统一的表头与箭头 */
+function Fold({
+  title,
+  meta,
+  defaultOpen,
+  children,
+}: {
+  title: string;
+  meta?: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  return (
+    <div className="shrink-0 overflow-hidden rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-card)]">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--color-hover)]/50"
+      >
+        <ChevronDown
+          className={cn(
+            "size-3 shrink-0 text-[var(--color-subtle-foreground)] transition-transform duration-150",
+            !open && "-rotate-90"
           )}
-        </section>
-      </div>
+        />
+        <span className="text-[var(--text-2xs)] font-medium text-[var(--color-foreground)]">{title}</span>
+        {meta && (
+          <span className="ml-auto truncate text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+            {meta}
+          </span>
+        )}
+      </button>
+      {open && <div className="border-t border-[var(--color-line-faint)]">{children}</div>}
     </div>
   );
 }
 
-export default WebStudio;
+/** 实时日志：生成过程中唯一能看到"现在卡在哪"的地方 */
+function LogPanel({ logs, state }: { logs: GenerationLog[]; state: string }) {
+  return (
+    <div className="shrink-0 overflow-hidden rounded-[var(--radius-sm)] border border-[var(--color-line)] bg-[var(--color-card)]" aria-live="polite">
+      <div className="flex items-center justify-between border-b border-[var(--color-line-faint)] px-2.5 py-1.5">
+        <span className="label-caps">实时生成日志</span>
+        <span className="flex items-center gap-1 text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
+          {state === "生成中" && <Loader2 className="size-2.5 animate-ds-spin" />}
+          {state}
+        </span>
+      </div>
+      <div className="max-h-40 overflow-y-auto px-2.5 py-1.5">
+        {logs.map((entry) => (
+          <div key={entry.id} className="flex gap-2 py-0.5 text-[var(--text-2xs)] leading-relaxed">
+            <time className="num-tabular shrink-0 text-[var(--color-subtle-foreground)]">{entry.time}</time>
+            <span className="min-w-0 break-words text-[var(--color-muted-foreground)]">{entry.message}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
