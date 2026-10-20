@@ -1,10 +1,18 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import path from "node:path";
 
 // Vite 配置
-// 极致精简：仅 React 插件，无多余依赖
+// tailwindcss 插件只负责编译 src/styles/system.css 里的 @theme/@utility，
+// 旧页面的 App.css / cyberpunk.css 仍按普通 CSS 处理，互不影响。
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "src"),
+    },
+  },
   // Tauri 推荐配置
   clearScreen: false,
   server: {
@@ -29,6 +37,7 @@ export default defineConfig({
           tauri: ["@tauri-apps/api", "@tauri-apps/plugin-dialog"],
           router: ["react-router-dom"],
           state: ["zustand"],
+          ui: ["lucide-react", "motion", "sonner"],
         },
       },
     },
