@@ -45,6 +45,28 @@
 
 后端路由前缀是 `/api/v1`（**不带会 404**），默认 `http://127.0.0.1:8000`。停止用 `taskkill /T` 而不是 `Child::kill`，否则 uvicorn 派生的子进程会留成孤儿占住端口。
 
+### 启动顺序（不能反）
+
+`jarvis_start` 会按顺序做三件事，任何一步的顺序错了都会表现为"点了启动但状态一直是未运行"：
+
+1. **拉起 native worker** —— 它才是加载 MiniCPM-o、吃显存的进程；脚本用 `worker-ui.log` 收它的 stdout（唯一能看到 offload 结果的地方）
+2. **等管道就绪** —— 轮询 `\\.\pipe\JarvisSidecar.v1` 是否存在，最长等 180 秒（6.3 GiB 权重上卡实测约 9 秒）
+3. **拉起控制面** —— uvicorn 并注入 `JARVIS_CONFIG`，再轮询 `/health` 直到能应答
+
+反过来（先起后端）会在 lifespan 里直接抛：
+
+```
+FileNotFoundError: [Errno 2] No such file or directory: '\\.\pipe\JarvisSidecar.v1'
+ERROR:    Application startup failed. Exiting.
+```
+
+`jarvis_stop` 两个进程一起收，漏掉 worker 会一直占着约 7 GiB 显存。
+
+### 已知限制
+
+- **对话与感知争用同一个 worker**：全双工跑起来后每个请求都要排队，`/assistant/chat` 会超过 100 秒。要对话先关感知。
+- `/health` 的 `inference_backend` 目前恒为 `unknown`（worker 未上报），判断是否真上卡请看 worker 日志里的 `vision using CUDA0 backend`。
+
 ### 显存让路
 
 8 GiB 显存装不下两套模型，这是物理上限不是配置问题：
@@ -383,7 +405,7 @@ JARVIS_CONFIG=E:\jarvis\config\test.toml PYTHONPATH=src <venv>\python.exe -m uvi
 | Phase 7 | GitHub 工具 + 趋势分析 | ✅ 完成 |
 | Phase 8 | 自动化 + 通知 | ✅ 完成 |
 | Phase 9 | Lumi 界面体系切换 | ✅ 完成 |
-| Phase 10 | Jarvis 全模态感知接入 | 🚧 界面启动链路待补配置注入 |
+| Phase 10 | Jarvis 全模态感知接入 | ✅ 完成 |
 | Phase 11 | 媒体生成（图像 / 视频） | 🚧 待开通方舟模型权限 |
 
 ## 安全红线

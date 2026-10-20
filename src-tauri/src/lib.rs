@@ -3469,6 +3469,38 @@ pub mod commands {
         JARVIS_CHILD.get_or_init(|| std::sync::Mutex::new(None))
     }
 
+    /// 由本进程拉起的 native worker。
+    ///
+    /// 它才是真正加载 MiniCPM-o、吃满显存的进程；uvicorn 只是控制面。
+    /// 两者顺序不能反：worker 不在监听管道时，后端会在 lifespan 里
+    /// `FileNotFoundError: \\.\pipe\...` 直接退出（实测，不是"连不上但能启动"）。
+    static JARVIS_WORKER_CHILD: std::sync::OnceLock<std::sync::Mutex<Option<std::process::Child>>> =
+        std::sync::OnceLock::new();
+
+    fn jarvis_worker_child() -> &'static std::sync::Mutex<Option<std::process::Child>> {
+        JARVIS_WORKER_CHILD.get_or_init(|| std::sync::Mutex::new(None))
+    }
+
+    /// 命名管道是否已经有 server 端在监听。
+    ///
+    /// Windows 上 `\\.\pipe\<name>` 是可枚举的文件对象，存在即说明 worker 已经
+    /// 建好管道并进入服务循环。worker 加载 6.3 GiB 权重期间不监听任何端口，
+    /// 所以"等端口"或"试连健康检查"都无法判断它的进度，只能看管道。
+    fn jarvis_pipe_ready(pipe_name: &str) -> bool {
+        std::path::Path::new(pipe_name).exists()
+    }
+
+    /// 连带子进程一起结束。uvicorn 会派生 worker 线程/子进程，只杀父进程会留孤儿。
+    #[cfg(windows)]
+    fn jarvis_kill_tree(pid: u32) {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+    }
+
+    #[cfg(not(windows))]
+    fn jarvis_kill_tree(_pid: u32) {}
+
     /// Jarvis 侧推理可能排队几十秒，超时必须给足，否则界面会误判成"挂了"。
     fn jarvis_http() -> Result<reqwest::Client, String> {
         reqwest::Client::builder()
@@ -3528,17 +3560,31 @@ pub mod commands {
             eprintln!("[Jarvis] 让 Ollama 释放显存失败（继续启动）：{e}");
         }
 
-        let (py, wd) = {
+        let (py, wd, worker_exe, model_root, pipe_name, config_path) = {
             let db = state.db.lock().await;
+            let get = |key: &str| {
+                db.get_setting(key)
+                    .ok()
+                    .flatten()
+                    .filter(|value| !value.trim().is_empty())
+            };
             let py = python_path
-                .or_else(|| db.get_setting("jarvis.python_path").ok().flatten())
+                .or_else(|| get("jarvis.python_path"))
                 .unwrap_or_else(|| {
                     r"D:\_refs\pub-local-jarvis\.venv\Scripts\python.exe".to_string()
                 });
             let wd = work_dir
-                .or_else(|| db.get_setting("jarvis.workdir").ok().flatten())
+                .or_else(|| get("jarvis.workdir"))
                 .unwrap_or_else(|| r"D:\_refs\pub-local-jarvis".to_string());
-            (py, wd)
+            let worker = get("jarvis.worker_path")
+                .unwrap_or_else(|| r"E:\jarvis\runtime\jarvis-native-worker-cuda.exe".to_string());
+            let model = get("jarvis.model_path")
+                .unwrap_or_else(|| r"E:\jarvis\models\MiniCPM-o-4_5-gguf".to_string());
+            let pipe = get("jarvis.pipe_name")
+                .unwrap_or_else(|| r"\\.\pipe\JarvisSidecar.v1".to_string());
+            let config = get("jarvis.config_path")
+                .unwrap_or_else(|| r"E:\jarvis\config\test.toml".to_string());
+            (py, wd, worker, model, pipe, config)
         };
 
         if !std::path::Path::new(&py).is_file() {
@@ -3549,13 +3595,87 @@ pub mod commands {
         if !std::path::Path::new(&wd).is_dir() {
             return Err(format!("找不到 Jarvis 工作目录：{wd}"));
         }
+        if !std::path::Path::new(&config_path).is_file() {
+            return Err(format!(
+                "找不到 Jarvis 配置文件：{config_path}\n没有它后端会落回仓库默认的 native mode=fake，不连真模型"
+            ));
+        }
 
+        // ── 第一步：native worker ────────────────────────────────────────────
+        // 它必须比后端先就绪。管道没人监听时后端会在 lifespan 里直接抛
+        // FileNotFoundError 退出，界面上表现为"点了启动但状态永远是未运行"。
+        let mut worker_spawned = false;
+        let mut worker_pid: Option<u32> = None;
+        let worker_note: String;
+
+        if jarvis_pipe_ready(&pipe_name) {
+            worker_note = "管道已在监听，复用现有 worker".to_string();
+        } else {
+            if !std::path::Path::new(&worker_exe).is_file() {
+                return Err(format!(
+                    "找不到 native worker：{worker_exe}\n它负责加载 MiniCPM-o（约 7.2 GiB 显存），缺了它后端起不来"
+                ));
+            }
+            if !std::path::Path::new(&model_root).is_dir() {
+                return Err(format!("找不到模型目录：{model_root}"));
+            }
+
+            let mut worker_cmd = std::process::Command::new(&worker_exe);
+            worker_cmd
+                .arg(&pipe_name)
+                .arg(&model_root)
+                .stdin(std::process::Stdio::null());
+            // worker 的 stdout 是唯一能看到 offload 结果的地方（"offloaded N/N
+            // layers to GPU"），既不能丢也不能走管道，落成文件供事后核对。
+            if let Some(parent) = std::path::Path::new(&worker_exe).parent() {
+                let log = parent.join("worker-ui.log");
+                if let Ok(file) = std::fs::File::create(&log) {
+                    if let Ok(dup) = file.try_clone() {
+                        worker_cmd.stdout(std::process::Stdio::from(file));
+                        worker_cmd.stderr(std::process::Stdio::from(dup));
+                    }
+                }
+            }
+
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                worker_cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+
+            let worker = worker_cmd
+                .spawn()
+                .map_err(|e| format!("启动 native worker 失败：{e}"))?;
+            worker_pid = Some(worker.id());
+            worker_spawned = true;
+            *jarvis_worker_child().lock().unwrap() = Some(worker);
+
+            // 6.3 GiB 权重上卡实测约 35 秒，给 180 秒余量；期间每秒看一次管道。
+            let mut waited = 0u32;
+            while waited < 180 && !jarvis_pipe_ready(&pipe_name) {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                waited += 1;
+            }
+            if !jarvis_pipe_ready(&pipe_name) {
+                return Err(format!(
+                    "native worker 在 180 秒内没有建立管道 {pipe_name}，模型大概率没加载成功。\
+                     详情看 {}（常见原因：显存不够被占，或模型目录不完整）",
+                    std::path::Path::new(&worker_exe)
+                        .parent()
+                        .map(|p| p.join("worker-ui.log").display().to_string())
+                        .unwrap_or_default()
+                ));
+            }
+            worker_note = format!("worker 已就绪，加载耗时约 {waited} 秒");
+        }
+
+        // ── 第二步：控制面（uvicorn）─────────────────────────────────────────
         let mut cmd = std::process::Command::new(&py);
         cmd.current_dir(&wd)
-            // Jarvis only reads the deployed native-worker configuration from
-            // this environment variable. Without it, it falls back to the
-            // repository's fake native mode.
-            .env("JARVIS_CONFIG", r"E:\\jarvis\\config\\test.toml")
+            // Jarvis 只从环境变量读部署配置；不传就会落回仓库 default.toml 的
+            // `[native] mode = "fake"`，界面能用但模型根本没在跑。
+            .env("JARVIS_CONFIG", &config_path)
             .env("PYTHONPATH", "src")
             .arg("-m")
             .arg("uvicorn")
@@ -3580,31 +3700,60 @@ pub mod commands {
         let pid = child.id();
         *jarvis_child().lock().unwrap() = Some(child);
 
-        Ok(serde_json::json!({ "started": true, "pid": pid }))
+        // 后端起来到能应答健康检查有一两秒，这里等它，避免界面立刻查状态拿到"未运行"。
+        let mut ready = false;
+        for _ in 0..30 {
+            if jarvis_health().await.is_ok() {
+                ready = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+
+        Ok(serde_json::json!({
+            "started": true,
+            "pid": pid,
+            "workerPid": worker_pid,
+            "workerSpawned": worker_spawned,
+            "workerNote": worker_note,
+            "ready": ready,
+        }))
     }
 
-    /// 结束由本进程拉起的 Jarvis。
+    /// 结束由本进程拉起的 Jarvis：控制面与 native worker 一起收。
     ///
     /// 用 taskkill /T 而不是 Child::kill：uvicorn 会派生子进程，
-    /// 只杀父进程会留下一堆孤儿占着 8000 端口。
+    /// 只杀父进程会留下一堆孤儿占着 8000 端口。worker 是独立拉起的另一个进程，
+    /// 漏掉它就会一直占着约 7 GiB 显存，把管家的 Ollama 挤成 CPU 推理。
     #[tauri::command]
     pub async fn jarvis_stop() -> Result<serde_json::Value, String> {
-        let mut guard = jarvis_child().lock().unwrap();
-        let Some(child) = guard.as_mut() else {
-            return Ok(serde_json::json!({ "stopped": false, "reason": "not_managed" }));
+        let backend_pid = {
+            let mut guard = jarvis_child().lock().unwrap();
+            guard.take().map(|mut child| {
+                let pid = child.id();
+                jarvis_kill_tree(pid);
+                let _ = child.kill();
+                pid
+            })
         };
-        let pid = child.id();
 
-        #[cfg(windows)]
-        {
-            let _ = std::process::Command::new("taskkill")
-                .args(["/F", "/T", "/PID", &pid.to_string()])
-                .output();
-        }
-        let _ = child.kill();
-        *guard = None;
+        let worker_pid = {
+            let mut guard = jarvis_worker_child().lock().unwrap();
+            guard.take().map(|mut child| {
+                let pid = child.id();
+                jarvis_kill_tree(pid);
+                let _ = child.kill();
+                pid
+            })
+        };
 
-        Ok(serde_json::json!({ "stopped": true, "pid": pid }))
+        let stopped = backend_pid.is_some() || worker_pid.is_some();
+        Ok(serde_json::json!({
+            "stopped": stopped,
+            "pid": backend_pid,
+            "workerPid": worker_pid,
+            "reason": if stopped { "" } else { "not_managed" },
+        }))
     }
 
     #[tauri::command]
