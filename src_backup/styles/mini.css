@@ -1,0 +1,49 @@
+/* ============================================================
+ * 迷你浮窗专用样式
+ *
+ * 只保留 CSS 才能表达的部分：在 Tailwind 里写不出动画帧。
+ * 版面、颜色、间距全部走 utility 类，和主界面同一套 token。
+ *
+ * 注意：这个窗口是 Tauri 的分层透明窗口，根元素必须保持
+ * background: transparent，否则会在桌面上留下一个黑方块。
+ * ============================================================ */
+
+/* 分层透明窗口：浮窗模式下 html/body/#root 必须一起透明。
+   旧样式表给 body 铺了不透明底色，只把浮窗元素设成 transparent 会在桌面上
+   留一个黑方块，所以这里用 .mini-window 作为锚点把整条祖先链压成透明。 */
+.mini-window,
+body:has(.mini-window),
+body:has(.mini-window) #root {
+  background: transparent !important;
+}
+
+/* 头像呼吸光：思考/说话时用 */@keyframes mini-avatar-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 12px rgba(255, 140, 0, 0.35));
+  }
+  50% {
+    filter: drop-shadow(0 0 22px rgba(255, 140, 0, 0.7)) drop-shadow(0 0 40px rgba(255, 140, 0, 0.28));
+  }
+}
+
+.mini-avatar-glow {
+  animation: mini-avatar-glow 1.6s ease-in-out infinite;
+}
+
+/* 思考状态的小圆点，延迟由内联 style 给，保证三点错峰 */
+@keyframes mini-dot {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+.mini-dot {
+  animation: mini-dot 1.2s ease-in-out infinite;
+}
