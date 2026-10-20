@@ -110,6 +110,8 @@ fn extract_download_url(raw: &Value) -> Option<String> {
         raw.get("data").unwrap_or(&Value::Null),
         raw.get("result").unwrap_or(&Value::Null),
         raw.get("output").unwrap_or(&Value::Null),
+        // 火山方舟把成品地址放在 content.video_url
+        raw.get("content").unwrap_or(&Value::Null),
     ];
     for node in candidates {
         for key in ["url", "video_url", "download_url"] {
@@ -135,6 +137,109 @@ fn extract_error_message(raw: &Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// 火山方舟（Ark）系列走自有任务协议，不能用 OpenAI 的 `/videos`：
+/// 创建 `POST /contents/generations/tasks`（prompt 包在 `content` 数组里），
+/// 查询 `GET /contents/generations/tasks/{id}`，成品地址在 `content.video_url`。
+///
+/// 判定依据用域名而非配置开关：用户把 base_url 换到别的兼容服务时，
+/// 不该因为忘改一个开关就让整条链路失灵。
+fn is_ark(base_url: &str) -> bool {
+    base_url.to_ascii_lowercase().contains("volces.com")
+}
+
+/// 把 `1280x720` 这类像素尺寸翻成 Ark 要的 (resolution, ratio)。
+///
+/// Ark 只认 480p/720p/1080p 与固定宽高比，直接丢像素串会 400，
+/// 所以必须换算；认不出的尺寸退回 720p 横屏，交给服务端再校验。
+fn ark_resolution_ratio(size: &str) -> (String, String) {
+    let parsed = size
+        .split_once(|c: char| c == 'x' || c == 'X' || c == '*')
+        .and_then(|(w, h)| Some((w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?)))
+        .filter(|(w, h)| *w > 0 && *h > 0);
+
+    let (w, h) = match parsed {
+        Some(v) => v,
+        None => return ("720p".to_string(), "16:9".to_string()),
+    };
+
+    let resolution = match w.max(h) {
+        n if n >= 1080 => "1080p",
+        n if n >= 720 => "720p",
+        _ => "480p",
+    };
+
+    // 用交叉相乘判比例，避免浮点误差。
+    let ratio = if w == h {
+        "1:1"
+    } else if w * 9 == h * 16 {
+        "16:9"
+    } else if w * 16 == h * 9 {
+        "9:16"
+    } else if w * 3 == h * 4 {
+        "4:3"
+    } else if w * 4 == h * 3 {
+        "3:4"
+    } else if w * 9 == h * 21 {
+        "21:9"
+    } else if (w as f64 / h as f64) > 1.0 {
+        "16:9"
+    } else {
+        "9:16"
+    };
+
+    (resolution.to_string(), ratio.to_string())
+}
+
+/// Ark 提交：`content` 数组 + 顶层 resolution/ratio/duration。
+async fn submit_task_ark(
+    client: &reqwest::Client,
+    cfg: &VideoConfig,
+    model: &str,
+    prompt: &str,
+    size: &str,
+    duration: u64,
+) -> Result<(String, String, Value), String> {
+    let url = endpoint(&cfg.base_url, "contents/generations/tasks");
+    let (resolution, ratio) = ark_resolution_ratio(size);
+    let body = json!({
+        "model": model,
+        "content": [{ "type": "text", "text": prompt }],
+        "resolution": resolution,
+        "ratio": ratio,
+        "duration": duration,
+        "watermark": false,
+    });
+
+    let resp = client
+        .post(&url)
+        .bearer_auth(&cfg.api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("提交视频任务失败：{e}"))?;
+
+    let code = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !code.is_success() {
+        return Err(format!(
+            "提交视频任务返回 HTTP {}：{}",
+            code.as_u16(),
+            truncate(&text, 300)
+        ));
+    }
+
+    let parsed: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("提交响应不是 JSON（{e}）：{}", truncate(&text, 300)))?;
+
+    match extract_task(&parsed) {
+        Some((id, status)) => Ok((id, status, parsed)),
+        None => Err(format!(
+            "提交成功但响应里没有任务 id：{}",
+            truncate(&text, 300)
+        )),
+    }
+}
+
 /// 提交任务。返回 (task_id, 归一状态, 原始响应)。
 async fn submit_task(
     client: &reqwest::Client,
@@ -144,6 +249,11 @@ async fn submit_task(
     size: &str,
     duration: u64,
 ) -> Result<(String, String, Value), String> {
+    // 火山方舟协议与 OpenAI 不兼容，先分流，后面的两次提交尝试只服务 OpenAI 形状。
+    if is_ark(&cfg.base_url) {
+        return submit_task_ark(client, cfg, model, prompt, size, duration).await;
+    }
+
     let url = endpoint(&cfg.base_url, "videos");
 
     // 第一枪：multipart（OpenAI 官方形状）
@@ -230,7 +340,13 @@ async fn fetch_state(
     cfg: &VideoConfig,
     task_id: &str,
 ) -> Result<RemoteState, String> {
-    let url = endpoint(&cfg.base_url, &format!("videos/{task_id}"));
+    // Ark 的查询路径与 OpenAI 不同，先按服务商分流再拼 URL。
+    let path = if is_ark(&cfg.base_url) {
+        format!("contents/generations/tasks/{task_id}")
+    } else {
+        format!("videos/{task_id}")
+    };
+    let url = endpoint(&cfg.base_url, &path);
     let resp = client
         .get(&url)
         .bearer_auth(&cfg.api_key)
@@ -288,6 +404,14 @@ async fn download_video(
             resp.bytes().await.map_err(|e| format!("读取视频字节失败：{e}"))?.to_vec()
         }
         None => {
+            // Ark 没有 OpenAI 那种 `/videos/{id}/content` 取流端点，成品只从
+            // `content.video_url` 拿。这里若为空说明是"任务声称成功但没给地址"，
+            // 直接如实报错，不要拼一个不存在的路径去请求。
+            if is_ark(&cfg.base_url) {
+                return Err(format!(
+                    "任务 {task_id} 已完成但响应里没有 content.video_url，无法下载"
+                ));
+            }
             let url = endpoint(&cfg.base_url, &format!("videos/{task_id}/content"));
             let resp = client
                 .get(&url)

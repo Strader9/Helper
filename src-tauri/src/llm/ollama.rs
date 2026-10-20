@@ -254,6 +254,9 @@ pub enum Endpoint {
     OpenAiCompat { api_key: Option<String> },
 }
 
+/// 默认的模型驻留时长。设置项 `llm.keep_alive` 未配置时用它。
+pub const DEFAULT_KEEP_ALIVE: &str = "30m";
+
 /// Ollama 客户端
 ///
 /// 封装与 Ollama 本地服务的所有 HTTP 通信。
@@ -269,6 +272,13 @@ pub struct OllamaClient {
     timeout_ms: Arc<AtomicU64>,
     /// 协议端点：Ollama 原生或 OpenAI 兼容。
     endpoint: Endpoint,
+    /// 推理结束后模型的驻留时长（Ollama 的 `keep_alive`）。
+    ///
+    /// 默认 30m：连续指令的首 token 延迟明显更低。但它同时也是"模型
+    /// 一直占着几 GB 显存"的原因——同一张卡上还要跑别的推理进程时，
+    /// 必须能把它调小（甚至设成 "0" 用完即卸），否则那些进程会因
+    /// 显存不足静默回退到 CPU。故做成可运行时修改。
+    keep_alive: std::sync::RwLock<String>,
 }
 
 impl OllamaClient {
@@ -283,6 +293,7 @@ impl OllamaClient {
             base_url,
             timeout_ms: Arc::new(AtomicU64::new(timeout_ms)),
             endpoint: Endpoint::Ollama,
+            keep_alive: std::sync::RwLock::new(DEFAULT_KEEP_ALIVE.to_string()),
         }
     }
 
@@ -304,6 +315,25 @@ impl OllamaClient {
     /// 当前生效的请求超时（毫秒）
     fn current_timeout(&self) -> u64 {
         self.timeout_ms.load(Ordering::SeqCst)
+    }
+
+    /// 热更新模型驻留时长（Ollama 的 `keep_alive`，如 "30m" / "5m" / "0"）。
+    ///
+    /// 设为 "0" 表示一次推理结束就卸载模型，适合需要把显存让给
+    /// 同一张卡上其它推理进程的场景。只影响之后发起的请求。
+    pub fn set_keep_alive(&self, keep_alive: &str) {
+        if let Ok(mut guard) = self.keep_alive.write() {
+            *guard = keep_alive.to_string();
+        }
+    }
+
+    /// 当前生效的驻留时长。读锁失败时回落到默认值——
+    /// 这是个纯优化参数，不值得让它把请求整条打断。
+    fn keep_alive_value(&self) -> String {
+        self.keep_alive
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|_| DEFAULT_KEEP_ALIVE.to_string())
     }
 
     /// 检查模型服务是否可用
@@ -372,7 +402,7 @@ impl OllamaClient {
                 model: model.to_string(),
                 prompt: String::new(),
                 stream: false,
-                keep_alive: "30m".to_string(),
+                keep_alive: self.keep_alive_value(),
             })
             .send()
             .await?;
@@ -382,6 +412,42 @@ impl OllamaClient {
         } else {
             Err(AppError::Ollama(format!(
                 "模型预热失败，Ollama 返回 {}",
+                response.status()
+            )))
+        }
+    }
+
+    /// 让 Ollama 立刻卸载模型，把显存还回去。
+    ///
+    /// Ollama 没有专门的 unload 接口，`keep_alive: 0` 的空 generate 请求
+    /// 就是官方文档给出的等价写法：请求结束即卸载。
+    ///
+    /// 模型本来就没加载时它同样返回成功，所以可以无条件调用，
+    /// 不需要先查 `/api/ps`。OpenAI 兼容端点没有这个概念，直接返回 Ok。
+    pub async fn unload(&self, model: &str) -> AppResult<()> {
+        if matches!(self.endpoint, Endpoint::OpenAiCompat { .. }) {
+            return Ok(());
+        }
+        let url = format!("{}/api/generate", self.base_url);
+        // 卸载不需要推理，超时给 20s 足够；给太长会让调用方干等。
+        let response = self
+            .client
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(20))
+            .json(&WarmupRequest {
+                model: model.to_string(),
+                prompt: String::new(),
+                stream: false,
+                keep_alive: "0".to_string(),
+            })
+            .send()
+            .await?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(AppError::Ollama(format!(
+                "卸载模型失败，Ollama 返回 {}",
                 response.status()
             )))
         }
@@ -520,7 +586,7 @@ impl OllamaClient {
             stream: true,
             tools,
             options: Some(options),
-            keep_alive: "30m".to_string(),
+            keep_alive: self.keep_alive_value(),
             think: false,
         };
 
@@ -709,7 +775,7 @@ impl OllamaClient {
             stream: false,
             tools,
             options: Some(serde_json::json!({"temperature": temperature})),
-            keep_alive: "30m".to_string(),
+            keep_alive: self.keep_alive_value(),
             think: false,
         };
 

@@ -30,10 +30,28 @@ fn main() {
             let state = AppState::new(app)?;
             let warmup_client = state.ollama.clone();
             let warmup_model = state.ollama_model.clone();
+            let warmup_db = state.db.clone();
             app.manage(state);
 
             // 应用启动后在后台加载默认模型。不会阻塞窗口出现，后续首条指令可直接推理。
+            //
+            // 但显存只有 8 GiB：qwen3:8b 驻留要吃 5.4 GiB，而 Jarvis 的 omni 模型
+            // 要 7.2 GiB，两者不可能同时待在卡上。要让 Jarvis 拿到显存，就把
+            // `llm.warmup_on_start` 设成 false 跳过这次预热（配合把
+            // `llm.keep_alive` 调小，避免它用一次之后又常驻回去）。
             tauri::async_runtime::spawn(async move {
+                let enabled = warmup_db
+                    .lock()
+                    .await
+                    .get_setting("llm.warmup_on_start")
+                    .ok()
+                    .flatten()
+                    .map(|value| value != "false" && value != "0")
+                    .unwrap_or(true);
+                if !enabled {
+                    eprintln!("[Ollama] 已按要求跳过预热（llm.warmup_on_start=false），显存留给 Jarvis");
+                    return;
+                }
                 match warmup_client.warm_up(&warmup_model).await {
                     Ok(()) => eprintln!("[Ollama] 模型预热完成: {}", warmup_model),
                     Err(e) => eprintln!("[Ollama] 模型预热跳过: {}", e),
@@ -201,6 +219,16 @@ fn main() {
             pc_guardian_lib::commands::toggle_skill,
             pc_guardian_lib::commands::install_skill,
             pc_guardian_lib::commands::uninstall_skill,
+            // 界面直呼能力（能力中心 / 媒体工坊 / 收件箱）
+            pc_guardian_lib::commands::list_tool_contracts,
+            pc_guardian_lib::commands::list_media_generations,
+            pc_guardian_lib::commands::run_ui_tool,
+            // AI Jarvis：外部感知进程的托管与桥接
+            pc_guardian_lib::commands::jarvis_health,
+            pc_guardian_lib::commands::jarvis_start,
+            pc_guardian_lib::commands::jarvis_stop,
+            pc_guardian_lib::commands::jarvis_chat,
+            pc_guardian_lib::commands::jarvis_duplex,
             // Phase 1 命令
             pc_guardian_lib::commands::ping,
             pc_guardian_lib::commands::get_settings,

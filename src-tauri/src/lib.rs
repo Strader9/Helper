@@ -190,6 +190,12 @@ impl AppState {
             .and_then(|value| value.parse::<u64>().ok())
             .map(|value| value.clamp(5_000, 300_000))
             .unwrap_or(60_000);
+        // 模型驻留时长。默认 30m（首 token 快），显存紧张时可调到 "5m"
+        // 甚至 "0"（用完即卸），把显存让给同卡的其它推理进程。
+        let keep_alive = db
+            .get_setting("llm.keep_alive")?
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| crate::llm::ollama::DEFAULT_KEEP_ALIVE.to_string());
 
         // 模型协议与凭据。protocol 为 "openai" 时走 OpenAI 兼容端点
         // （可指向 sidecar 网关或任意云模型），否则走 Ollama 原生协议。
@@ -247,6 +253,7 @@ impl AppState {
         } else {
             Arc::new(OllamaClient::new(ollama_url, timeout_ms))
         };
+        ollama.set_keep_alive(&keep_alive);
 
         let pending_permissions = Arc::new(Mutex::new(HashMap::<String, PendingPermission>::new()));
 
@@ -3291,4 +3298,356 @@ pub mod commands {
             Err("技能管理器未初始化".to_string())
         }
     }
+
+    // ============================================================
+    // 界面直呼能力
+    //
+    // 界面上有些页面（能力中心、媒体工坊、收件箱）需要直接展示/触发工具，
+    // 而不是绕一圈经过模型。这些命令**仍然走 ToolExecutor 的三层闸门**
+    // （权限 → 回执 → 审计），与对话里触发的调用完全等价，不另开旁路。
+    // ============================================================
+
+    /// 工具契约视图：能力中心一页展示全部工具与它的副作用声明。
+    #[derive(Debug, Serialize)]
+    pub struct ToolContractView {
+        pub tool: String,
+        pub side_effect: String,
+        pub scope: String,
+        pub reversible: bool,
+        pub verification: String,
+        pub required_fields: Vec<String>,
+        pub risk_level: String,
+        pub registered: bool,
+    }
+
+    #[tauri::command]
+    pub async fn list_tool_contracts(
+        state: State<'_, AppState>,
+    ) -> Result<Vec<ToolContractView>, String> {
+        let registered: std::collections::HashSet<String> =
+            state.tool_registry.list_names().into_iter().collect();
+        let mut out: Vec<ToolContractView> = crate::tools::contract::contracts()
+            .iter()
+            .map(|c| ToolContractView {
+                tool: c.tool.to_string(),
+                side_effect: c.side_effect.as_str().to_string(),
+                scope: c.scope.to_string(),
+                reversible: c.reversible,
+                verification: c.verification.as_str().to_string(),
+                required_fields: c.required_fields.iter().map(|s| s.to_string()).collect(),
+                risk_level: state
+                    .tool_registry
+                    .get(c.tool)
+                    .map(|t| t.risk_level().as_str().to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+                registered: registered.contains(c.tool),
+            })
+            .collect();
+        out.sort_by(|a, b| a.tool.cmp(&b.tool));
+        Ok(out)
+    }
+
+    /// 媒体生成台账（图像 / 视频共用）。
+    ///
+    /// 视频是异步的，提交与完成之间可能跨进程重启；这条命令让界面
+    /// 重启后仍能看到"昨天那个视频跑到哪了"，而不是一片空白。
+    #[tauri::command]
+    pub async fn list_media_generations(
+        state: State<'_, AppState>,
+        limit: Option<i64>,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let db = state.db.lock().await;
+        let conn = db.connection();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, provider, model, task_id, prompt, size, duration_sec,
+                        status, remote_status, artifact_path, artifact_bytes, error,
+                        created_at, updated_at
+                 FROM media_generations
+                 ORDER BY created_at DESC, rowid DESC
+                 LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([limit.unwrap_or(40)], |row| {
+                Ok(serde_json::json!({
+                    "id": row.get::<_, String>(0)?,
+                    "kind": row.get::<_, String>(1)?,
+                    "provider": row.get::<_, String>(2)?,
+                    "model": row.get::<_, String>(3)?,
+                    "task_id": row.get::<_, Option<String>>(4)?,
+                    "prompt": row.get::<_, String>(5)?,
+                    "size": row.get::<_, Option<String>>(6)?,
+                    "duration_sec": row.get::<_, Option<i64>>(7)?,
+                    "status": row.get::<_, String>(8)?,
+                    "remote_status": row.get::<_, Option<String>>(9)?,
+                    "artifact_path": row.get::<_, Option<String>>(10)?,
+                    "artifact_bytes": row.get::<_, Option<i64>>(11)?,
+                    "error": row.get::<_, Option<String>>(12)?,
+                    "created_at": row.get::<_, String>(13)?,
+                    "updated_at": row.get::<_, String>(14)?,
+                }))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// 允许从界面直接调用的工具白名单。
+    ///
+    /// 刻意不提供通用的 `run_tool`：那等于把整个工具集暴露给前端，
+    /// 只要有任何一处渲染了不可信 HTML，就等于全部失守。新增一项必须改代码。
+    pub const UI_TOOL_ALLOWLIST: &[&str] = &[
+        "image_generate",
+        "video_generate",
+        "video_generation_status",
+        "media_provider_status",
+        "recent_emails",
+        "read_email",
+        "read_email_attachments",
+    ];
+
+    /// 界面直呼工具（白名单内），返回结构化结果供页面渲染。
+    #[tauri::command]
+    pub async fn run_ui_tool(
+        state: State<'_, AppState>,
+        tool_name: String,
+        arguments: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        if !UI_TOOL_ALLOWLIST.contains(&tool_name.as_str()) {
+            return Err(format!("工具 {tool_name} 不允许从界面直接调用"));
+        }
+        let request = crate::tools::executor::ToolCallRequest {
+            tool_name,
+            arguments: arguments.unwrap_or_else(|| serde_json::json!({})),
+            session_id: Some("ui-console".to_string()),
+            run_id: None,
+        };
+        let exec = state
+            .tool_executor
+            .execute(request)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(serde_json::json!({
+            "tool": exec.tool_name,
+            "success": exec.success,
+            "data": exec.result.data,
+            "error": exec.result.error,
+            "error_code": exec.result.error_code,
+            "duration_ms": exec.duration_ms,
+            "receipt_id": exec.receipt_id,
+            "permission": exec.permission_result,
+        }))
+    }
+
+    // ============================================================
+    // AI Jarvis —— 外部感知进程接入
+    // ============================================================
+    //
+    // Jarvis 是独立的 Python/FastAPI 进程，自带屏幕（DXGI）与系统音频
+    // （WASAPI）采集，用 MiniCPM-o 做全双工场景判断。这里不重写它的感知层，
+    // 只做三件事：托管进程生命周期、把它的输出转给界面、把界面的输入回灌给它。
+    //
+    // 重写一遍 C++ 采集既没必要也不可靠——它的价值恰在 native worker 里。
+    //
+    // 关键事实：Jarvis 只产出文字，不出声（它的 APM 音频模型被以
+    // "关闭语音输出"的方式接入）。播报由前端 speechSynthesis 负责。
+
+    /// Jarvis 后端地址。端口在它自己的 config/default.toml 里固定为 8000，
+    /// 路由前缀是 `/api/v1`（不带前缀会 404 —— 实测踩过）。
+    const JARVIS_BASE_URL: &str = "http://127.0.0.1:8000/api/v1";
+
+    /// 由本进程拉起的 Jarvis 子进程。用 OnceLock 而不是放进 AppState，
+    /// 是因为它可能不存在（用户自己开终端跑的），生命周期与本进程绑定即可。
+    static JARVIS_CHILD: std::sync::OnceLock<std::sync::Mutex<Option<std::process::Child>>> =
+        std::sync::OnceLock::new();
+
+    fn jarvis_child() -> &'static std::sync::Mutex<Option<std::process::Child>> {
+        JARVIS_CHILD.get_or_init(|| std::sync::Mutex::new(None))
+    }
+
+    /// Jarvis 侧推理可能排队几十秒，超时必须给足，否则界面会误判成"挂了"。
+    fn jarvis_http() -> Result<reqwest::Client, String> {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(180))
+            .build()
+            .map_err(|e| format!("HTTP 客户端构造失败：{e}"))
+    }
+
+    /// 读一个字符串响应并解析成 JSON；非 2xx 时把响应体带回去，方便定位。
+    async fn jarvis_read_json(resp: reqwest::Response, what: &str) -> Result<serde_json::Value, String> {
+        let code = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        if !code.is_success() {
+            return Err(format!(
+                "Jarvis {what} 返回 HTTP {}：{}",
+                code.as_u16(),
+                body.chars().take(300).collect::<String>()
+            ));
+        }
+        serde_json::from_str(&body).map_err(|e| format!("Jarvis {what} 响应不是 JSON：{e}"))
+    }
+
+    #[tauri::command]
+    pub async fn jarvis_health() -> Result<serde_json::Value, String> {
+        let resp = jarvis_http()?
+            .get(format!("{JARVIS_BASE_URL}/health"))
+            .send()
+            .await
+            .map_err(|e| format!("Jarvis 后端未运行（{e}）"))?;
+        jarvis_read_json(resp, "/health").await
+    }
+
+    /// 拉起 Jarvis 后端。
+    ///
+    /// python_path / work_dir 留空时依次回落到 settings 里的
+    /// `jarvis.python_path` / `jarvis.workdir`，再回落到仓库默认位置。
+    #[tauri::command]
+    pub async fn jarvis_start(
+        state: State<'_, AppState>,
+        python_path: Option<String>,
+        work_dir: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        // 已在运行就不重复拉起：重复启动只会撞端口，然后抛一堆无关错误。
+        if jarvis_health().await.is_ok() {
+            return Ok(serde_json::json!({ "started": false, "alreadyRunning": true }));
+        }
+
+        // Jarvis 的 omni 模型（LLM + 视觉塔 + 音频塔）要占约 7.2 GiB 显存，
+        // 而本机总共只有 8 GiB。管家的 qwen3:8b 一旦驻留就把这个位置占了，
+        // Jarvis 的 native worker 会加载失败并**静默回退到 CPU**——日志里
+        // 只有一行"CUDA 加速启动失败"，界面上看不出原因，表现是感知严重滞后。
+        // 所以拉起它之前先让 Ollama 卸载模型，把显存让出来。这是两套推理
+        // 共存于一张卡上的前提，不是可选优化。
+        if let Err(e) = state.ollama.unload(&state.ollama_model).await {
+            // 卸不掉不阻塞启动：Ollama 没在运行时这里必然失败，
+            // 而那种情况恰好是显存最宽裕的时候。
+            eprintln!("[Jarvis] 让 Ollama 释放显存失败（继续启动）：{e}");
+        }
+
+        let (py, wd) = {
+            let db = state.db.lock().await;
+            let py = python_path
+                .or_else(|| db.get_setting("jarvis.python_path").ok().flatten())
+                .unwrap_or_else(|| {
+                    r"D:\_refs\pub-local-jarvis\.venv\Scripts\python.exe".to_string()
+                });
+            let wd = work_dir
+                .or_else(|| db.get_setting("jarvis.workdir").ok().flatten())
+                .unwrap_or_else(|| r"D:\_refs\pub-local-jarvis".to_string());
+            (py, wd)
+        };
+
+        if !std::path::Path::new(&py).is_file() {
+            return Err(format!(
+                "找不到 Jarvis 的 Python 解释器：{py}\n请先在仓库目录执行 python -m venv .venv 并 pip install -e ."
+            ));
+        }
+        if !std::path::Path::new(&wd).is_dir() {
+            return Err(format!("找不到 Jarvis 工作目录：{wd}"));
+        }
+
+        let mut cmd = std::process::Command::new(&py);
+        cmd.current_dir(&wd)
+            .arg("-m")
+            .arg("uvicorn")
+            .arg("jarvis_backend.app:app")
+            .arg("--host")
+            .arg("127.0.0.1")
+            .arg("--port")
+            .arg("8000")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        // 不加这个标志，Windows 上会闪一个黑色控制台窗口跟在 Tauri 后面。
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+
+        let child = cmd.spawn().map_err(|e| format!("启动 Jarvis 失败：{e}"))?;
+        let pid = child.id();
+        *jarvis_child().lock().unwrap() = Some(child);
+
+        Ok(serde_json::json!({ "started": true, "pid": pid }))
+    }
+
+    /// 结束由本进程拉起的 Jarvis。
+    ///
+    /// 用 taskkill /T 而不是 Child::kill：uvicorn 会派生子进程，
+    /// 只杀父进程会留下一堆孤儿占着 8000 端口。
+    #[tauri::command]
+    pub async fn jarvis_stop() -> Result<serde_json::Value, String> {
+        let mut guard = jarvis_child().lock().unwrap();
+        let Some(child) = guard.as_mut() else {
+            return Ok(serde_json::json!({ "stopped": false, "reason": "not_managed" }));
+        };
+        let pid = child.id();
+
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid.to_string()])
+                .output();
+        }
+        let _ = child.kill();
+        *guard = None;
+
+        Ok(serde_json::json!({ "stopped": true, "pid": pid }))
+    }
+
+    #[tauri::command]
+    pub async fn jarvis_chat(message: String) -> Result<serde_json::Value, String> {
+        let resp = jarvis_http()?
+            .post(format!("{JARVIS_BASE_URL}/assistant/chat"))
+            .json(&serde_json::json!({ "message": message }))
+            .send()
+            .await
+            .map_err(|e| format!("调用 Jarvis 对话失败：{e}"))?;
+        jarvis_read_json(resp, "/assistant/chat").await
+    }
+
+    /// 全双工感知开关：status / start / stop。
+    ///
+    /// instruction 是给模型的持续指令（"盯着屏幕，有报错就提醒我"这类），
+    /// start 时必填——留空会让感知上下文失去目标，模型只会一直 LISTEN。
+    #[tauri::command]
+    pub async fn jarvis_duplex(
+        action: String,
+        instruction: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        let client = jarvis_http()?;
+        let url = format!("{JARVIS_BASE_URL}/duplex");
+        match action.as_str() {
+            "status" => {
+                let resp = client.get(&url).send().await.map_err(|e| format!("查询感知状态失败：{e}"))?;
+                jarvis_read_json(resp, "/duplex").await
+            }
+            "start" => {
+                let text = instruction.unwrap_or_default();
+                if text.trim().is_empty() {
+                    return Err("启动全双工感知必须给一句指令，否则模型没有目标".to_string());
+                }
+                let resp = client
+                    .post(&url)
+                    .json(&serde_json::json!({ "instruction": text }))
+                    .send()
+                    .await
+                    .map_err(|e| format!("启动感知失败：{e}"))?;
+                jarvis_read_json(resp, "/duplex").await
+            }
+            "stop" => {
+                let resp = client.delete(&url).send().await.map_err(|e| format!("停止感知失败：{e}"))?;
+                jarvis_read_json(resp, "/duplex").await
+            }
+            other => Err(format!("未知的感知操作：{other}")),
+        }
+    }
 }
+
