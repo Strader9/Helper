@@ -21,6 +21,9 @@ type OrbParticle = {
   color: string;
   size: number;
   type: 'signal' | 'core' | 'void';
+  phase: number;
+  turbulence: number;
+  shell: number;
 };
 
 const SPHERE_RADIUS = 180;
@@ -45,7 +48,12 @@ function daylightVoidColor(x: number, y: number, z: number) {
 function createParticle(): OrbParticle {
   const theta = 2 * Math.PI * Math.random();
   const phi = Math.acos(2 * Math.random() - 1);
-  const radius = Math.cbrt(Math.random()) * SPHERE_RADIUS;
+  // Most points sit close to the photosphere so this reads as a single star,
+  // not as a loose particle cloud.
+  const shell = Math.random();
+  const radius = SPHERE_RADIUS * (shell < 0.82
+    ? 0.76 + Math.pow(Math.random(), 0.42) * 0.24
+    : 0.22 + Math.random() * 0.62);
   const baseX = radius * Math.sin(phi) * Math.cos(theta);
   const baseY = radius * Math.sin(phi) * Math.sin(theta);
   const baseZ = radius * Math.cos(phi);
@@ -60,7 +68,10 @@ function createParticle(): OrbParticle {
     baseZ,
     type,
     color: type === 'signal' ? '#ff4d4d' : type === 'core' ? '#ffffff' : '#000000',
-    size: Math.random() * 1.5 + 0.5,
+    size: Math.random() * 1.55 + 0.45,
+    phase: Math.random() * Math.PI * 2,
+    turbulence: 0.55 + Math.random() * 1.25,
+    shell: radius / SPHERE_RADIUS,
   };
 }
 
@@ -72,20 +83,36 @@ function updateParticle(
   callState: LumiCoreVoiceState,
   audioLevel: number,
 ) {
+  const agitation = callState === 'thinking' || callState === 'speaking'
+    ? 1.55
+    : callState === 'listening' || callState === 'connecting'
+      ? 1.28
+      : 1;
   if (particle.type === 'signal') {
     particle.color = callState === 'listening'
-      ? '#ffcc00'
+      ? '#ffb86b'
       : callState === 'speaking'
-        ? '#ffffff'
-        : '#ff4d4d';
+        ? '#fff7ed'
+        : '#66d9ff';
+  } else if (particle.type === 'core') {
+    particle.color = particle.shell > 0.84 ? '#dff8ff' : '#8ba7ff';
   }
-  const wave = Math.sin(time * 0.002 + (particle.baseX + particle.baseY + particle.baseZ) * 0.01)
-    * (15 + audioLevel * 50);
+  const surfaceWave = Math.sin(time * 0.0032 * particle.turbulence + particle.phase)
+    + Math.sin(time * 0.0018 + particle.baseX * 0.034 - particle.baseY * 0.021 + particle.phase) * 0.72
+    + Math.cos(time * 0.0026 + particle.baseZ * 0.046 - particle.phase) * 0.42;
+  const eruption = Math.pow(Math.max(0, Math.sin(time * 0.0011 + particle.phase * 2.7)), 7)
+    * (particle.shell > 0.86 ? 20 : 4);
+  const wave = (surfaceWave * (7 + particle.shell * 9) + eruption + audioLevel * 48)
+    * agitation;
   const radialUnit = Math.sqrt(particle.baseX ** 2 + particle.baseY ** 2 + particle.baseZ ** 2) + 0.001;
   const radialFactor = (radialUnit + wave) / radialUnit;
   let x = particle.baseX * radialFactor;
   let y = particle.baseY * radialFactor;
   let z = particle.baseZ * radialFactor;
+  const shear = Math.sin(time * 0.0015 + particle.baseY * 0.014 + particle.phase)
+    * particle.turbulence * agitation;
+  x += Math.cos(particle.phase + time * 0.0012) * shear * 3.2;
+  z += Math.sin(particle.phase + time * 0.0014) * shear * 3.2;
   const cosX = Math.cos(rotX);
   const sinX = Math.sin(rotX);
   const rotatedY = y * cosX - z * sinX;
@@ -124,12 +151,11 @@ function drawParticle(
       context.fill();
       context.shadowBlur = 0;
     } else {
-      context.globalAlpha = 1;
-      context.strokeStyle = 'rgba(255,255,255,0.2)';
-      context.lineWidth = 0.5;
+      context.globalAlpha = Math.max(0.08, (perspective - 0.46) * 0.42);
+      context.fillStyle = particle.shell > 0.8 ? '#7182c5' : '#1c2445';
       context.beginPath();
       context.arc(x, y, size, 0, Math.PI * 2);
-      context.stroke();
+      context.fill();
     }
     return;
   }
@@ -138,13 +164,81 @@ function drawParticle(
   if (isLightMode) {
     context.shadowColor = color;
     context.shadowBlur = 2.5;
+  } else if (particle.shell > 0.8) {
+    context.shadowColor = color;
+    context.shadowBlur = particle.type === 'signal' ? 8 : 4;
   }
   context.fillStyle = color;
-  context.globalAlpha = Math.max(isLightMode ? 0.3 : 0.1, perspective - (isLightMode ? 0.3 : 0.4));
+  context.globalAlpha = Math.max(isLightMode ? 0.3 : 0.14, perspective - (isLightMode ? 0.3 : 0.34));
   context.beginPath();
   context.arc(x, y, size, 0, Math.PI * 2);
   context.fill();
   context.shadowBlur = 0;
+}
+
+function drawStellarBody(
+  context: CanvasRenderingContext2D,
+  centerX: number,
+  centerY: number,
+  time: number,
+  state: LumiCoreVoiceState,
+  audioLevel: number,
+  isLightMode: boolean,
+) {
+  if (isLightMode) return;
+  const active = state === 'thinking' || state === 'speaking' ? 1.35 : state === 'listening' ? 1.18 : 1;
+  const pulse = (Math.sin(time * 0.0027) * 0.5 + 0.5) * active + audioLevel * 1.4;
+  const radius = 171 + pulse * 7;
+
+  context.save();
+  context.globalCompositeOperation = 'lighter';
+  const corona = context.createRadialGradient(centerX, centerY, radius * 0.42, centerX, centerY, radius * 1.52);
+  corona.addColorStop(0, 'rgba(112, 142, 255, 0.10)');
+  corona.addColorStop(0.43, `rgba(76, 128, 255, ${(0.11 + pulse * 0.018).toFixed(3)})`);
+  corona.addColorStop(0.7, `rgba(67, 211, 255, ${(0.07 + pulse * 0.012).toFixed(3)})`);
+  corona.addColorStop(1, 'rgba(52, 95, 210, 0)');
+  context.fillStyle = corona;
+  context.beginPath();
+  context.arc(centerX, centerY, radius * 1.55, 0, Math.PI * 2);
+  context.fill();
+
+  const body = context.createRadialGradient(
+    centerX - radius * 0.24,
+    centerY - radius * 0.27,
+    radius * 0.03,
+    centerX,
+    centerY,
+    radius,
+  );
+  body.addColorStop(0, 'rgba(241, 250, 255, 0.34)');
+  body.addColorStop(0.18, 'rgba(156, 204, 255, 0.22)');
+  body.addColorStop(0.56, 'rgba(74, 112, 224, 0.15)');
+  body.addColorStop(0.86, 'rgba(67, 216, 255, 0.13)');
+  body.addColorStop(1, 'rgba(44, 72, 176, 0.02)');
+  context.fillStyle = body;
+  context.beginPath();
+  context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+  context.fill();
+
+  for (let index = 0; index < 5; index += 1) {
+    const phase = time * (0.00018 + index * 0.000025) + index * 1.21;
+    const arcRadius = radius * (1.02 + 0.045 * Math.sin(time * 0.0017 + index));
+    context.save();
+    context.translate(centerX, centerY);
+    context.rotate(phase);
+    context.scale(1, 0.72 + index * 0.035);
+    context.strokeStyle = index % 2
+      ? `rgba(115, 225, 255, ${(0.10 + pulse * 0.012).toFixed(3)})`
+      : `rgba(139, 126, 255, ${(0.085 + pulse * 0.01).toFixed(3)})`;
+    context.lineWidth = 1.2 + (index % 3) * 0.55;
+    context.shadowColor = index % 2 ? '#6ee7ff' : '#8b7dff';
+    context.shadowBlur = 10;
+    context.beginPath();
+    context.arc(0, 0, arcRadius, -0.72, 0.78);
+    context.stroke();
+    context.restore();
+  }
+  context.restore();
 }
 
 export function LumiCoreOrb({
@@ -218,6 +312,15 @@ export function LumiCoreOrb({
         const centerX = canvas.width / 2;
         const centerY = canvas.height / 2;
         const state = callStateRef.current;
+        drawStellarBody(
+          context,
+          centerX,
+          centerY,
+          reducedMotion ? 0 : time,
+          state,
+          reducedMotion ? 0 : audioLevelRef.current,
+          lightModeRef.current,
+        );
         if (!reducedMotion && !pointerRef.current.dragging) {
           const speed = state === 'thinking'
             ? 4
@@ -257,9 +360,12 @@ export function LumiCoreOrb({
           );
         }
         particlesRef.current.sort((left, right) => left.z - right.z);
+        context.save();
+        if (!lightModeRef.current) context.globalCompositeOperation = 'lighter';
         for (const particle of particlesRef.current) {
           drawParticle(context, particle, centerX, centerY, lightModeRef.current);
         }
+        context.restore();
         context.globalAlpha = 1;
       } catch {
         // A single bad frame must not terminate Lumi's visual heartbeat.
