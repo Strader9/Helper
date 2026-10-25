@@ -34,6 +34,38 @@ class PetChatResponse(BaseModel):
     reply: str
 
 
+class HandoffRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    observation_summary: str = Field(default="", max_length=4000)
+
+
+class HandoffResponse(BaseModel):
+    capability: Literal[
+        "conversation",
+        "screen_understanding",
+        "proactive_monitoring",
+        "voice_interaction",
+        "desktop_gui",
+        "memory_knowledge",
+        "messaging_calendar",
+        "media_work",
+        "cad_industry",
+        "mcp_external_ai",
+        "file_work",
+        "web_studio",
+        "code_git",
+        "browser_work",
+        "document_work",
+        "workflow_automation",
+        "system_operations",
+    ]
+    owner: Literal["jarvis", "ollama"]
+    handoff_to_ollama: bool
+    user_goal: str = Field(min_length=1, max_length=1000)
+    context_summary: str = Field(max_length=2000)
+    requires_confirmation_for_write: bool
+
+
 class DuplexStartRequest(BaseModel):
     instruction: str = Field(min_length=1, max_length=2000)
     session_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]+$")

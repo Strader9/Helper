@@ -7,6 +7,7 @@ from .templates import (
     build_daily_image_prompt,
     build_daily_summary_prompt,
     build_final_course_summary_prompt,
+    build_handoff_prompt,
     build_pet_chat_prompt,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "build_daily_image_prompt",
     "build_daily_summary_prompt",
     "build_final_course_summary_prompt",
+    "build_handoff_prompt",
     "build_pet_chat_prompt",
 ]

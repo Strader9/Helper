@@ -34,6 +34,7 @@ from jarvis_backend.prompts import (
     build_daily_image_prompt,
     build_daily_summary_prompt,
     build_final_course_summary_prompt,
+    build_handoff_prompt,
     build_pet_chat_prompt,
 )
 from jarvis_backend.settings import Settings
@@ -43,6 +44,38 @@ ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
 
 AMBIENT_DUPLEX_SESSION_ID = "jarvis-ambient"
 PET_CHAT_TIMEOUT_SECONDS = 600.0
+HANDOFF_CAPABILITIES = frozenset(
+    {
+        "conversation",
+        "screen_understanding",
+        "proactive_monitoring",
+        "voice_interaction",
+        "desktop_gui",
+        "memory_knowledge",
+        "messaging_calendar",
+        "media_work",
+        "cad_industry",
+        "mcp_external_ai",
+        "file_work",
+        "web_studio",
+        "code_git",
+        "browser_work",
+        "document_work",
+        "workflow_automation",
+        "system_operations",
+    }
+)
+OLLAMA_CAPABILITIES = frozenset(
+    {
+        "file_work",
+        "web_studio",
+        "code_git",
+        "browser_work",
+        "document_work",
+        "workflow_automation",
+        "system_operations",
+    }
+)
 SCREEN_IDLE_MESSAGES = (
     "是在摸鱼吗？",
     "ZZZ...",
@@ -319,6 +352,75 @@ class OrchestrationService:
                         self._initialize_ambient_duplex(),
                         name="jarvis-ambient-duplex-resume-after-chat",
                     )
+
+    async def recommend_handoff(
+        self, message: str, observation_summary: str = ""
+    ) -> dict[str, Any]:
+        cleaned_message = self._validate_handoff_input(message, 2000, "message")
+        cleaned_observation = self._validate_handoff_input(
+            observation_summary, 4000, "observation summary", allow_empty=True
+        )
+        async with self._pet_chat_lock:
+            prompt = build_handoff_prompt(cleaned_message, cleaned_observation)
+            response = await self.native_client.request(
+                "ask", {"text": prompt, "_timeout_seconds": PET_CHAT_TIMEOUT_SECONDS}
+            )
+        result = self._parse_handoff_response(str(response.get("text", "")))
+        await self.events.publish(
+            Event(
+                "handoff.recommended",
+                {
+                    "capability": result["capability"],
+                    "owner": result["owner"],
+                    "handoff_to_ollama": result["handoff_to_ollama"],
+                },
+            )
+        )
+        return result
+
+    @staticmethod
+    def _validate_handoff_input(
+        value: str, maximum: int, field: str, *, allow_empty: bool = False
+    ) -> str:
+        cleaned = value.strip().replace("<|", "< |")
+        if not cleaned and not allow_empty:
+            raise ValueError(f"{field} must not be empty")
+        if len(cleaned) > maximum:
+            raise ValueError(f"{field} exceeds {maximum} characters")
+        if any(ord(character) < 32 and character not in "\n\t" for character in cleaned):
+            raise ValueError(f"{field} contains unsupported control characters")
+        return cleaned
+
+    @classmethod
+    def _parse_handoff_response(cls, response: str) -> dict[str, Any]:
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.strip(), flags=re.I)
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("local model returned an invalid handoff response") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("local model returned an invalid handoff response")
+        capability = payload.get("capability")
+        if capability not in HANDOFF_CAPABILITIES:
+            raise RuntimeError("local model returned an unsupported handoff capability")
+        expected_handoff = capability in OLLAMA_CAPABILITIES
+        if payload.get("handoff_to_ollama") is not expected_handoff:
+            raise RuntimeError("local model returned an inconsistent handoff route")
+        user_goal = str(payload.get("user_goal", "")).strip()
+        context_summary = str(payload.get("context_summary", "")).strip()
+        if not user_goal or len(user_goal) > 1000 or len(context_summary) > 2000:
+            raise RuntimeError("local model returned an invalid handoff summary")
+        confirmation = payload.get("requires_confirmation_for_write")
+        if not isinstance(confirmation, bool):
+            raise RuntimeError("local model returned an invalid handoff confirmation")
+        return {
+            "capability": capability,
+            "owner": "ollama" if expected_handoff else "jarvis",
+            "handoff_to_ollama": expected_handoff,
+            "user_goal": user_goal,
+            "context_summary": context_summary,
+            "requires_confirmation_for_write": confirmation,
+        }
 
     @staticmethod
     def _clean_pet_chat_reply(message: str) -> str:

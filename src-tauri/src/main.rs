@@ -146,6 +146,7 @@ fn main() {
             pc_guardian_lib::commands::delete_conversation,
             pc_guardian_lib::commands::send_message,
             pc_guardian_lib::commands::send_jarvis_message,
+            pc_guardian_lib::commands::jarvis_recommend_handoff,
             // Phase 4: 权限确认
             pc_guardian_lib::commands::respond_permission,
             // Phase 4: 可信目录管理
@@ -229,6 +230,7 @@ fn main() {
             pc_guardian_lib::commands::run_ui_tool,
             // AI Jarvis：外部感知进程的托管与桥接
             pc_guardian_lib::commands::jarvis_health,
+            pc_guardian_lib::commands::jarvis_handoff,
             pc_guardian_lib::commands::jarvis_start,
             pc_guardian_lib::commands::jarvis_stop,
             pc_guardian_lib::commands::jarvis_chat,

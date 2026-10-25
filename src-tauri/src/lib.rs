@@ -378,7 +378,10 @@ pub mod commands {
     use crate::db::{AllowedDirectory, TrustedTool};
     use crate::llm::{ChatChunk, OllamaMessage, OllamaModel};
     use crate::security::{AccessType, PathPolicyResult, PermissionDecision, PermissionResponse};
-    use crate::routing::{RoutingPolicy, RuntimeSnapshot};
+    use crate::routing::{
+        Capability, HandoffPacket, ModelRole, ResourceRef, RouteDecision, RoutingPolicy,
+        RuntimeSnapshot,
+    };
     use crate::webgen;
     use crate::AppState;
 
@@ -642,6 +645,99 @@ pub mod commands {
         });
 
         Ok(run_id)
+    }
+
+    /// 请求 Jarvis 将用户意图整理成安全、最小化的跨模型交接包。
+    ///
+    /// 此命令不启动 Ollama、不执行工具，也不绕过权限闸门；它只是为后续串行执行
+    /// 阶段提供经策略校验的计划。前台可以据此展示“将交给 Ollama”的明确状态。
+    #[tauri::command]
+    pub async fn jarvis_recommend_handoff(
+        state: State<'_, AppState>,
+        message: String,
+        observation_summary: Option<String>,
+        task_id: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        if message.trim().is_empty() {
+            return Err("交接请求不能为空".to_string());
+        }
+        jarvis_health().await?;
+        state
+            .inference_runtime
+            .adopt_active(ModelRole::Jarvis)
+            .await?;
+
+        let observation_summary = observation_summary.unwrap_or_default();
+        let recommendation = jarvis_handoff(message, observation_summary.clone()).await?;
+        let capability: Capability = serde_json::from_value(
+            recommendation
+                .get("capability")
+                .cloned()
+                .ok_or_else(|| "Jarvis 交接建议缺少 capability".to_string())?,
+        )
+        .map_err(|_| "Jarvis 返回了未知能力域".to_string())?;
+        let handoff_to_ollama = recommendation
+            .get("handoff_to_ollama")
+            .and_then(serde_json::Value::as_bool)
+            .ok_or_else(|| "Jarvis 交接建议缺少 handoff_to_ollama".to_string())?;
+        let expected_handoff = matches!(
+            RoutingPolicy::default().decide(capability),
+            RouteDecision::Direct {
+                owner: ModelRole::Ollama
+            } | RouteDecision::Handoff { .. }
+        );
+        if handoff_to_ollama != expected_handoff {
+            return Err("Jarvis 交接建议与已确认的职责矩阵不一致".to_string());
+        }
+
+        let packet = if handoff_to_ollama {
+            let user_goal = recommendation
+                .get("user_goal")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "Jarvis 交接建议缺少用户目标".to_string())?
+                .to_string();
+            let conversation_summary = recommendation
+                .get("context_summary")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let requires_confirmation_for_write = recommendation
+                .get("requires_confirmation_for_write")
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| "Jarvis 交接建议缺少写入确认标记".to_string())?;
+            let mut resources = Vec::new();
+            if !observation_summary.trim().is_empty() {
+                resources.push(ResourceRef::Observation {
+                    summary: observation_summary,
+                });
+            }
+            let packet = HandoffPacket {
+                handoff_id: format!("handoff-{}", uuid::Uuid::new_v4()),
+                task_id: task_id
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| format!("task-{}", uuid::Uuid::new_v4())),
+                from: ModelRole::Jarvis,
+                to: ModelRole::Ollama,
+                capability,
+                user_goal,
+                conversation_summary,
+                resources,
+                requires_confirmation_for_write,
+            };
+            packet.validate()?;
+            Some(packet)
+        } else {
+            None
+        };
+
+        Ok(serde_json::json!({
+            "recommendation": recommendation,
+            "packet": packet,
+            "executionStarted": false,
+        }))
     }
 
     // ============================================================
@@ -3938,6 +4034,23 @@ pub mod commands {
             .await
             .map_err(|e| format!("调用 Jarvis 对话失败：{e}"))?;
         jarvis_read_json(resp, "/assistant/chat").await
+    }
+
+    #[tauri::command]
+    pub async fn jarvis_handoff(
+        message: String,
+        observation_summary: String,
+    ) -> Result<serde_json::Value, String> {
+        let resp = jarvis_http()?
+            .post(format!("{JARVIS_BASE_URL}/assistant/handoff"))
+            .json(&serde_json::json!({
+                "message": message,
+                "observation_summary": observation_summary,
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("请求 Jarvis 交接建议失败：{e}"))?;
+        jarvis_read_json(resp, "/assistant/handoff").await
     }
 
     /// 全双工感知开关：status / start / stop。

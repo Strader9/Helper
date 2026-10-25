@@ -20,6 +20,8 @@ from .schemas import (
     DuplexStatusResponse,
     EventMessage,
     HealthResponse,
+    HandoffRequest,
+    HandoffResponse,
     MemoryClearRequest,
     MemoryClearResponse,
     MemoryDayResponse,
@@ -78,6 +80,22 @@ async def pet_chat(body: PetChatRequest, request: Request) -> PetChatResponse:
             "本地模型暂时无法回复，请稍后重试",
         ) from exc
     return PetChatResponse(reply=reply)
+
+
+@router.post("/assistant/handoff", response_model=HandoffResponse)
+async def assistant_handoff(body: HandoffRequest, request: Request) -> HandoffResponse:
+    try:
+        result = await service(request).recommend_handoff(
+            body.message, body.observation_summary
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    except (RuntimeError, TimeoutError) as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "本地模型暂时无法生成交接建议，请稍后重试",
+        ) from exc
+    return HandoffResponse.model_validate(result)
 
 
 @router.get("/duplex", response_model=DuplexStatusResponse)
