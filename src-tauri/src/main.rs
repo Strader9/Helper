@@ -147,6 +147,7 @@ fn main() {
             pc_guardian_lib::commands::send_message,
             pc_guardian_lib::commands::send_jarvis_message,
             pc_guardian_lib::commands::jarvis_recommend_handoff,
+            pc_guardian_lib::commands::execute_ollama_handoff,
             // Phase 4: 权限确认
             pc_guardian_lib::commands::respond_permission,
             // Phase 4: 可信目录管理
