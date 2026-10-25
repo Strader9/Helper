@@ -18,6 +18,7 @@ pub mod mail_mime;
 pub mod memory;
 pub mod monitoring;
 pub mod proactive;
+pub mod routing;
 pub mod scheduler;
 pub mod security;
 pub mod shortcut;
@@ -44,6 +45,7 @@ use agent::AgentRuntime;
 use db::Database;
 use llm::OllamaClient;
 use proactive::ProactiveEngine;
+use routing::InferenceRuntimeManager;
 use security::PermissionManager;
 use tools::ToolRegistry;
 
@@ -72,6 +74,8 @@ pub struct AppState {
     pub scheduler: Arc<crate::scheduler::Scheduler>,
     /// 多端设备网关（本地带鉴权的 HTTP 服务）
     pub gateway: Arc<crate::devices::DeviceGateway>,
+    /// Jarvis 与 Ollama 的排他显存状态机。实际进程托管将在交接阶段接入。
+    pub inference_runtime: Arc<InferenceRuntimeManager>,
     /// V21: 关闭按钮最小化到托盘（同步原子变量，供窗口事件回调读取）
     pub minimize_to_tray: Arc<AtomicBool>,
 }
@@ -315,6 +319,7 @@ impl AppState {
             proactive_engine,
             scheduler,
             gateway,
+            inference_runtime: Arc::new(InferenceRuntimeManager::new()),
             minimize_to_tray,
         })
     }
@@ -373,6 +378,7 @@ pub mod commands {
     use crate::db::{AllowedDirectory, TrustedTool};
     use crate::llm::{ChatChunk, OllamaMessage, OllamaModel};
     use crate::security::{AccessType, PathPolicyResult, PermissionDecision, PermissionResponse};
+    use crate::routing::{RoutingPolicy, RuntimeSnapshot};
     use crate::webgen;
     use crate::AppState;
 
@@ -437,6 +443,26 @@ pub mod commands {
         model: Option<String>,
         request_id: Option<String>,
     ) -> Result<String, String> {
+        // 当前阶段仍保留 Ollama 作为旧对话路径，但 Jarvis 已占用 GPU 时绝不能
+        // 让它重新加载 qwen3:8b。模型切换将在后续交接执行器中显式完成。
+        let runtime = state.inference_runtime.snapshot().await;
+        if matches!(
+            runtime.state,
+            crate::routing::InferenceRuntimeState::JarvisStarting
+                | crate::routing::InferenceRuntimeState::JarvisActive
+                | crate::routing::InferenceRuntimeState::JarvisStopping
+        ) {
+            return Err("Jarvis 正在使用显存。请先停止 Jarvis，或等待后续任务交接功能完成后由系统自动切换。".to_string());
+        }
+        // Jarvis 也可能在本应用启动前由外部进程拉起；尚未读取运行时状态时，
+        // 仍要在真正请求 Ollama 前阻止两套模型抢同一张 8 GiB 显卡。
+        if jarvis_health().await.is_ok() {
+            state
+                .inference_runtime
+                .adopt_active(crate::routing::ModelRole::Jarvis)
+                .await?;
+            return Err("检测到 Jarvis 正在使用显存。请先停止 Jarvis，或等待后续任务交接功能完成后由系统自动切换。".to_string());
+        }
         let app_handle = window.app_handle().clone();
         let agent = state.agent.lock().await;
         let run = agent
@@ -686,6 +712,18 @@ pub mod commands {
     #[tauri::command]
     pub async fn check_ollama(state: State<'_, AppState>) -> Result<bool, String> {
         Ok(state.ollama.is_available().await)
+    }
+
+    /// 读取经用户确认的模型职责矩阵。此命令不触发模型启动或显存切换。
+    #[tauri::command]
+    pub async fn get_model_routing() -> Result<Vec<(crate::routing::Capability, crate::routing::RouteDecision)>, String> {
+        Ok(RoutingPolicy::all())
+    }
+
+    /// 读取统一推理运行时状态。状态机是 Jarvis/Ollama 排他切换的唯一入口。
+    #[tauri::command]
+    pub async fn get_inference_runtime(state: State<'_, AppState>) -> Result<RuntimeSnapshot, String> {
+        Ok(state.inference_runtime.snapshot().await)
     }
 
     /// 获取本地 Ollama 模型列表
@@ -3545,19 +3583,11 @@ pub mod commands {
     ) -> Result<serde_json::Value, String> {
         // 已在运行就不重复拉起：重复启动只会撞端口，然后抛一堆无关错误。
         if jarvis_health().await.is_ok() {
+            state
+                .inference_runtime
+                .adopt_active(crate::routing::ModelRole::Jarvis)
+                .await?;
             return Ok(serde_json::json!({ "started": false, "alreadyRunning": true }));
-        }
-
-        // Jarvis 的 omni 模型（LLM + 视觉塔 + 音频塔）要占约 7.2 GiB 显存，
-        // 而本机总共只有 8 GiB。管家的 qwen3:8b 一旦驻留就把这个位置占了，
-        // Jarvis 的 native worker 会加载失败并**静默回退到 CPU**——日志里
-        // 只有一行"CUDA 加速启动失败"，界面上看不出原因，表现是感知严重滞后。
-        // 所以拉起它之前先让 Ollama 卸载模型，把显存让出来。这是两套推理
-        // 共存于一张卡上的前提，不是可选优化。
-        if let Err(e) = state.ollama.unload(&state.ollama_model).await {
-            // 卸不掉不阻塞启动：Ollama 没在运行时这里必然失败，
-            // 而那种情况恰好是显存最宽裕的时候。
-            eprintln!("[Jarvis] 让 Ollama 释放显存失败（继续启动）：{e}");
         }
 
         let (py, wd, worker_exe, model_root, pipe_name, config_path) = {
@@ -3599,6 +3629,19 @@ pub mod commands {
             return Err(format!(
                 "找不到 Jarvis 配置文件：{config_path}\n没有它后端会落回仓库默认的 native mode=fake，不连真模型"
             ));
+        }
+
+        // 从这一刻起禁止新的 Ollama 对话抢回显存。若当前已经存在已登记的
+        // Ollama 运行时，状态机直接拒绝启动而非赌一次加载会成功。
+        state
+            .inference_runtime
+            .begin_start(crate::routing::ModelRole::Jarvis)
+            .await?;
+
+        // Jarvis 的 omni 模型要占约 7.2 GiB，启动前只需卸载 Ollama 模型，
+        // 不必停止 Ollama 服务进程。服务未运行时失败不阻断启动。
+        if let Err(e) = state.ollama.unload(&state.ollama_model).await {
+            eprintln!("[Jarvis] 让 Ollama 释放显存失败（继续启动）：{e}");
         }
 
         // ── 第一步：native worker ────────────────────────────────────────────
@@ -3644,9 +3687,13 @@ pub mod commands {
                 worker_cmd.creation_flags(CREATE_NO_WINDOW);
             }
 
-            let worker = worker_cmd
-                .spawn()
-                .map_err(|e| format!("启动 native worker 失败：{e}"))?;
+            let worker = match worker_cmd.spawn() {
+                Ok(worker) => worker,
+                Err(e) => {
+                    state.inference_runtime.mark_error(format!("启动 native worker 失败：{e}")).await;
+                    return Err(format!("启动 native worker 失败：{e}"));
+                }
+            };
             worker_pid = Some(worker.id());
             worker_spawned = true;
             *jarvis_worker_child().lock().unwrap() = Some(worker);
@@ -3658,6 +3705,11 @@ pub mod commands {
                 waited += 1;
             }
             if !jarvis_pipe_ready(&pipe_name) {
+                if let Some(mut worker) = jarvis_worker_child().lock().unwrap().take() {
+                    jarvis_kill_tree(worker.id());
+                    let _ = worker.kill();
+                }
+                state.inference_runtime.mark_error("native worker 未在限定时间内建立命名管道").await;
                 return Err(format!(
                     "native worker 在 180 秒内没有建立管道 {pipe_name}，模型大概率没加载成功。\
                      详情看 {}（常见原因：显存不够被占，或模型目录不完整）",
@@ -3696,7 +3748,17 @@ pub mod commands {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
-        let child = cmd.spawn().map_err(|e| format!("启动 Jarvis 失败：{e}"))?;
+        let child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                if let Some(mut worker) = jarvis_worker_child().lock().unwrap().take() {
+                    jarvis_kill_tree(worker.id());
+                    let _ = worker.kill();
+                }
+                state.inference_runtime.mark_error(format!("启动 Jarvis 控制面失败：{e}")).await;
+                return Err(format!("启动 Jarvis 失败：{e}"));
+            }
+        };
         let pid = child.id();
         *jarvis_child().lock().unwrap() = Some(child);
 
@@ -3709,6 +3771,25 @@ pub mod commands {
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
+
+        if !ready {
+            // 健康检查失败时不能遗留占着 8000 端口或显存的半启动进程，否则下一次
+            // 点击启动只会撞端口并把真正原因掩盖掉。
+            if let Some(mut child) = jarvis_child().lock().unwrap().take() {
+                jarvis_kill_tree(child.id());
+                let _ = child.kill();
+            }
+            if let Some(mut worker) = jarvis_worker_child().lock().unwrap().take() {
+                jarvis_kill_tree(worker.id());
+                let _ = worker.kill();
+            }
+            state.inference_runtime.mark_error("Jarvis 控制面启动后未通过健康检查").await;
+            return Err("Jarvis 控制面未在 15 秒内通过健康检查，请检查 worker-ui.log 与后端日志".to_string());
+        }
+        state
+            .inference_runtime
+            .mark_active(crate::routing::ModelRole::Jarvis)
+            .await?;
 
         Ok(serde_json::json!({
             "started": true,
@@ -3726,7 +3807,7 @@ pub mod commands {
     /// 只杀父进程会留下一堆孤儿占着 8000 端口。worker 是独立拉起的另一个进程，
     /// 漏掉它就会一直占着约 7 GiB 显存，把管家的 Ollama 挤成 CPU 推理。
     #[tauri::command]
-    pub async fn jarvis_stop() -> Result<serde_json::Value, String> {
+    pub async fn jarvis_stop(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
         let backend_pid = {
             let mut guard = jarvis_child().lock().unwrap();
             guard.take().map(|mut child| {
@@ -3748,6 +3829,9 @@ pub mod commands {
         };
 
         let stopped = backend_pid.is_some() || worker_pid.is_some();
+        if stopped {
+            state.inference_runtime.force_idle().await;
+        }
         Ok(serde_json::json!({
             "stopped": stopped,
             "pid": backend_pid,

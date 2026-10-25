@@ -47,6 +47,39 @@ interface ChatMsg {
   at: number;
 }
 
+interface RuntimeSnapshot {
+  state: string;
+  activeRole?: 'jarvis' | 'ollama' | 'system' | null;
+  detail?: string | null;
+}
+
+type RouteDecision =
+  | { mode: 'direct'; owner: 'jarvis' | 'ollama' | 'system' }
+  | { mode: 'handoff'; front: 'jarvis'; worker: 'ollama' };
+
+type RoutingEntry = [string, RouteDecision];
+
+const CAPABILITY_LABELS: Record<string, string> = {
+  conversation: '对话',
+  screen_understanding: '屏幕理解',
+  proactive_monitoring: '持续监控',
+  voice_interaction: '语音交互',
+  desktop_gui: '桌面操作',
+  memory_knowledge: '记忆知识库',
+  messaging_calendar: '消息与日程',
+  media_work: '媒体工作',
+  cad_industry: 'CAD / 行业工作',
+  mcp_external_ai: '外部 AI / MCP',
+  file_work: '文件工作',
+  web_studio: '网页工坊',
+  code_git: '代码与 Git',
+  browser_work: '浏览器任务',
+  document_work: '文档与 OCR',
+  workflow_automation: '工作流与定时',
+  system_operations: '系统操作',
+  safety_execution: '安全执行',
+};
+
 const INPUT_CLASS =
   'w-full rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-white/85 outline-none transition-colors placeholder:text-white/25 hover:border-white/20 focus:border-celestial-saturn/50';
 
@@ -60,6 +93,8 @@ export default function LumiJarvis() {
   const [online, setOnline] = useState<boolean | null>(null);
   const [busyStart, setBusyStart] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeSnapshot>({ state: 'idle' });
+  const [routing, setRouting] = useState<RoutingEntry[]>([]);
 
   const [duplex, setDuplex] = useState<DuplexState>({ active: false });
   const [instruction, setInstruction] = useState('盯着屏幕，发现报错或异常就简短提醒我');
@@ -90,11 +125,28 @@ export default function LumiJarvis() {
     }
   }, []);
 
+  const refreshRuntime = useCallback(async () => {
+    try {
+      const [snapshot, decisions] = await Promise.all([
+        invoke<RuntimeSnapshot>('get_inference_runtime'),
+        invoke<RoutingEntry[]>('get_model_routing'),
+      ]);
+      setRuntime(snapshot);
+      setRouting(decisions);
+    } catch {
+      // 调度信息只是辅助诊断；不能让它影响 Jarvis 本身的健康检测。
+    }
+  }, []);
+
   useEffect(() => {
     void probe();
-    const timer = window.setInterval(() => void probe(), 3000);
+    void refreshRuntime();
+    const timer = window.setInterval(() => {
+      void probe();
+      void refreshRuntime();
+    }, 3000);
     return () => window.clearInterval(timer);
-  }, [probe]);
+  }, [probe, refreshRuntime]);
 
   /* ── 感知状态跟着后端在线情况走 ── */
   const refreshDuplex = useCallback(async () => {
@@ -116,7 +168,10 @@ export default function LumiJarvis() {
     try {
       await invoke('jarvis_start', {});
       // 后端起来还要加载模型，立刻探一次通常仍失败，交给轮询接管
-      window.setTimeout(() => void probe(), 1500);
+      window.setTimeout(() => {
+        void probe();
+        void refreshRuntime();
+      }, 1500);
     } catch (e) {
       setStartError(String(e));
     } finally {
@@ -131,6 +186,7 @@ export default function LumiJarvis() {
       /* 非本进程拉起的实例停不掉，忽略即可 */
     }
     void probe();
+    void refreshRuntime();
   };
 
   const handleDuplex = async (action: 'start' | 'stop') => {
@@ -203,6 +259,34 @@ export default function LumiJarvis() {
         ? 'CPU'
         : '未知';
 
+  const runtimeLabel =
+    runtime.state === 'jarvis_active'
+      ? 'Jarvis 前台'
+      : runtime.state === 'ollama_active'
+        ? 'Ollama 后台'
+        : runtime.state === 'idle'
+          ? '空闲'
+          : runtime.state === 'error'
+            ? '需要处理'
+            : '切换中';
+
+  const runtimeVariant =
+    runtime.state === 'jarvis_active'
+      ? 'safe'
+      : runtime.state === 'ollama_active' || runtime.state === 'error'
+        ? 'warning'
+        : 'neutral';
+
+  const jarvisDirect = routing
+    .filter(([, decision]) => decision.mode === 'direct' && decision.owner === 'jarvis')
+    .map(([capability]) => CAPABILITY_LABELS[capability] ?? capability);
+  const ollamaDirect = routing
+    .filter(([, decision]) => decision.mode === 'direct' && decision.owner === 'ollama')
+    .map(([capability]) => CAPABILITY_LABELS[capability] ?? capability);
+  const handoff = routing
+    .filter(([, decision]) => decision.mode === 'handoff')
+    .map(([capability]) => CAPABILITY_LABELS[capability] ?? capability);
+
   return (
     <LumiPageShell
       icon={<Ear size={18} />}
@@ -215,7 +299,7 @@ export default function LumiJarvis() {
         <div>
           <SectionTitle label="运行状态" color="bg-cyan-400" />
           <GlassCard hoverEffect={false}>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
               <div className="rounded-xl bg-white/[0.03] px-4 py-3">
                 <p className="text-[11px] font-bold uppercase tracking-wider text-white/35">服务</p>
                 <div className="mt-1.5">{statusBadge()}</div>
@@ -237,6 +321,12 @@ export default function LumiJarvis() {
               <div className="rounded-xl bg-white/[0.03] px-4 py-3">
                 <p className="text-[11px] font-bold uppercase tracking-wider text-white/35">版本</p>
                 <p className="mt-1 font-mono text-sm text-white/80">{health?.version ?? '—'}</p>
+              </div>
+              <div className="rounded-xl bg-white/[0.03] px-4 py-3">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-white/35">显存主控</p>
+                <div className="mt-1.5">
+                  <Badge variant={runtimeVariant}>{runtimeLabel}</Badge>
+                </div>
               </div>
             </div>
 
@@ -278,6 +368,37 @@ export default function LumiJarvis() {
                 {startError}
               </p>
             )}
+          </GlassCard>
+        </div>
+
+        {/* 模型职责 */}
+        <div>
+          <SectionTitle label="模型调度" color="bg-sky-400" />
+          <GlassCard hoverEffect={false}>
+            <p className="text-[11px] leading-relaxed text-white/35">
+              同一时刻只允许一个本地推理模型占用显存。需要后台能力时，贾维斯先整理上下文，再将任务串行交给 Ollama；完成后释放模型并恢复贾维斯。
+            </p>
+            <div className="mt-3 grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border border-cyan-400/15 bg-cyan-400/[0.04] px-3.5 py-3">
+                <p className="text-xs font-bold text-cyan-200">Jarvis · 前台感知</p>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-white/45">
+                  {jarvisDirect.length ? jarvisDirect.join('、') : '正在读取职责表…'}
+                </p>
+              </div>
+              <div className="rounded-xl border border-violet-400/15 bg-violet-400/[0.04] px-3.5 py-3">
+                <p className="text-xs font-bold text-violet-200">Ollama · 后台专长</p>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-white/45">
+                  {ollamaDirect.length ? ollamaDirect.join('、') : '正在读取职责表…'}
+                </p>
+              </div>
+              <div className="rounded-xl border border-amber-400/15 bg-amber-400/[0.04] px-3.5 py-3">
+                <p className="text-xs font-bold text-amber-200">串行交接 · Jarvis → Ollama</p>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-white/45">
+                  {handoff.length ? handoff.join('、') : '正在读取职责表…'}
+                </p>
+              </div>
+            </div>
+            {runtime.detail && <p className="mt-3 text-[10px] text-white/25">调度状态：{runtime.detail}</p>}
           </GlassCard>
         </div>
 

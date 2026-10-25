@@ -160,6 +160,9 @@ fn main() {
             // Ollama 命令
             pc_guardian_lib::commands::check_ollama,
             pc_guardian_lib::commands::get_ollama_models,
+            // 模型职责路由与排他推理运行时
+            pc_guardian_lib::commands::get_model_routing,
+            pc_guardian_lib::commands::get_inference_runtime,
             pc_guardian_lib::commands::start_webpage_generation,
             pc_guardian_lib::commands::publish_webpage,
             pc_guardian_lib::commands::open_external,
