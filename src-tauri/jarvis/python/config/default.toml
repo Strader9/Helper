@@ -1,0 +1,56 @@
+[app]
+name = "PC Guardian Jarvis"
+environment = "development"
+log_level = "INFO"
+
+[server]
+host = "127.0.0.1"
+port = 8000
+
+[native]
+# Development default deliberately keeps inference disabled. Production copies
+# this file to config/local.toml and sets mode=process with local paths.
+mode = "fake"
+protocol_version = 1
+pipe_name = "\\\\.\\pipe\\JarvisSidecar.v1"
+worker_path = "../../runtime/jarvis-native-worker-cuda.exe"
+model_path = "../../models/MiniCPM-o-4_5-gguf"
+request_timeout_seconds = 180.0
+heartbeat_interval_seconds = 10.0
+max_frame_bytes = 8388608
+
+[scene]
+enter_threshold = 0.72
+exit_threshold = 0.48
+enter_samples = 3
+exit_samples = 4
+display_enter_samples = 2
+game_enter_samples = 2
+display_exit_samples = 2
+game_exit_samples = 1
+game_uncertain_exit_samples = 2
+
+[barrage]
+max_age_seconds = 8.0
+max_queue_size = 256
+
+[interaction]
+ordinary_bubble_cooldown_seconds = 16.0
+course_bubble_cooldown_seconds = 30.0
+game_barrage_repeat_seconds = 20.0
+game_barrage_similar_seconds = 4.0
+game_barrage_interval_seconds = 2.5
+
+[memory]
+root = "memory"
+activity_min_confidence = 0.6
+activity_min_interval_seconds = 120
+activity_duplicate_window_seconds = 900
+summary_timeout_seconds = 120
+
+[courses]
+sessions_root = "courses/sessions"
+keyframe_min_interval_seconds = 30
+max_keyframes = 40
+exit_grace_seconds = 90
+exit_samples = 4

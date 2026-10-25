@@ -46,6 +46,21 @@ rustc.log
 *.dylib
 *.pdb
 
+# === Bundled Jarvis runtime (sources are tracked; local runtime data is not) ===
+src-tauri/jarvis/python/.venv/
+src-tauri/jarvis/python/.pytest_cache/
+src-tauri/jarvis/python/.ruff_cache/
+src-tauri/jarvis/python/src/*.egg-info/
+src-tauri/jarvis/python/memory/
+src-tauri/jarvis/python/courses/
+src-tauri/jarvis/python/models/
+src-tauri/jarvis/native/build/
+src-tauri/jarvis/runtime/
+src-tauri/jarvis/models/
+src-tauri/jarvis/config/local.toml
+__pycache__/
+*.py[cod]
+
 # === Database (local dev) ===
 *.db
 *.db-wal

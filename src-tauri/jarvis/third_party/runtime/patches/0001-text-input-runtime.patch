@@ -1,0 +1,48 @@
+From b9d15b83ee353b2eaeee4d9318c98a35a1347486 Mon Sep 17 00:00:00 2001
+From: AI Jarvis <local@aijarvis.invalid>
+Date: Sat, 11 Jul 2026 12:00:00 +0800
+Subject: [PATCH] expose the omni runtime provider and prefill synchronous text
+
+The Jarvis worker disables TTS at runtime and uses the upstream omni library
+for LLM, VPM and APM inference. Expose a stable target name for the adapter and
+evaluate user text in the synchronous prefill path used by that adapter.
+
+Upstream-revision: b9d15b83ee353b2eaeee4d9318c98a35a1347486
+Update-note: rebase this alias if upstream renames the omni library target.
+---
+ tools/omni/CMakeLists.txt | 3 +++
+ tools/omni/omni.cpp       | 5 +++++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/tools/omni/CMakeLists.txt b/tools/omni/CMakeLists.txt
+index 0f4a8a3..c631f32 100644
+--- a/tools/omni/CMakeLists.txt
++++ b/tools/omni/CMakeLists.txt
+@@ -25,6 +25,9 @@ add_library(omni
+             token2wav/token2wav-profile.h
+             )
+ 
++# Stable provider name consumed by the AI Jarvis native adapter.
++add_library(omni_text_runtime ALIAS omni)
++
+ # Add CoreML related files when enabled
+ if(ENABLE_COREML)
+     target_sources(omni PRIVATE
+diff --git a/tools/omni/omni.cpp b/tools/omni/omni.cpp
+index 82c14a1..c2778f4 100644
+--- a/tools/omni/omni.cpp
++++ b/tools/omni/omni.cpp
+@@ -10554,6 +10554,11 @@ bool stream_prefill(struct omni_context * ctx_omni, std::string aud_fname, std:
+                     LOG_WRN("%s: audio encoding failed, skipping audio for this frame\n", __func__);
+                 }
+             }
++            if (!text.empty()) {
++                eval_string(ctx_omni, ctx_omni->params, text.c_str(),
++                            ctx_omni->params->n_batch, &ctx_omni->n_past, false);
++                LOG_INF("%s: prefilled %zu bytes of user text\n", __func__, text.size());
++            }
+         }
+         else {
+             // async 模式：将 embeds 加入队列，由 LLM 线程处理
+-- 
+2.50.1.windows.1

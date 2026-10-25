@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "component": "llama.cpp-omni",
+  "purpose": "Optional native MiniCPM-o 4.5 text-output inference provider (LLM, VPM, APM only)",
+  "upstream": {
+    "repository": "https://github.com/tc-mb/llama.cpp-omni.git",
+    "revision": "b9d15b83ee353b2eaeee4d9318c98a35a1347486",
+    "revision_date_utc": "2026-07-07T05:15:13Z",
+    "archive": "https://github.com/tc-mb/llama.cpp-omni/archive/b9d15b83ee353b2eaeee4d9318c98a35a1347486.tar.gz",
+    "archive_sha256": "f8505a9179ff4b8e3ca648c4d462ad46edcc7698507ab3717bc3ee840f45710c"
+  },
+  "license": {
+    "spdx": "MIT",
+    "local_file": "LICENSE.llama.cpp-omni"
+  },
+  "vendored_source": true,
+  "patches": [
+    {
+      "path": "patches/0001-text-input-runtime.patch",
+      "sha256": "cc8b1c4abb62a736cf190da3fdb1c29a260130f4b6cb3651696479703150783e",
+      "upstream_revision": "b9d15b83ee353b2eaeee4d9318c98a35a1347486",
+      "purpose": "Expose the pinned omni library through the stable omni_text_runtime target and evaluate user text in the synchronous prefill path used by the Jarvis adapter"
+    }
+  ],
+  "excluded": [
+    "TTS model loading and speech output",
+    "voice cloning",
+    "server and CLI frontends"
+  ],
+  "acquisition": "The SHA-256-verified pinned archive is extracted under third_party/runtime/vendor. It is retained as a source snapshot and is not built until the reviewed text-only provider target exists."
+}

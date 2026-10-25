@@ -3687,28 +3687,28 @@ pub mod commands {
                     .flatten()
                     .filter(|value| !value.trim().is_empty())
             };
+            // Jarvis 的控制面与 native worker 源码是 PC Guardian 仓库的一部分。
+            // 模型/虚拟环境/构建产物仍是本机运行时资源，但不能再以另一份项目目录
+            // 作为默认前提。
+            let bundled_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("jarvis");
             let py = python_path
-                .or_else(|| get("jarvis.python_path"))
-                .unwrap_or_else(|| {
-                    r"D:\_refs\pub-local-jarvis\.venv\Scripts\python.exe".to_string()
-                });
+                .unwrap_or_else(|| bundled_root.join("python/.venv/Scripts/python.exe").display().to_string());
             let wd = work_dir
-                .or_else(|| get("jarvis.workdir"))
-                .unwrap_or_else(|| r"D:\_refs\pub-local-jarvis".to_string());
+                .unwrap_or_else(|| bundled_root.join("python").display().to_string());
             let worker = get("jarvis.worker_path")
-                .unwrap_or_else(|| r"E:\jarvis\runtime\jarvis-native-worker-cuda.exe".to_string());
+                .unwrap_or_else(|| bundled_root.join("runtime/jarvis-native-worker-cuda.exe").display().to_string());
             let model = get("jarvis.model_path")
-                .unwrap_or_else(|| r"E:\jarvis\models\MiniCPM-o-4_5-gguf".to_string());
+                .unwrap_or_else(|| bundled_root.join("models/MiniCPM-o-4_5-gguf").display().to_string());
             let pipe = get("jarvis.pipe_name")
                 .unwrap_or_else(|| r"\\.\pipe\JarvisSidecar.v1".to_string());
             let config = get("jarvis.config_path")
-                .unwrap_or_else(|| r"E:\jarvis\config\test.toml".to_string());
+                .unwrap_or_else(|| bundled_root.join("python/config/local.toml").display().to_string());
             (py, wd, worker, model, pipe, config)
         };
 
         if !std::path::Path::new(&py).is_file() {
             return Err(format!(
-                "找不到 Jarvis 的 Python 解释器：{py}\n请先在仓库目录执行 python -m venv .venv 并 pip install -e ."
+                "找不到内置 Jarvis 的 Python 环境：{py}\n请进入 src-tauri/jarvis/python，执行 python -m venv .venv，再用 .venv\\Scripts\\python -m pip install -e .."
             ));
         }
         if !std::path::Path::new(&wd).is_dir() {
@@ -3716,7 +3716,7 @@ pub mod commands {
         }
         if !std::path::Path::new(&config_path).is_file() {
             return Err(format!(
-                "找不到 Jarvis 配置文件：{config_path}\n没有它后端会落回仓库默认的 native mode=fake，不连真模型"
+                "找不到 Jarvis 本机配置：{config_path}\n请将 src-tauri/jarvis/python/config/default.toml 复制为 local.toml，并设置 native.mode=process 与本机模型/worker路径"
             ));
         }
 
