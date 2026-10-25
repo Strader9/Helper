@@ -30,7 +30,16 @@ namespace fs = std::filesystem;
 constexpr std::int32_t kDefaultMaxOutputTokens = 1024;
 
 std::string path_string(const fs::path& path) {
-  return path.string();
+  // llama.cpp's Windows file layer explicitly interprets narrow paths as
+  // UTF-8 before opening them with _wfopen.  std::filesystem::path::string()
+  // uses the active Windows code page instead, which breaks installations in
+  // Chinese (and other non-ASCII) directories.
+  const auto utf8 = path.u8string();
+#if defined(__cpp_lib_char8_t)
+  return {reinterpret_cast<const char*>(utf8.data()), utf8.size()};
+#else
+  return utf8;
+#endif
 }
 
 void write_u16(std::ostream& stream, std::uint16_t value) {

@@ -26,6 +26,9 @@ add_library(omni
             token2wav/token2wav-profile.h
             )
 
+# Stable provider name consumed by the AI Jarvis native adapter.
+add_library(omni_text_runtime ALIAS omni)
+
 # Add CoreML related files when enabled
 if(ENABLE_COREML)
     target_sources(omni PRIVATE
@@ -51,6 +54,9 @@ target_include_directories(omni PUBLIC  .)
 target_include_directories(omni PRIVATE ../..)
 target_include_directories(omni PRIVATE ../../vendor)
 target_compile_features   (omni PRIVATE cxx_std_17)
+if (MSVC)
+    target_compile_options(omni PRIVATE /utf-8)
+endif()
 
 # Link CoreML and Accelerate frameworks when CoreML is enabled
 if(ENABLE_COREML)

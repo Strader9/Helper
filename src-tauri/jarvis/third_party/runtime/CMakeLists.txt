@@ -35,8 +35,16 @@ if(JARVIS_RUNTIME_ENABLE_UPSTREAM)
       "Upstream inference is intentionally gated: the pinned source has no separable text-only LLM+VPM+APM target. See INTEGRATION.md")
   endif()
 
+  # The upstream omni provider depends on the common support library, but the
+  # full tool tree also pulls in unrelated optional tools whose assets are not
+  # part of the pinned runtime snapshot.  Add only omni after the core build.
+  set(LLAMA_BUILD_COMMON ON CACHE BOOL "Build upstream common support for Jarvis" FORCE)
+  set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "Build only the Jarvis omni provider" FORCE)
+
   add_subdirectory("${JARVIS_RUNTIME_UPSTREAM_SOURCE_DIR}"
                    "${CMAKE_CURRENT_BINARY_DIR}/upstream" EXCLUDE_FROM_ALL)
+  add_subdirectory("${JARVIS_RUNTIME_UPSTREAM_SOURCE_DIR}/tools/omni"
+                   "${CMAKE_CURRENT_BINARY_DIR}/upstream-omni" EXCLUDE_FROM_ALL)
   if(NOT TARGET omni_text_runtime)
     message(FATAL_ERROR "Pinned patch contract requires target omni_text_runtime")
   endif()

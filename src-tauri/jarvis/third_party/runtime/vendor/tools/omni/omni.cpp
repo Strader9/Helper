@@ -10554,6 +10554,11 @@ bool stream_prefill(struct omni_context * ctx_omni, std::string aud_fname, std::
                     LOG_WRN("%s: audio encoding failed, skipping audio for this frame\n", __func__);
                 }
             }
+            if (!text.empty()) {
+                eval_string(ctx_omni, ctx_omni->params, text.c_str(),
+                            ctx_omni->params->n_batch, &ctx_omni->n_past, false);
+                LOG_INF("%s: prefilled %zu bytes of user text\\n", __func__, text.size());
+            }
         }
         else {
             // async 模式：将 embeds 加入队列，由 LLM 线程处理

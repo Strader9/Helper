@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <regex>
@@ -1475,7 +1476,9 @@ struct vision_model_loader {
         {
             std::vector<uint8_t> read_buf;
 
-            auto fin = std::ifstream(fname, std::ios::binary);
+            // fname is UTF-8.  Let std::filesystem carry it as a wide path on
+            // Windows instead of treating it as the active ANSI code page.
+            auto fin = std::ifstream(std::filesystem::u8path(fname), std::ios::binary);
             if (!fin) {
                 throw std::runtime_error(string_format("%s: failed to open %s\n", __func__, fname.c_str()));
             }
