@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react';
 import { motion, useReducedMotion } from 'motion/react';
 import { CheckCircle2, CircleAlert, Loader2, Pause } from 'lucide-react';
 import { LumiCoreOrb } from './LumiCoreOrb';
+import { MissionCoreMaterial, type MissionTheme } from './MissionCoreMaterial';
 
 export type LumiCoreTaskState = 'queued' | 'working' | 'paused' | 'attention' | 'completed';
 
@@ -33,10 +34,12 @@ export function LumiCoreSphere({
   state,
   loading,
   labels,
+  theme = 'nebula',
 }: {
   tasks: LumiCoreOrbitTask[];
   state: 'ready' | 'working' | 'attention';
   loading?: boolean;
+  theme?: MissionTheme;
   labels: {
     aria: string;
     lumiCore: string;
@@ -64,15 +67,19 @@ export function LumiCoreSphere({
     >
       <div className="absolute left-1/2 top-1/2 h-[min(68vw,560px)] w-[min(68vw,560px)] -translate-x-1/2 -translate-y-1/2">
         <motion.div
-          className="lumi-core-command-field__core absolute left-1/2 top-1/2 z-10 h-[66%] w-[66%] -translate-x-1/2 -translate-y-1/2"
+          className={`lumi-core-command-field__core absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2 ${theme === 'nebula' ? 'h-[66%] w-[66%]' : 'h-[48%] w-[48%]'}`}
           animate={motionEnabled ? { x: [-8, 8, -8], y: [5, -7, 5] } : { x: 0, y: 0 }}
           transition={motionEnabled ? { duration: 7.5, repeat: Infinity, ease: 'easeInOut' } : { duration: 0 }}
         >
-          <LumiCoreOrb
-            sentiment={state === 'attention' ? 'excited' : state === 'working' ? 'focused' : 'default'}
-            callState={state === 'working' ? 'thinking' : 'idle'}
-            className="h-full w-full"
-          />
+          {theme === 'nebula' ? (
+            <LumiCoreOrb
+              sentiment={state === 'attention' ? 'excited' : state === 'working' ? 'focused' : 'default'}
+              callState={state === 'working' ? 'thinking' : 'idle'}
+              className="h-full w-full"
+            />
+          ) : (
+            <MissionCoreMaterial theme={theme} />
+          )}
         </motion.div>
         <div className="lumi-core-command-field__core-label absolute left-1/2 top-[72%] z-20 -translate-x-1/2 rounded-2xl border px-4 py-2 text-center shadow-xl">
           <div className="text-[9px] font-black uppercase tracking-[0.28em] text-white/48">{labels.lumiCore}</div>

@@ -21,7 +21,10 @@ import {
 } from 'lucide-react';
 import { AppProvider } from './contexts/AppContext';
 import { LumiCoreSphere, type LumiCoreOrbitTask } from './components/LumiCoreSphere';
-import Galaxy from './components/Galaxy';
+import Galaxy from './components/reactbits/Galaxy';
+import GradientWaves from './components/reactbits/GradientWaves';
+import { GridScan } from './components/reactbits/GridScan';
+import type { MissionTheme } from './components/MissionCoreMaterial';
 import { LumiPermissionGate } from './components/lumi/LumiPermissionGate';
 import { useVoice } from './hooks/useVoice';
 import './index.css';
@@ -55,29 +58,24 @@ const BOTTOM_NAV = [
   { icon: SettingsIcon, label: '设置', path: '/settings' },
 ];
 
-// 人格卡片数据类型
-interface Persona {
+interface ThemeOption {
+  id: MissionTheme;
   name: string;
-  role: string;
-  permission: string;
-  color: string;
-  level: number;
+  engine: string;
+  description: string;
+  accent: string;
 }
 
-// 默认人格（后端无数据时使用）
-const DEFAULT_PERSONAS: Persona[] = [
-  { name: '苍穹', role: '聊天', permission: '请求批准', color: 'linear-gradient(135deg, #f59e0b, #d97706)', level: 30 },
-  { name: '星云', role: '助手', permission: '替我审批', color: 'linear-gradient(135deg, #a855f7, #7c3aed)', level: 60 },
-  { name: '赛博', role: '自主', permission: '完全访问', color: 'linear-gradient(135deg, #22c55e, #16a34a)', level: 100 },
+const THEME_OPTIONS: ThemeOption[] = [
+  { id: 'oscillation', name: '振荡', engine: 'GRADIENT WAVES', description: '雾状流体', accent: '#ff9ffc' },
+  { id: 'nebula', name: '星云', engine: 'GALAXY', description: '璀璨深空', accent: '#a78bfa' },
+  { id: 'cyber', name: '赛博', engine: 'GRID SCAN', description: '终端矩阵', accent: '#35ff82' },
 ];
-
-const PERSONA_ACCENTS = ['#f59e0b', '#a855f7', '#22c55e'];
 
 function CommandCenter() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [activePersona, setActivePersona] = useState(1);
-  const [personas, setPersonas] = useState<Persona[]>(DEFAULT_PERSONAS);
+  const [activeTheme, setActiveTheme] = useState<MissionTheme>('nebula');
   const [learningStats, setLearningStats] = useState({ interactions: 128, optimizations: 3, status: '正在学习你的使用习惯...' });
   const [tasks, setTasks] = useState<LumiCoreOrbitTask[]>([
     { id: '1', title: '系统监控', state: 'working', active: true },
@@ -85,21 +83,6 @@ function CommandCenter() {
   ]);
 
   const { isListening, transcript, startListening, stopListening, supported } = useVoice();
-
-  // 接入真实数据：人格配置
-  useEffect(() => {
-    invoke<{ key: string; value: string }[]>('get_settings')
-      .then((items) => {
-        const personaSetting = items.find((s) => s.key === 'guardian.personas');
-        if (personaSetting) {
-          try {
-            const parsed = JSON.parse(personaSetting.value);
-            if (Array.isArray(parsed) && parsed.length > 0) setPersonas(parsed);
-          } catch { /* 保持默认 */ }
-        }
-      })
-      .catch(() => { /* 保持默认 */ });
-  }, []);
 
   // 接入真实数据：活跃任务
   useEffect(() => {
@@ -165,29 +148,94 @@ function CommandCenter() {
   }, [transcript, navigate]);
 
   return (
-    <div className="mission-control relative h-screen w-full overflow-hidden">
-      <Galaxy
-        className="mission-control__galaxy"
-        starColors={['#f8fbff', '#9ddcff', '#8b9cff', '#b794f6']}
-        density={1}
-        starSpeed={0.42}
-        speed={0.72}
-        layers={5}
-        starSize={0.88}
-        glowIntensity={0.26}
-        flareIntensity={0.72}
-        twinkleIntensity={0.36}
-        rotationSpeed={0.045}
-        mouseInteraction
-        mouseRepulsion
-        repulsionStrength={1.4}
-        clickWarp={false}
-        intro
-        transparent
-        backgroundColor="#02040a"
-        opacity={0.7}
-        dpr={1.25}
-      />
+    <div className="mission-control relative h-screen w-full overflow-hidden" data-mission-theme={activeTheme}>
+      <div className="mission-control__background" aria-hidden="true">
+        {activeTheme === 'oscillation' && (
+          <GradientWaves
+            className="mission-control__theme-effect"
+            horizonColor="#5227ff"
+            waveColor="#ff9ffc"
+            crestColor="#ffffff"
+            backgroundColor="#02030a"
+            speed={0.4}
+            amplitude={2.5}
+            waveScale={0.6}
+            waveRatio={0.9}
+            swell={35}
+            turbulence={20}
+            tilt={64}
+            zoom={1}
+            height={5.5}
+            fogDepth={15}
+            relief={1}
+            lightAngle={120}
+            brightness={1}
+            opacity={1}
+            grain={0.2}
+            quality="medium"
+            intro
+            mouseInteraction
+            parallaxStrength={0.5}
+            mouseStrength={0.6}
+            swellOnClick
+            dpr={1}
+          />
+        )}
+        {activeTheme === 'nebula' && (
+          <Galaxy
+            className="mission-control__theme-effect mission-control__galaxy"
+            starColors={['#67e8f9', '#60a5fa', '#c084fc', '#f6c76e']}
+            density={1.18}
+            starSpeed={0.5}
+            speed={0.86}
+            layers={6}
+            starSize={1.08}
+            glowIntensity={0.48}
+            flareIntensity={1.15}
+            twinkleIntensity={0.58}
+            rotationSpeed={0.08}
+            mouseInteraction
+            mouseRepulsion
+            repulsionStrength={1.4}
+            clickWarp
+            intro
+            transparent={false}
+            backgroundColor="#01030a"
+            opacity={1}
+            dpr={1}
+          />
+        )}
+        {activeTheme === 'cyber' && (
+          <GridScan
+            className="mission-control__theme-effect"
+            linesColor="#174635"
+            scanColor="#35ff82"
+            cells={11}
+            lineThickness={1}
+            lineStyle="solid"
+            depth={3.6}
+            depthFade={0.66}
+            parallax={1}
+            points
+            reflection={0.42}
+            shading={0.78}
+            scanDirection="pingpong"
+            scanDuration={2.8}
+            scanDelay={1.2}
+            scanWidth={1}
+            trail={0.58}
+            glow={0.82}
+            autoScan
+            interactive
+            clickEffect="ping"
+            enableWebcam={false}
+            showPreview={false}
+            enableGyro={false}
+            intro
+            dpr={1}
+          />
+        )}
+      </div>
 
       <header className="mission-header">
         <div className="mission-brand">
@@ -223,6 +271,7 @@ function CommandCenter() {
       <main className="mission-core-stage">
         <LumiCoreSphere
           tasks={tasks}
+          theme={activeTheme}
           state={isListening ? 'attention' : tasks.some(task => task.state === 'working') ? 'working' : 'ready'}
           labels={{
             aria: 'PC Guardian 指挥中心',
@@ -235,30 +284,30 @@ function CommandCenter() {
         />
       </main>
 
-      <aside className="mission-intelligence" aria-label="人格与学习状态">
+      <aside className="mission-intelligence" aria-label="视觉主题与学习状态">
         <div className="mission-panel mission-panel--personas">
           <div className="mission-panel__header">
-            <span>PERSONA MATRIX</span>
-            <span>权限配置</span>
+            <span>VISUAL MATRIX</span>
+            <span>皮肤主题</span>
           </div>
           <div className="mission-personas">
-            {personas.map((persona, i) => {
-              const accent = PERSONA_ACCENTS[i % PERSONA_ACCENTS.length];
-              const selected = activePersona === i;
+            {THEME_OPTIONS.map((theme) => {
+              const selected = activeTheme === theme.id;
               return (
                 <button
-                  key={`${persona.name}-${i}`}
+                  key={theme.id}
                   className={`mission-persona ${selected ? 'is-active' : ''}`}
-                  style={{ '--mission-accent': accent } as CSSProperties}
-                  onClick={() => setActivePersona(i)}
+                  style={{ '--mission-accent': theme.accent } as CSSProperties}
+                  onClick={() => setActiveTheme(theme.id)}
+                  aria-pressed={selected}
                 >
                   <span className="mission-persona__signal" />
                   <span className="mission-persona__body">
-                    <span className="mission-persona__name">{persona.name}</span>
-                    <span className="mission-persona__meta">{persona.role} · {persona.permission}</span>
+                    <span className="mission-persona__name">{theme.name}</span>
+                    <span className="mission-persona__meta">{theme.engine} · {theme.description}</span>
                   </span>
-                  <span className="mission-persona__level">{persona.level}</span>
-                  <span className="mission-persona__track"><i style={{ width: `${persona.level}%` }} /></span>
+                  <span className="mission-persona__level">{selected ? 'ON' : '—'}</span>
+                  <span className="mission-persona__track"><i style={{ width: selected ? '100%' : '18%' }} /></span>
                 </button>
               );
             })}

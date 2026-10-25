@@ -163,10 +163,7 @@ function drawParticle(
   const color = isLightMode ? daylightParticleColor(particle.color) : particle.color;
   if (isLightMode) {
     context.shadowColor = color;
-    context.shadowBlur = 2.5;
-  } else if (particle.shell > 0.8) {
-    context.shadowColor = color;
-    context.shadowBlur = particle.type === 'signal' ? 8 : 4;
+    context.shadowBlur = 2;
   }
   context.fillStyle = color;
   context.globalAlpha = Math.max(isLightMode ? 0.3 : 0.14, perspective - (isLightMode ? 0.3 : 0.34));
@@ -294,7 +291,7 @@ export function LumiCoreOrb({
       : reaction === 'failed' ? 'rgba(255,60,60,0.25)' : reaction === 'jump' ? 'rgba(80,255,120,0.2)' : 'rgba(255,200,80,0.2)');
   }, [isLightMode, reaction]);
 
-  const particleCount = reducedMotion ? 320 : highPerformance ? 2200 : 800;
+  const particleCount = reducedMotion ? 280 : highPerformance ? 900 : 520;
   useEffect(() => {
     particlesRef.current = Array.from({ length: particleCount }, createParticle);
   }, [particleCount]);
@@ -305,8 +302,16 @@ export function LumiCoreOrb({
     const context = canvas.getContext('2d');
     if (!context) return;
     let animationFrame: number | undefined;
+    let lastRenderedAt = 0;
+    let renderedFrames = 0;
 
     const render = (time: number) => {
+      if (!reducedMotion && time - lastRenderedAt < 1000 / 30) {
+        animationFrame = requestAnimationFrame(render);
+        return;
+      }
+      lastRenderedAt = time;
+      renderedFrames += 1;
       try {
         context.clearRect(0, 0, canvas.width, canvas.height);
         const centerX = canvas.width / 2;
@@ -359,7 +364,9 @@ export function LumiCoreOrb({
             reducedMotion ? 0 : audioLevelRef.current,
           );
         }
-        particlesRef.current.sort((left, right) => left.z - right.z);
+        // Depth order changes gradually, so recalculating it every third frame
+        // looks identical while avoiding an O(n log n) sort on every tick.
+        if (renderedFrames % 3 === 0) particlesRef.current.sort((left, right) => left.z - right.z);
         context.save();
         if (!lightModeRef.current) context.globalCompositeOperation = 'lighter';
         for (const particle of particlesRef.current) {
