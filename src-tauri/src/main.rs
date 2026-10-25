@@ -145,6 +145,7 @@ fn main() {
             pc_guardian_lib::commands::get_messages,
             pc_guardian_lib::commands::delete_conversation,
             pc_guardian_lib::commands::send_message,
+            pc_guardian_lib::commands::send_jarvis_message,
             // Phase 4: 权限确认
             pc_guardian_lib::commands::respond_permission,
             // Phase 4: 可信目录管理

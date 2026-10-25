@@ -555,6 +555,95 @@ pub mod commands {
         Ok(run_id)
     }
 
+    /// 主对话的 Jarvis 前台路径。
+    ///
+    /// Jarvis 目前只提供文本对话与感知接口，不能直接执行工具。因此这里严格只做
+    /// “理解/观察/语言呈现”：消息照常进入会话记录与 chat:* 事件流，任何工具任务
+    /// 都必须由后续的串行交接执行器交给 Ollama Agent，再经过权限闸门执行。
+    #[tauri::command]
+    pub async fn send_jarvis_message(
+        window: tauri::Window,
+        state: State<'_, AppState>,
+        conversation_id: String,
+        content: String,
+        request_id: Option<String>,
+    ) -> Result<String, String> {
+        let run_id = request_id
+            .filter(|id| !id.trim().is_empty() && id.len() <= 128)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let app_handle = window.app_handle().clone();
+        let db = state.db.clone();
+        let runtime = state.inference_runtime.clone();
+        let session_id = conversation_id;
+        let user_content = content;
+        let event_run_id = run_id.clone();
+
+        tokio::spawn(async move {
+            let emit = |event_name: &str, event: crate::agent::ChatEvent| {
+                let raw = serde_json::to_value(event).unwrap_or_else(|_| serde_json::json!({}));
+                let payload = match raw {
+                    serde_json::Value::Object(mut object) => {
+                        object.insert(
+                            "session_id".to_string(),
+                            serde_json::Value::String(session_id.clone()),
+                        );
+                        object.insert(
+                            "run_id".to_string(),
+                            serde_json::Value::String(event_run_id.clone()),
+                        );
+                        serde_json::Value::Object(object)
+                    }
+                    other => other,
+                };
+                let _ = app_handle.emit(event_name, payload.to_string());
+            };
+
+            emit("chat:thinking", crate::agent::ChatEvent::Thinking);
+
+            if let Err(error) = async {
+                {
+                    let guard = db.lock().await;
+                    ConversationManager::new(guard.connection())
+                        .append_message(&session_id, "user", &user_content, None, None)
+                        .map_err(|e| e.to_string())?;
+                }
+
+                jarvis_health().await?;
+                runtime
+                    .adopt_active(crate::routing::ModelRole::Jarvis)
+                    .await?;
+
+                let response = jarvis_chat(user_content.clone()).await?;
+                let reply = response
+                    .get("reply")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .ok_or_else(|| "Jarvis 没有返回可显示的 reply 字段".to_string())?
+                    .to_string();
+
+                {
+                    let guard = db.lock().await;
+                    ConversationManager::new(guard.connection())
+                        .append_message(&session_id, "assistant", &reply, None, None)
+                        .map_err(|e| e.to_string())?;
+                }
+
+                emit("chat:text", crate::agent::ChatEvent::Text(reply));
+                Ok::<(), String>(())
+            }
+            .await
+            {
+                emit("chat:error", crate::agent::ChatEvent::Error(error));
+                return;
+            }
+
+            emit("chat:done", crate::agent::ChatEvent::Done);
+        });
+
+        Ok(run_id)
+    }
+
     // ============================================================
     // Phase 4: 权限确认响应
     // ============================================================

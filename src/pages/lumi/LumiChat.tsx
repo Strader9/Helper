@@ -375,11 +375,11 @@ export default function LumiChat() {
     isSendingRef.current = true;
 
     try {
-      // send_message 返回 run_id（字符串），不是消息内容；内容由 Tauri Event 流式推送
-      const runId = await invoke<string>('send_message', {
+      // 主对话由 Jarvis 负责语言、视觉与感知呈现；返回 run_id，内容仍由
+      // 同一套 Tauri Event 流填充。工具型任务将在串行交接器中转给 Ollama。
+      const runId = await invoke<string>('send_jarvis_message', {
         conversationId: convId,
         content: text,
-        model: null,
         requestId: null,
       });
       currentRunIdRef.current = runId;
@@ -652,8 +652,8 @@ export default function LumiChat() {
   return (
     <LumiPageShell
       icon={<MessageSquare size={18} />}
-      title="AI 对话"
-      subtitle="与 Lumi 助手交流"
+      title="Jarvis 对话"
+      subtitle="前台语言、视觉与持续感知 · 工具任务将串行交接"
       contentClassName="overflow-hidden p-0"
     >
       <div className="flex h-full">
