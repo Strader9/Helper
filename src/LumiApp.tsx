@@ -19,7 +19,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { AppProvider } from './contexts/AppContext';
-import { LumiCoreSphere, type LumiCoreOrbitTask } from './components/LumiCoreSphere';
+import { LumiCoreSphere } from './components/LumiCoreSphere';
 import { LumiPermissionGate } from './components/lumi/LumiPermissionGate';
 import { useVoice } from './hooks/useVoice';
 import './index.css';
@@ -38,7 +38,7 @@ const APP_ENTRIES = [
   { icon: Palette, label: '形象设计室', color: '#67e8f9', path: '/media' },
   // 「声音」原本和底栏的「设置」指向同一页，重复且没内容；
   // 换成贾维斯——语音输入与播报都在那一页，入口才有落点。
-  { icon: Ear, label: '贾维斯', color: '#a5b4fc', path: '/jarvis' },
+  { icon: Ear, label: 'Jarvis 设置', color: '#a5b4fc', path: '/jarvis' },
   { icon: Music, label: 'Music', color: '#fda4af', path: '/automation' },
 ];
 
@@ -74,11 +74,6 @@ function CommandCenter() {
   const [activePersona, setActivePersona] = useState(1);
   const [personas, setPersonas] = useState<Persona[]>(DEFAULT_PERSONAS);
   const [learningStats, setLearningStats] = useState({ interactions: 128, optimizations: 3, status: '正在学习你的使用习惯...' });
-  const [tasks, setTasks] = useState<LumiCoreOrbitTask[]>([
-    { id: '1', title: '系统监控', state: 'working', active: true },
-    { id: '2', title: '记忆整理', state: 'queued', active: true },
-  ]);
-
   const { isListening, transcript, startListening, stopListening, supported } = useVoice();
 
   // 接入真实数据：人格配置
@@ -91,38 +86,6 @@ function CommandCenter() {
             const parsed = JSON.parse(personaSetting.value);
             if (Array.isArray(parsed) && parsed.length > 0) setPersonas(parsed);
           } catch { /* 保持默认 */ }
-        }
-      })
-      .catch(() => { /* 保持默认 */ });
-  }, []);
-
-  // 接入真实数据：活跃任务
-  useEffect(() => {
-    invoke<any>('get_active_task')
-      .then((task) => {
-        if (task && task.id) {
-          setTasks([{
-            id: String(task.id),
-            title: task.title || '执行中任务',
-            state: task.status === 'completed' ? 'completed' : task.status === 'failed' ? 'attention' : 'working',
-            active: true,
-          }]);
-        }
-      })
-      .catch(() => { /* 保持默认任务 */ });
-
-    invoke<any[]>('get_tasks')
-      .then((taskList) => {
-        if (Array.isArray(taskList) && taskList.length > 0) {
-          const active = taskList.filter((t: any) => t.status === 'running' || t.status === 'pending').slice(0, 3);
-          if (active.length > 0) {
-            setTasks(active.map((t: any) => ({
-              id: String(t.id),
-              title: t.title || t.name || '任务',
-              state: t.status === 'running' ? 'working' : 'queued',
-              active: true,
-            })));
-          }
         }
       })
       .catch(() => { /* 保持默认 */ });
@@ -151,11 +114,11 @@ function CommandCenter() {
     }
   }, [isListening, startListening, stopListening]);
 
-  // 语音识别结果自动填入聊天
+  // 首页话筒是 Jarvis 的语音入口：识别完成后转入 Jarvis 对话，
+  // 不再绕到旧的通用聊天页。
   useEffect(() => {
     if (transcript && transcript.trim()) {
-      // 语音识别完成后跳转到聊天页并传递文本
-      navigate('/chat', { state: { voiceText: transcript } });
+      navigate('/jarvis', { state: { voiceText: transcript } });
     }
   }, [transcript, navigate]);
 
@@ -164,7 +127,8 @@ function CommandCenter() {
     <div className="relative h-screen w-full overflow-hidden bg-transparent">
       {/* 中央粒子球指挥场：监听时球体变红（attention），否则保持待命紫 */}
       <LumiCoreSphere
-        tasks={tasks}
+        tasks={[]}
+        showTaskStatus={false}
         state={isListening ? 'attention' : 'ready'}
         labels={{
           aria: 'PC Guardian 指挥中心',

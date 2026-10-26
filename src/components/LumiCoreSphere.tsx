@@ -60,11 +60,14 @@ export function LumiCoreSphere({
   tasks,
   state,
   loading,
+  showTaskStatus = true,
   labels,
 }: {
   tasks: LumiCoreOrbitTask[];
   state: 'ready' | 'working' | 'attention';
   loading?: boolean;
+  /** 首页展示 Jarvis 时不把后台任务伪装成轨道信标。 */
+  showTaskStatus?: boolean;
   labels: {
     aria: string;
     lumiCore: string;
@@ -187,7 +190,7 @@ export function LumiCoreSphere({
           <div className="mt-1 font-mono text-[8px] tracking-[0.18em] text-white/30">{String(activeTasks.length).padStart(2, '0')}</div>
         </div>
 
-        {activeTasks.map((task, index) => {
+        {showTaskStatus && activeTasks.map((task, index) => {
           const angle = (Math.PI * 2 * index) / Math.max(activeTasks.length, 1) - Math.PI / 2;
           const radius = 43 + (index % 2) * 7;
           const x = 50 + Math.cos(angle) * radius;
@@ -220,7 +223,7 @@ export function LumiCoreSphere({
         })}
       </div>
 
-      {!loading && activeTasks.length === 0 && (
+      {showTaskStatus && !loading && activeTasks.length === 0 && (
         <div className="lumi-core-command-field__empty absolute bottom-20 left-1/2 -translate-x-1/2 rounded-full border px-3 py-1.5 text-[9px] backdrop-blur-xl">
           {labels.noTasks}
         </div>

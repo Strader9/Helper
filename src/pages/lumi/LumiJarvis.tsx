@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'motion/react';
+import { useLocation } from 'react-router-dom';
 import {
   Activity,
   Cpu,
@@ -89,6 +90,8 @@ function fmtClock(at: number) {
 }
 
 export default function LumiJarvis() {
+  const location = useLocation();
+  const incomingVoiceText = (location.state as { voiceText?: string } | null)?.voiceText;
   const [health, setHealth] = useState<JarvisHealth | null>(null);
   const [online, setOnline] = useState<boolean | null>(null);
   const [busyStart, setBusyStart] = useState(false);
@@ -112,6 +115,7 @@ export default function LumiJarvis() {
   // 语音识别结果是"稳定后才回调"的，用 ref 记住已消费的那一条，
   // 否则 StrictMode 双挂载或重渲染会把同一句话发两次。
   const consumedTranscript = useRef('');
+  const consumedIncomingVoice = useRef('');
 
   /* ── 健康检查：3s 一轮，未运行不当作错误，只是状态未知 ── */
   const probe = useCallback(async () => {
@@ -231,6 +235,15 @@ export default function LumiJarvis() {
     },
     [autoSpeak, input, sending, speak]
   );
+
+  // 首页话筒识别完成后将文本随路由带到这里；只发送一次，避免 StrictMode
+  // 或状态回放让同一句话重复进入 Jarvis。
+  useEffect(() => {
+    const text = (incomingVoiceText || '').trim();
+    if (!text || text === consumedIncomingVoice.current) return;
+    consumedIncomingVoice.current = text;
+    void send(text);
+  }, [incomingVoiceText, send]);
 
   /* ── 语音识别完成 → 直接发送 ── */
   useEffect(() => {

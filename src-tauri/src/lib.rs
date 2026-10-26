@@ -3989,20 +3989,36 @@ pub mod commands {
                 return Err(format!("找不到模型目录：{model_root}"));
             }
 
+            // 开发时 Tauri 会监听 src-tauri。日志若落在 runtime 目录会被误判为
+            // 源码变动，触发应用重启，再触发 worker 重启，造成窗口无限闪烁。
+            // 因而无论开发版或安装版，都把 worker 日志放到用户数据目录。
+            let worker_log = dirs::data_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("pc-guardian")
+                .join("logs")
+                .join("jarvis-native-worker.log");
+            if let Some(parent) = worker_log.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
             let mut worker_cmd = std::process::Command::new(&worker_exe);
             worker_cmd
+                // CUDA/llama 动态库与 worker 一起部署在 runtime 目录。显式固定
+                // 工作目录，避免 Tauri 从任意启动目录运行时 Windows 无法解析同级 DLL。
+                .current_dir(
+                    std::path::Path::new(&worker_exe)
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new(&wd)),
+                )
                 .arg(&pipe_name)
                 .arg(&model_root)
                 .stdin(std::process::Stdio::null());
             // worker 的 stdout 是唯一能看到 offload 结果的地方（"offloaded N/N
             // layers to GPU"），既不能丢也不能走管道，落成文件供事后核对。
-            if let Some(parent) = std::path::Path::new(&worker_exe).parent() {
-                let log = parent.join("worker-ui.log");
-                if let Ok(file) = std::fs::File::create(&log) {
-                    if let Ok(dup) = file.try_clone() {
-                        worker_cmd.stdout(std::process::Stdio::from(file));
-                        worker_cmd.stderr(std::process::Stdio::from(dup));
-                    }
+            if let Ok(file) = std::fs::File::create(&worker_log) {
+                if let Ok(dup) = file.try_clone() {
+                    worker_cmd.stdout(std::process::Stdio::from(file));
+                    worker_cmd.stderr(std::process::Stdio::from(dup));
                 }
             }
 
@@ -4039,10 +4055,7 @@ pub mod commands {
                 return Err(format!(
                     "native worker 在 180 秒内没有建立管道 {pipe_name}，模型大概率没加载成功。\
                      详情看 {}（常见原因：显存不够被占，或模型目录不完整）",
-                    std::path::Path::new(&worker_exe)
-                        .parent()
-                        .map(|p| p.join("worker-ui.log").display().to_string())
-                        .unwrap_or_default()
+                    worker_log.display()
                 ));
             }
             worker_note = format!("worker 已就绪，加载耗时约 {waited} 秒");

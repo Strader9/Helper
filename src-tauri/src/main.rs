@@ -28,33 +28,19 @@ fn main() {
         .setup(|app| {
             // 初始化应用状态（数据库连接等）
             let state = AppState::new(app)?;
-            let warmup_client = state.ollama.clone();
-            let warmup_model = state.ollama_model.clone();
-            let warmup_db = state.db.clone();
             app.manage(state);
 
-            // 应用启动后在后台加载默认模型。不会阻塞窗口出现，后续首条指令可直接推理。
-            //
-            // 但显存只有 8 GiB：qwen3:8b 驻留要吃 5.4 GiB，而 Jarvis 的 omni 模型
-            // 要 7.2 GiB，两者不可能同时待在卡上。要让 Jarvis 拿到显存，就把
-            // `llm.warmup_on_start` 设成 false 跳过这次预热（配合把
-            // `llm.keep_alive` 调小，避免它用一次之后又常驻回去）。
+            // Jarvis 是主界面的常驻前台：应用启动时优先拉起它的 native worker
+            // 与控制面。Ollama 只在 Jarvis 签发串行交接后按需加载，不能在这里
+            // 预热，否则 8 GiB 显存会被两个模型争抢。
+            let jarvis_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let enabled = warmup_db
-                    .lock()
-                    .await
-                    .get_setting("llm.warmup_on_start")
-                    .ok()
-                    .flatten()
-                    .map(|value| value != "false" && value != "0")
-                    .unwrap_or(true);
-                if !enabled {
-                    eprintln!("[Ollama] 已按要求跳过预热（llm.warmup_on_start=false），显存留给 Jarvis");
-                    return;
-                }
-                match warmup_client.warm_up(&warmup_model).await {
-                    Ok(()) => eprintln!("[Ollama] 模型预热完成: {}", warmup_model),
-                    Err(e) => eprintln!("[Ollama] 模型预热跳过: {}", e),
+                // 启动失败不阻塞桌面窗口；首页与 Jarvis 设置页会显示未运行状态，
+                // 用户仍可在修复模型/显存条件后手动重试。
+                let state = jarvis_handle.state::<AppState>();
+                match pc_guardian_lib::commands::jarvis_start(state, None, None).await {
+                    Ok(_) => eprintln!("[Jarvis] 应用启动时已进入前台"),
+                    Err(error) => eprintln!("[Jarvis] 应用启动自动拉起失败: {error}"),
                 }
             });
 
