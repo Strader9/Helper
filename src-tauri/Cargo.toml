@@ -87,6 +87,7 @@ urlencoding = "2"
 #   因为一次点击起一个 PowerShell 进程要 150ms 以上，连续操作完全不可用。
 windows = { version = "0.52", features = [
     "Win32_Foundation",
+    "Win32_System_Pipes",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     # OCR 走系统自带的 Windows.Media.Ocr（WinRT）：不引 tesseract，

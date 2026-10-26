@@ -2757,7 +2757,7 @@ pub mod commands {
         pub available_mb: Option<u64>,
         pub required_mb: u64,
         pub jarvis_running: bool,
-        /// ready / occupied / insufficient / unavailable
+        /// ready / loading / occupied / insufficient / unavailable
         pub status: String,
         pub message: String,
     }
@@ -2771,6 +2771,10 @@ pub mod commands {
 
         let snapshot = state.inference_runtime.snapshot().await;
         let jarvis_running = snapshot.active_role == Some(ModelRole::Jarvis);
+        let jarvis_starting = matches!(
+            snapshot.state,
+            crate::routing::InferenceRuntimeState::JarvisStarting
+        );
         let gpu = tokio::task::spawn_blocking(crate::monitoring::get_gpu_usage_windows)
             .await
             .map_err(|e| format!("显卡状态查询失败: {e}"))?;
@@ -2778,7 +2782,13 @@ pub mod commands {
         match gpu {
             Ok(gpu) if gpu.memory_total_mb > 0 => {
                 let available_mb = gpu.memory_total_mb.saturating_sub(gpu.memory_used_mb);
-                let (status, message) = if jarvis_running {
+                let (status, message) = if jarvis_starting {
+                    (
+                        "loading",
+                        "Jarvis 正在加载模型并分配显存；加载期间可用显存下降属于正常现象。"
+                            .to_string(),
+                    )
+                } else if jarvis_running {
                     (
                         "occupied",
                         "Jarvis 已在前台运行，显存已由它占用。无需重复启动。".to_string(),
@@ -3922,11 +3932,22 @@ pub mod commands {
 
     /// 命名管道是否已经有 server 端在监听。
     ///
-    /// Windows 上 `\\.\pipe\<name>` 是可枚举的文件对象，存在即说明 worker 已经
-    /// 建好管道并进入服务循环。worker 加载 6.3 GiB 权重期间不监听任何端口，
-    /// 所以"等端口"或"试连健康检查"都无法判断它的进度，只能看管道。
+    /// `Path::exists()` 不会探测 Windows named pipe；它会把可用的
+    /// `\\.\pipe\JarvisSidecar.v1` 误判为不存在，导致 worker 明明加载成功仍被
+    /// 180 秒超时逻辑杀掉。必须用 `WaitNamedPipeW` 做零等待探测。
+    #[cfg(windows)]
     fn jarvis_pipe_ready(pipe_name: &str) -> bool {
-        std::path::Path::new(pipe_name).exists()
+        use windows::core::PCWSTR;
+        use windows::Win32::System::Pipes::WaitNamedPipeW;
+
+        let wide: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
+        // `wide` 在调用期间保持存活，且已显式以 NUL 结尾，满足 Win32 字符串约定。
+        unsafe { WaitNamedPipeW(PCWSTR::from_raw(wide.as_ptr()), 0).as_bool() }
+    }
+
+    #[cfg(not(windows))]
+    fn jarvis_pipe_ready(_pipe_name: &str) -> bool {
+        false
     }
 
     /// 连带子进程一起结束。uvicorn 会派生 worker 线程/子进程，只杀父进程会留孤儿。
@@ -4137,12 +4158,24 @@ pub mod commands {
         }
 
         // ── 第二步：控制面（uvicorn）─────────────────────────────────────────
+        // 控制面会把记忆、课程会话等可变数据写进相对目录。若工作目录是仓库
+        // `jarvis/python`，Tauri 开发监听器会把这些写入误认为源码变更，随后重启
+        // 整个应用、杀掉刚加载好的 worker，表现为窗口闪烁和启动失败。
+        let control_data_dir = dirs::data_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("pc-guardian")
+            .join("jarvis");
+        std::fs::create_dir_all(&control_data_dir)
+            .map_err(|e| format!("无法创建 Jarvis 数据目录 {}：{e}", control_data_dir.display()))?;
+        let python_module_dir = std::path::Path::new(&wd).join("src");
+
         let mut cmd = std::process::Command::new(&py);
-        cmd.current_dir(&wd)
+        cmd.current_dir(&control_data_dir)
             // Jarvis 只从环境变量读部署配置；不传就会落回仓库 default.toml 的
             // `[native] mode = "fake"`，界面能用但模型根本没在跑。
             .env("JARVIS_CONFIG", &config_path)
-            .env("PYTHONPATH", "src")
+            // 运行目录移出仓库后，模块目录必须用绝对路径，不能再依赖 `src` 相对值。
+            .env("PYTHONPATH", python_module_dir)
             .arg("-m")
             .arg("uvicorn")
             .arg("jarvis_backend.app:app")

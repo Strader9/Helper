@@ -43,7 +43,7 @@ interface JarvisVramStatus {
   availableMb?: number | null;
   requiredMb: number;
   jarvisRunning: boolean;
-  status: 'ready' | 'occupied' | 'insufficient' | 'unavailable';
+  status: 'ready' | 'loading' | 'occupied' | 'insufficient' | 'unavailable';
   message: string;
 }
 
@@ -310,12 +310,14 @@ export default function LumiJarvis() {
   const vramVariant =
     vram?.status === 'ready' || vram?.status === 'occupied'
       ? 'safe'
-      : vram?.status === 'insufficient'
+      : vram?.status === 'loading' || vram?.status === 'insufficient'
         ? 'warning'
         : 'neutral';
   const vramLabel =
     vram?.status === 'ready'
       ? '可启动'
+      : vram?.status === 'loading'
+        ? '正在加载'
       : vram?.status === 'occupied'
         ? 'Jarvis 已占用'
         : vram?.status === 'insufficient'
@@ -447,7 +449,9 @@ export default function LumiJarvis() {
                   <motion.div
                     className={cn(
                       'h-full rounded-full',
-                      vram?.status === 'insufficient' ? 'bg-amber-400' : 'bg-emerald-400'
+                      vram?.status === 'insufficient' || vram?.status === 'loading'
+                        ? 'bg-amber-400'
+                        : 'bg-emerald-400'
                     )}
                     animate={{ width: `${vramPercent}%` }}
                     transition={{ type: 'spring', stiffness: 90, damping: 18 }}
