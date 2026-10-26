@@ -3991,13 +3991,6 @@ pub mod commands {
 
             let mut worker_cmd = std::process::Command::new(&worker_exe);
             worker_cmd
-                // CUDA/llama 动态库与 worker 一起部署在 runtime 目录。显式固定
-                // 工作目录，避免 Tauri 从任意启动目录运行时 Windows 无法解析同级 DLL。
-                .current_dir(
-                    std::path::Path::new(&worker_exe)
-                        .parent()
-                        .unwrap_or_else(|| std::path::Path::new(&wd)),
-                )
                 .arg(&pipe_name)
                 .arg(&model_root)
                 .stdin(std::process::Stdio::null());

@@ -30,15 +30,15 @@ export function LumiPageShell({ children, icon, iconBg, title, subtitle, actions
           <>
             {actions}
             <button
-              onClick={() => navigate('/jarvis')}
+              onClick={() => navigate('/')}
               className="flex h-9 w-9 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-white/60 transition-colors hover:bg-white/10 hover:text-white"
-              title="返回 Jarvis 工作台"
+              title="返回指挥中心"
             >
               <Home size={16} />
             </button>
           </>
         }
-        onBack={() => navigate('/jarvis')}
+        onBack={() => navigate('/')}
       />
       <div className={cn('flex-1 overflow-y-auto custom-scrollbar p-5 md:p-6', contentClassName)}>
         {children}
