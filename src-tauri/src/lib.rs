@@ -2743,6 +2743,81 @@ pub mod commands {
             .map_err(|e| format!("系统指标查询失败: {}", e))
     }
 
+    /// Jarvis 启动前的显存余量判定。
+    ///
+    /// MiniCPM-o 的 6.32 GiB 权重还会产生运行时缓存和 CUDA 工作区；因此不能只拿
+    /// 权重文件大小当作门槛。这里统一保留约 0.7 GiB 安全余量，避免“勉强启动后
+    /// 静默回退到 CPU”这种看似成功、实际不可用的状态。
+    #[derive(Debug, Clone, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct JarvisVramStatus {
+        pub gpu_name: Option<String>,
+        pub used_mb: Option<u64>,
+        pub total_mb: Option<u64>,
+        pub available_mb: Option<u64>,
+        pub required_mb: u64,
+        pub jarvis_running: bool,
+        /// ready / occupied / insufficient / unavailable
+        pub status: String,
+        pub message: String,
+    }
+
+    #[tauri::command]
+    pub async fn get_jarvis_vram_status(
+        state: State<'_, AppState>,
+    ) -> Result<JarvisVramStatus, String> {
+        // 这是运行时需要的安全下限（约 7.0 GiB），不是模型文件体积。
+        const JARVIS_REQUIRED_VRAM_MB: u64 = 7_200;
+
+        let snapshot = state.inference_runtime.snapshot().await;
+        let jarvis_running = snapshot.active_role == Some(ModelRole::Jarvis);
+        let gpu = tokio::task::spawn_blocking(crate::monitoring::get_gpu_usage_windows)
+            .await
+            .map_err(|e| format!("显卡状态查询失败: {e}"))?;
+
+        match gpu {
+            Ok(gpu) if gpu.memory_total_mb > 0 => {
+                let available_mb = gpu.memory_total_mb.saturating_sub(gpu.memory_used_mb);
+                let (status, message) = if jarvis_running {
+                    (
+                        "occupied",
+                        "Jarvis 已在前台运行，显存已由它占用。无需重复启动。".to_string(),
+                    )
+                } else if available_mb >= JARVIS_REQUIRED_VRAM_MB {
+                    (
+                        "ready",
+                        "显存余量满足 Jarvis 的安全启动条件。".to_string(),
+                    )
+                } else {
+                    (
+                        "insufficient",
+                        "当前可用显存不足；请先让正在运行的本地模型释放显存，再启动 Jarvis。".to_string(),
+                    )
+                };
+                Ok(JarvisVramStatus {
+                    gpu_name: Some(gpu.name),
+                    used_mb: Some(gpu.memory_used_mb),
+                    total_mb: Some(gpu.memory_total_mb),
+                    available_mb: Some(available_mb),
+                    required_mb: JARVIS_REQUIRED_VRAM_MB,
+                    jarvis_running,
+                    status: status.to_string(),
+                    message,
+                })
+            }
+            Ok(_) | Err(_) => Ok(JarvisVramStatus {
+                gpu_name: None,
+                used_mb: None,
+                total_mb: None,
+                available_mb: None,
+                required_mb: JARVIS_REQUIRED_VRAM_MB,
+                jarvis_running,
+                status: "unavailable".to_string(),
+                message: "无法读取 NVIDIA 显存数据，不能据此判断是否适合启动 Jarvis。".to_string(),
+            }),
+        }
+    }
+
     // ============================================================
     // 设置管理命令
     // ============================================================

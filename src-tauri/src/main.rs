@@ -165,6 +165,7 @@ fn main() {
             pc_guardian_lib::commands::toggle_mini_window,
             // 系统监控命令
             pc_guardian_lib::commands::get_system_metrics,
+            pc_guardian_lib::commands::get_jarvis_vram_status,
             // 设置管理命令
             pc_guardian_lib::commands::update_setting,
             pc_guardian_lib::commands::check_autostart_status,

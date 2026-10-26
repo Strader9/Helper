@@ -36,6 +36,17 @@ interface JarvisHealth {
   version?: string;
 }
 
+interface JarvisVramStatus {
+  gpuName?: string | null;
+  usedMb?: number | null;
+  totalMb?: number | null;
+  availableMb?: number | null;
+  requiredMb: number;
+  jarvisRunning: boolean;
+  status: 'ready' | 'occupied' | 'insufficient' | 'unavailable';
+  message: string;
+}
+
 interface DuplexState {
   active?: boolean;
   session_id?: string | null;
@@ -93,6 +104,7 @@ export default function LumiJarvis() {
   const location = useLocation();
   const incomingVoiceText = (location.state as { voiceText?: string } | null)?.voiceText;
   const [health, setHealth] = useState<JarvisHealth | null>(null);
+  const [vram, setVram] = useState<JarvisVramStatus | null>(null);
   const [online, setOnline] = useState<boolean | null>(null);
   const [busyStart, setBusyStart] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -119,6 +131,11 @@ export default function LumiJarvis() {
 
   /* ── 健康检查：3s 一轮，未运行不当作错误，只是状态未知 ── */
   const probe = useCallback(async () => {
+    // 显存查询不能被 Jarvis HTTP 健康检查阻塞；后者在后端未运行时会等待较长超时，
+    // 但用户仍应立刻看到“此刻能否启动”。
+    void invoke<JarvisVramStatus>('get_jarvis_vram_status')
+      .then(setVram)
+      .catch(() => setVram(null));
     try {
       const h = await invoke<JarvisHealth>('jarvis_health');
       setHealth(h);
@@ -290,6 +307,25 @@ export default function LumiJarvis() {
         ? 'warning'
         : 'neutral';
 
+  const vramVariant =
+    vram?.status === 'ready' || vram?.status === 'occupied'
+      ? 'safe'
+      : vram?.status === 'insufficient'
+        ? 'warning'
+        : 'neutral';
+  const vramLabel =
+    vram?.status === 'ready'
+      ? '可启动'
+      : vram?.status === 'occupied'
+        ? 'Jarvis 已占用'
+        : vram?.status === 'insufficient'
+          ? '需释放显存'
+          : '未检测';
+  const vramPercent =
+    vram?.totalMb && vram.usedMb !== null && vram.usedMb !== undefined
+      ? Math.min(100, Math.max(0, (vram.usedMb / vram.totalMb) * 100))
+      : 0;
+
   const jarvisDirect = routing
     .filter(([, decision]) => decision.mode === 'direct' && decision.owner === 'jarvis')
     .map(([capability]) => CAPABILITY_LABELS[capability] ?? capability);
@@ -381,6 +417,47 @@ export default function LumiJarvis() {
                 {startError}
               </p>
             )}
+          </GlassCard>
+        </div>
+
+        {/* 显存监控：只报告真实 nvidia-smi 数据与后端安全判定，不以模型文件大小猜测。 */}
+        <div>
+          <SectionTitle label="显存监控" color="bg-emerald-400" />
+          <GlassCard hoverEffect={false}>
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-bold text-white/85">Jarvis 启动条件</p>
+                  <Badge variant={vramVariant}>{vramLabel}</Badge>
+                </div>
+                <p className="mt-1.5 text-[11px] leading-relaxed text-white/40">
+                  {vram?.message ?? '正在读取 NVIDIA 显存状态…'}
+                </p>
+              </div>
+              <div className="w-full shrink-0 md:w-72">
+                <div className="flex justify-between gap-3 text-[11px] text-white/45">
+                  <span className="truncate">{vram?.gpuName ?? 'NVIDIA GPU'}</span>
+                  <span className="shrink-0 font-mono">
+                    {vram?.usedMb !== null && vram?.usedMb !== undefined && vram?.totalMb
+                      ? `${(vram.usedMb / 1024).toFixed(1)} / ${(vram.totalMb / 1024).toFixed(1)} GiB`
+                      : '—'}
+                  </span>
+                </div>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/[0.08]">
+                  <motion.div
+                    className={cn(
+                      'h-full rounded-full',
+                      vram?.status === 'insufficient' ? 'bg-amber-400' : 'bg-emerald-400'
+                    )}
+                    animate={{ width: `${vramPercent}%` }}
+                    transition={{ type: 'spring', stiffness: 90, damping: 18 }}
+                  />
+                </div>
+                <p className="mt-1.5 text-right text-[10px] text-white/30">
+                  可用 {vram?.availableMb !== null && vram?.availableMb !== undefined ? `${(vram.availableMb / 1024).toFixed(1)} GiB` : '—'} · 启动需 {((vram?.requiredMb ?? 7200) / 1024).toFixed(1)} GiB
+                </p>
+              </div>
+            </div>
           </GlassCard>
         </div>
 
