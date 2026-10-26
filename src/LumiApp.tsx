@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type CSSProperties } from 'react';
 import { HashRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -14,15 +14,21 @@ import {
   Puzzle,
   ScrollText,
   Settings as SettingsIcon,
+  ShieldCheck,
   UserRound,
   Users,
   Wrench,
 } from 'lucide-react';
 import { AppProvider } from './contexts/AppContext';
-import { LumiCoreSphere } from './components/LumiCoreSphere';
+import { LumiCoreSphere, type LumiCoreOrbitTask } from './components/LumiCoreSphere';
+import Galaxy from './components/reactbits/Galaxy';
+import GradientWaves from './components/reactbits/GradientWaves';
+import { GridScan } from './components/reactbits/GridScan';
+import type { MissionTheme } from './components/MissionCoreMaterial';
 import { LumiPermissionGate } from './components/lumi/LumiPermissionGate';
 import { useVoice } from './hooks/useVoice';
 import './index.css';
+import './styles/deep-space-command.css';
 
 // 左侧功能入口（对齐 LumiCore 截图，点击跳转对应页面）
 //
@@ -33,13 +39,13 @@ const APP_ENTRIES = [
   { icon: ScrollText, label: '运行日志', color: '#7dd3fc', path: '/logs' },
   { icon: Wrench, label: '工具', color: '#fcd34d', path: '/tools' },
   { icon: Puzzle, label: '技能大厅', color: '#6ee7b7', path: '/skills' },
-  { icon: Users, label: 'Team', color: '#93c5fd', path: '/devices' },
+  { icon: Users, label: '设备', color: '#93c5fd', path: '/devices' },
   { icon: Brain, label: '记忆化身', color: '#d8b4fe', path: '/memory' },
   { icon: Palette, label: '形象设计室', color: '#67e8f9', path: '/media' },
   // 「声音」原本和底栏的「设置」指向同一页，重复且没内容；
   // 换成贾维斯——语音输入与播报都在那一页，入口才有落点。
   { icon: Ear, label: 'Jarvis 设置', color: '#a5b4fc', path: '/jarvis' },
-  { icon: Music, label: 'Music', color: '#fda4af', path: '/automation' },
+  { icon: Music, label: '自动化', color: '#fda4af', path: '/automation' },
 ];
 
 // 底部导航
@@ -52,40 +58,59 @@ const BOTTOM_NAV = [
   { icon: SettingsIcon, label: '设置', path: '/settings' },
 ];
 
-// 人格卡片数据类型
-interface Persona {
+interface ThemeOption {
+  id: MissionTheme;
   name: string;
-  role: string;
-  permission: string;
-  color: string;
-  level: number;
+  engine: string;
+  description: string;
+  accent: string;
 }
 
-// 默认人格（后端无数据时使用）
-const DEFAULT_PERSONAS: Persona[] = [
-  { name: '苍穹', role: '聊天', permission: '请求批准', color: 'linear-gradient(135deg, #f59e0b, #d97706)', level: 30 },
-  { name: '星云', role: '助手', permission: '替我审批', color: 'linear-gradient(135deg, #a855f7, #7c3aed)', level: 60 },
-  { name: '赛博', role: '自主', permission: '完全访问', color: 'linear-gradient(135deg, #22c55e, #16a34a)', level: 100 },
+const THEME_OPTIONS: ThemeOption[] = [
+  { id: 'oscillation', name: '振荡', engine: 'GRADIENT WAVES', description: '雾状流体', accent: '#ff9ffc' },
+  { id: 'nebula', name: '星云', engine: 'GALAXY', description: '璀璨深空', accent: '#a78bfa' },
+  { id: 'cyber', name: '赛博', engine: 'GRID SCAN', description: '终端矩阵', accent: '#35ff82' },
 ];
 
 function CommandCenter() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [activePersona, setActivePersona] = useState(1);
-  const [personas, setPersonas] = useState<Persona[]>(DEFAULT_PERSONAS);
+  const [activeTheme, setActiveTheme] = useState<MissionTheme>('nebula');
   const [learningStats, setLearningStats] = useState({ interactions: 128, optimizations: 3, status: '正在学习你的使用习惯...' });
+  const [tasks, setTasks] = useState<LumiCoreOrbitTask[]>([
+    { id: '1', title: '系统监控', state: 'working', active: true },
+    { id: '2', title: '记忆整理', state: 'queued', active: true },
+  ]);
+
   const { isListening, transcript, startListening, stopListening, supported } = useVoice();
 
-  // 接入真实数据：人格配置
+  // 接入真实数据：活跃任务
   useEffect(() => {
-    invoke<{ key: string; value: string }[]>('get_settings')
-      .then((items) => {
-        const personaSetting = items.find((s) => s.key === 'guardian.personas');
-        if (personaSetting) {
-          try {
-            const parsed = JSON.parse(personaSetting.value);
-            if (Array.isArray(parsed) && parsed.length > 0) setPersonas(parsed);
-          } catch { /* 保持默认 */ }
+    invoke<any>('get_active_task')
+      .then((task) => {
+        if (task && task.id) {
+          setTasks([{
+            id: String(task.id),
+            title: task.title || '执行中任务',
+            state: task.status === 'completed' ? 'completed' : task.status === 'failed' ? 'attention' : 'working',
+            active: true,
+          }]);
+        }
+      })
+      .catch(() => { /* 保持默认任务 */ });
+
+    invoke<any[]>('get_tasks')
+      .then((taskList) => {
+        if (Array.isArray(taskList) && taskList.length > 0) {
+          const active = taskList.filter((t: any) => t.status === 'running' || t.status === 'pending').slice(0, 3);
+          if (active.length > 0) {
+            setTasks(active.map((t: any) => ({
+              id: String(t.id),
+              title: t.title || t.name || '任务',
+              state: t.status === 'running' ? 'working' : 'queued',
+              active: true,
+            })));
+          }
         }
       })
       .catch(() => { /* 保持默认 */ });
@@ -114,8 +139,7 @@ function CommandCenter() {
     }
   }, [isListening, startListening, stopListening]);
 
-  // 首页话筒是 Jarvis 的语音入口：识别完成后转入 Jarvis 对话，
-  // 不再绕到旧的通用聊天页。
+  // 首页话筒是 Jarvis 的语音入口，识别完成后直接转入 Jarvis 对话。
   useEffect(() => {
     if (transcript && transcript.trim()) {
       navigate('/jarvis', { state: { voiceText: transcript } });
@@ -123,130 +147,218 @@ function CommandCenter() {
   }, [transcript, navigate]);
 
   return (
-    // 背景交给 body::before 的星云层，这里必须保持透明，否则会把景深整个盖掉
-    <div className="relative h-screen w-full overflow-hidden bg-transparent">
-      {/* 中央粒子球指挥场：监听时球体变红（attention），否则保持待命紫 */}
-      <LumiCoreSphere
-        tasks={[]}
-        showTaskStatus={false}
-        state={isListening ? 'attention' : 'ready'}
-        labels={{
-          aria: 'PC Guardian 指挥中心',
-          lumiCore: 'PC GUARDIAN',
-          ready: '待命',
-          working: '执行中',
-          attention: '需关注',
-          noTasks: '暂无活跃任务',
-        }}
-      />
+    <div className="mission-control relative h-screen w-full overflow-hidden" data-mission-theme={activeTheme}>
+      <div className="mission-control__background" aria-hidden="true">
+        {activeTheme === 'oscillation' && (
+          <GradientWaves
+            className="mission-control__theme-effect"
+            horizonColor="#5227ff"
+            waveColor="#ff9ffc"
+            crestColor="#ffffff"
+            backgroundColor="#02030a"
+            speed={0.4}
+            amplitude={2.5}
+            waveScale={0.6}
+            waveRatio={0.9}
+            swell={35}
+            turbulence={20}
+            tilt={64}
+            zoom={1}
+            height={5.5}
+            fogDepth={15}
+            relief={1}
+            lightAngle={120}
+            brightness={1}
+            opacity={1}
+            grain={0.2}
+            quality="medium"
+            intro
+            mouseInteraction
+            parallaxStrength={0.5}
+            mouseStrength={0.6}
+            swellOnClick
+            dpr={1}
+          />
+        )}
+        {activeTheme === 'nebula' && (
+          <Galaxy
+            className="mission-control__theme-effect mission-control__galaxy"
+            starColors={['#67e8f9', '#60a5fa', '#c084fc', '#f6c76e']}
+            density={1.18}
+            starSpeed={0.5}
+            speed={0.86}
+            layers={6}
+            starSize={1.08}
+            glowIntensity={0.48}
+            flareIntensity={1.15}
+            twinkleIntensity={0.58}
+            rotationSpeed={0.08}
+            mouseInteraction
+            mouseRepulsion
+            repulsionStrength={1.4}
+            clickWarp
+            intro
+            transparent={false}
+            backgroundColor="#01030a"
+            opacity={1}
+            dpr={1}
+          />
+        )}
+        {activeTheme === 'cyber' && (
+          <GridScan
+            className="mission-control__theme-effect"
+            linesColor="#174635"
+            scanColor="#35ff82"
+            cells={11}
+            lineThickness={1}
+            lineStyle="solid"
+            depth={3.6}
+            depthFade={0.66}
+            parallax={1}
+            points
+            reflection={0.42}
+            shading={0.78}
+            scanDirection="pingpong"
+            scanDuration={2.8}
+            scanDelay={1.2}
+            scanWidth={1}
+            trail={0.58}
+            glow={0.82}
+            autoScan
+            interactive
+            clickEffect="ping"
+            enableWebcam={false}
+            showPreview={false}
+            enableGyro={false}
+            intro
+            dpr={1}
+          />
+        )}
+      </div>
 
-      {/* 左侧功能入口 */}
-      <div className="absolute left-5 top-20 z-30 flex flex-col gap-3">
+      <header className="mission-header">
+        <div className="mission-brand">
+          <span className="mission-brand__mark"><ShieldCheck size={15} /></span>
+          <span>
+            <strong>PC GUARDIAN</strong>
+            <small>LOCAL-FIRST AI COMMAND</small>
+          </span>
+        </div>
+        <div className="mission-header__coordinate" aria-hidden="true">ORBITAL NODE · CN-01</div>
+        <div className="mission-header__status">
+          <span><i />系统安全</span>
+          <span>{String(tasks.filter(task => task.active).length).padStart(2, '0')} 项任务</span>
+        </div>
+      </header>
+
+      <aside className="mission-rail" aria-label="功能入口">
+        <div className="mission-section-label">SYSTEMS</div>
         {APP_ENTRIES.map((entry, i) => {
           const Icon = entry.icon;
           return (
-            <div
-              key={i}
-              className="group flex cursor-pointer flex-col items-center gap-1.5"
-              onClick={() => navigate(entry.path)}
-            >
-              <div
-                className="relative flex h-11 w-11 items-center justify-center rounded-2xl border border-white/[0.08] bg-white/[0.03] backdrop-blur-xl transition-all duration-300 group-hover:-translate-y-0.5 group-hover:border-white/20 group-hover:bg-white/[0.07]"
-                style={{ boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.07), 0 4px 16px -8px rgba(0,0,0,0.8)' }}
-              >
-                <Icon size={18} strokeWidth={1.75} style={{ color: entry.color }} />
-                {/* hover 时的同色微光，比整块色底克制得多 */}
-                <span
-                  className="pointer-events-none absolute inset-0 rounded-2xl opacity-0 transition-opacity duration-300 group-hover:opacity-100"
-                  style={{ boxShadow: `0 0 18px -4px ${entry.color}55` }}
-                />
-              </div>
-              <span className="text-[11px] font-medium text-white/40 transition-colors group-hover:text-white/75">
-                {entry.label}
+            <button key={entry.label} className="mission-rail__item" onClick={() => navigate(entry.path)}>
+              <span className="mission-rail__index">{String(i + 1).padStart(2, '0')}</span>
+              <span className="mission-rail__icon" style={{ '--mission-accent': entry.color } as CSSProperties}>
+                <Icon size={16} strokeWidth={1.55} />
               </span>
-            </div>
+              <span className="mission-rail__label">{entry.label}</span>
+            </button>
           );
         })}
-      </div>
+      </aside>
 
-      {/* 右侧人格卡片 + 学习流 */}
-      <div className="absolute right-5 top-20 z-50 flex w-64 flex-col gap-3">
-        {personas.map((persona, i) => (
-          <div
-            key={i}
-            className="cursor-pointer rounded-2xl p-3.5 text-white transition-all"
-            style={{
-              background: persona.color,
-              opacity: activePersona === i ? 1 : 0.7,
-              transform: activePersona === i ? 'scale(1.02)' : 'scale(1)',
-              border: '1px solid rgba(255,255,255,0.1)',
-            }}
-            onClick={() => setActivePersona(i)}
-          >
-            <div className="mb-1.5 flex items-center gap-2">
-              <span className="text-sm font-bold">{persona.name}</span>
-              <span className="text-[10px] opacity-70">· {persona.role}</span>
-            </div>
-            <div className="text-[10px] opacity-60">{persona.permission}</div>
-            <div className="mt-2 h-0.5 overflow-hidden rounded-full bg-white/20">
-              <div className="h-full rounded-full bg-white/60" style={{ width: `${persona.level}%` }} />
-            </div>
-          </div>
-        ))}
+      <main className="mission-core-stage">
+        <LumiCoreSphere
+          tasks={tasks}
+          showTaskStatus={false}
+          theme={activeTheme}
+          state={isListening ? 'attention' : tasks.some(task => task.state === 'working') ? 'working' : 'ready'}
+          labels={{
+            aria: 'PC Guardian 指挥中心',
+            lumiCore: 'GUARDIAN CORE',
+            ready: '系统待命',
+            working: '任务执行中',
+            attention: '语音链路开启',
+            noTasks: '当前轨道无任务',
+          }}
+        />
+      </main>
 
-        {/* 学习流面板 */}
-        <div className="rounded-2xl p-4 backdrop-blur-xl" style={{ background: 'rgba(10,14,30,0.8)', border: '1px solid rgba(255,255,255,0.08)' }}>
-          <div className="mb-2.5 flex items-center justify-between">
-            <span className="text-xs font-bold text-white/80">GUARDIAN 学习流</span>
-            <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-white/60">实时</span>
+      <aside className="mission-intelligence" aria-label="视觉主题与学习状态">
+        <div className="mission-panel mission-panel--personas">
+          <div className="mission-panel__header">
+            <span>VISUAL MATRIX</span>
+            <span>皮肤主题</span>
           </div>
-          <div className="text-[11px] leading-relaxed text-white/50">
-            {learningStats.status}
-            <br />已记录 {learningStats.interactions} 条交互模式
-            <br />今日优化 {learningStats.optimizations} 项工具调用
+          <div className="mission-personas">
+            {THEME_OPTIONS.map((theme) => {
+              const selected = activeTheme === theme.id;
+              return (
+                <button
+                  key={theme.id}
+                  className={`mission-persona ${selected ? 'is-active' : ''}`}
+                  style={{ '--mission-accent': theme.accent } as CSSProperties}
+                  onClick={() => setActiveTheme(theme.id)}
+                  aria-pressed={selected}
+                >
+                  <span className="mission-persona__signal" />
+                  <span className="mission-persona__body">
+                    <span className="mission-persona__name">{theme.name}</span>
+                    <span className="mission-persona__meta">{theme.engine} · {theme.description}</span>
+                  </span>
+                  <span className="mission-persona__level">{selected ? 'ON' : '—'}</span>
+                  <span className="mission-persona__track"><i style={{ width: selected ? '100%' : '18%' }} /></span>
+                </button>
+              );
+            })}
           </div>
         </div>
-      </div>
 
-      {/* 底部语音交互区 */}
-      <div className="absolute bottom-24 left-1/2 z-25 flex -translate-x-1/2 flex-col items-center gap-3">
+        <div className="mission-panel mission-panel--learning">
+          <div className="mission-panel__header">
+            <span>LEARNING STREAM</span>
+            <span className="mission-live"><i />实时</span>
+          </div>
+          <p>{learningStats.status}</p>
+          <div className="mission-metrics">
+            <div><strong>{learningStats.interactions}</strong><span>交互样本</span></div>
+            <div><strong>{learningStats.optimizations}</strong><span>今日优化</span></div>
+          </div>
+        </div>
+      </aside>
+
+      <div className="mission-voice">
         <button
-          className="flex h-14 w-14 items-center justify-center rounded-full backdrop-blur-md transition-all"
-          style={{
-            background: isListening ? 'rgba(239,68,68,0.2)' : 'rgba(255,255,255,0.08)',
-            border: `1px solid ${isListening ? 'rgba(239,68,68,0.5)' : 'rgba(255,255,255,0.15)'}`,
-            color: isListening ? '#ef4444' : 'rgba(255,255,255,0.7)',
-          }}
+          className={isListening ? 'is-listening' : ''}
           onClick={handleVoiceToggle}
           title={supported ? '点击开始语音会话' : '当前浏览器不支持语音识别'}
         >
-          {isListening ? <MicOff size={22} strokeWidth={1.8} /> : <Mic size={22} strokeWidth={1.8} />}
+          {isListening ? <MicOff size={20} strokeWidth={1.65} /> : <Mic size={20} strokeWidth={1.65} />}
         </button>
-        <span className="text-[11px] text-white/40">
-          {isListening ? `正在监听... ${transcript || ''}` : '语音交互 点击开始语音会话'}
-        </span>
+        <span>{isListening ? `正在监听 ${transcript || ''}` : 'VOICE LINK · 点击建立语音链路'}</span>
       </div>
 
-      {/* 底部图标导航 */}
-      <div className="absolute bottom-4 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 rounded-2xl p-2 backdrop-blur-xl" style={{ background: 'rgba(10,14,30,0.6)', border: '1px solid rgba(255,255,255,0.08)' }}>
-        {BOTTOM_NAV.map((item, i) => {
+      <nav className="mission-dock" aria-label="主导航">
+        {BOTTOM_NAV.map((item) => {
           const Icon = item.icon;
           const isActive = location.pathname === item.path;
           return (
             <button
-              key={i}
-              className="relative flex h-10 w-10 items-center justify-center rounded-xl transition-all hover:bg-white/[0.07]"
-              style={{ color: isActive ? '#a5f3fc' : 'rgba(255,255,255,0.4)' }}
+              key={item.label}
+              className={isActive ? 'is-active' : ''}
               onClick={() => navigate(item.path)}
               title={item.label}
             >
-              <Icon size={17} strokeWidth={1.75} />
-              {isActive && (
-                <span className="absolute inset-x-2.5 -bottom-0.5 h-px rounded-full bg-cyan-300/60" />
-              )}
+              <Icon size={16} strokeWidth={1.55} />
+              <span>{item.label}</span>
             </button>
           );
         })}
+      </nav>
+
+      <div className="mission-footer-data" aria-hidden="true">
+        <span>ENCRYPTED LOCAL CHANNEL</span>
+        <span>OLLAMA / SQLITE / TAURI</span>
       </div>
     </div>
   );
