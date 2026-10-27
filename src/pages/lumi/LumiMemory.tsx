@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
@@ -37,6 +37,30 @@ interface MemoryItem {
   created_at: string;
   last_accessed_at: string;
   source: string;
+}
+
+interface ProfileEvidence {
+  id: string;
+  content: string;
+  importance: number;
+  confidence: number;
+  source: string;
+  updated_at: string;
+  access_count: number;
+}
+
+interface AdaptationProfile {
+  generated_at: string;
+  total_memories: number;
+  active_memories: number;
+  durable_memories: number;
+  episodic_memories: number;
+  consolidated_memories: number;
+  coverage_score: number;
+  preferences: ProfileEvidence[];
+  habits: ProfileEvidence[];
+  facts: ProfileEvidence[];
+  recent_experiences: ProfileEvidence[];
 }
 
 /* ── 映射工具 ───────────────────────────────────────── */
@@ -169,10 +193,18 @@ export default function LumiMemory() {
   const [pulseKey, setPulseKey] = useState(0);
   const [analysisOpen, setAnalysisOpen] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
-  const [analysisProgress, setAnalysisProgress] = useState(0);
-  const analysisTimerRef = useRef<number | null>(null);
+  const [profile, setProfile] = useState<AdaptationProfile | null>(null);
+  const [analysisNote, setAnalysisNote] = useState<string | null>(null);
 
   /* ── 数据加载 ───────────────────────────────────────── */
+  const loadProfile = useCallback(async () => {
+    try {
+      setProfile(await invoke<AdaptationProfile>('get_memory_profile'));
+    } catch {
+      setProfile(null);
+    }
+  }, []);
+
   const loadMemories = async (searchQuery?: string) => {
     setLoading(true);
     try {
@@ -181,6 +213,7 @@ export default function LumiMemory() {
         ? await invoke<MemoryItem[]>('search_memories', { query: q, limit: 100 })
         : await invoke<MemoryItem[]>('get_memories', { limit: 100 });
       setMemories(Array.isArray(list) ? list : []);
+      if (!q) void loadProfile();
     } catch (e) {
       setMemories([]);
       toast.error(`记忆加载失败：${typeof e === 'string' ? e : '未知错误'}`);
@@ -203,15 +236,6 @@ export default function LumiMemory() {
     return () => clearTimeout(t);
   }, [confirmingId]);
 
-  // 清理分析定时器
-  useEffect(() => {
-    return () => {
-      if (analysisTimerRef.current !== null) {
-        window.clearInterval(analysisTimerRef.current);
-      }
-    };
-  }, []);
-
   /* ── 统计 ─────────────────────────────────────────── */
   const stats = useMemo(() => {
     let today = 0;
@@ -232,34 +256,6 @@ export default function LumiMemory() {
 
   /* ── 雷达图数据 ────────────────────────────────────── */
   const radarValues: RadarDimensions = useMemo(() => computeRadarValues(memories), [memories]);
-
-  /* ── 类型分布（分析面板用）──────────────────────────── */
-  const typeDistribution = useMemo(() => {
-    const counts: Record<string, number> = {};
-    TYPE_OPTIONS.forEach((t) => { counts[t] = 0; });
-    memories.forEach((m) => {
-      counts[m.memory_type] = (counts[m.memory_type] ?? 0) + 1;
-    });
-    const max = Math.max(...Object.values(counts), 1);
-    return TYPE_OPTIONS.map((t) => ({
-      type: t,
-      label: typeLabel(t),
-      count: counts[t],
-      pct: (counts[t] / max) * 100,
-      barCls: TYPE_META[t]?.bar ?? 'bg-white/30',
-    }));
-  }, [memories]);
-
-  /* ── 重要性分布 ────────────────────────────────────── */
-  const importanceDistribution = useMemo(() => {
-    let high = 0, medium = 0, low = 0;
-    memories.forEach((m) => {
-      if (m.importance >= 60) high++;
-      else if (m.importance >= 40) medium++;
-      else low++;
-    });
-    return { high, medium, low };
-  }, [memories]);
 
   /* ── 前端筛选 ───────────────────────────────────────── */
   const filtered = useMemo(() => {
@@ -315,6 +311,7 @@ export default function LumiMemory() {
       setNewStars(3);
       setPulseKey((k) => k + 1);
       await loadMemories();
+      await loadProfile();
     } catch (e) {
       toast.error(`保存失败：${typeof e === 'string' ? e : '未知错误'}`);
     } finally {
@@ -333,6 +330,7 @@ export default function LumiMemory() {
       setMemories((prev) => prev.filter((item) => item.id !== m.id));
       if (selectedId === m.id) setSelectedId(null);
       setConfirmingId(null);
+      await loadProfile();
       toast.success('记忆已删除');
     } catch (e) {
       toast.error(`删除失败：${typeof e === 'string' ? e : '未知错误'}`);
@@ -356,8 +354,8 @@ export default function LumiMemory() {
     }
     setEditSaving(true);
     try {
-      await invoke<boolean>('delete_memory', { memory_id: editing.id });
-      await invoke<string>('add_memory', {
+      await invoke<boolean>('update_memory_item', {
+        memory_id: editing.id,
         content,
         memory_type: editType,
         importance: starsToImportance(editStars),
@@ -365,6 +363,7 @@ export default function LumiMemory() {
       toast.success('记忆已更新');
       setEditing(null);
       await loadMemories();
+      await loadProfile();
     } catch (e) {
       toast.error(`更新失败：${typeof e === 'string' ? e : '未知错误'}`);
     } finally {
@@ -372,28 +371,28 @@ export default function LumiMemory() {
     }
   };
 
-  /* ── 操作：启动记忆分析（模拟蒸馏过程）───────────────── */
-  const startAnalysis = () => {
+  /* ── 操作：执行后端真实固化并重建画像 ──────────────── */
+  const startAnalysis = async () => {
     if (analyzing || memories.length === 0) return;
     setAnalyzing(true);
-    setAnalysisProgress(0);
-    if (analysisTimerRef.current !== null) {
-      window.clearInterval(analysisTimerRef.current);
+    setAnalysisNote(null);
+    try {
+      const result = await invoke<{ merged_into: number; consumed: number; profile: AdaptationProfile }>(
+        'analyze_and_consolidate_memories',
+      );
+      setProfile(result.profile);
+      setAnalysisNote(
+        result.merged_into > 0
+          ? `已将 ${result.consumed} 条相关经历固化为 ${result.merged_into} 条长期记忆。`
+          : '已完成检查，暂时没有达到固化条件的重复经历。',
+      );
+      setPulseKey((k) => k + 1);
+      await loadMemories();
+    } catch (error) {
+      toast.error(`画像更新失败：${typeof error === 'string' ? error : '未知错误'}`);
+    } finally {
+      setAnalyzing(false);
     }
-    analysisTimerRef.current = window.setInterval(() => {
-      setAnalysisProgress((prev) => {
-        if (prev >= 100) {
-          if (analysisTimerRef.current !== null) {
-            window.clearInterval(analysisTimerRef.current);
-            analysisTimerRef.current = null;
-          }
-          setAnalyzing(false);
-          setPulseKey((k) => k + 1);
-          return 100;
-        }
-        return prev + Math.random() * 8 + 2;
-      });
-    }, 120);
   };
 
   /* ── 渲染：星级选择器 ──────────────────────────────── */
@@ -419,8 +418,8 @@ export default function LumiMemory() {
     <LumiPageShell
       icon={<Brain size={20} />}
       iconBg="bg-violet-500/15 border-violet-400/20 text-violet-400"
-      title="记忆库"
-      subtitle={loading ? '正在加载...' : `${memories.length} 条记忆 · 认知核心已激活`}
+      title="记忆化身"
+      subtitle={loading ? '正在加载...' : `${memories.length} 条记忆 · 偏好与经历分层管理`}
     >
       {/* ══════════════════════════════════════════════════
           记忆核心可视化区（Orb + Radar + 统计）
@@ -479,7 +478,7 @@ export default function LumiMemory() {
           {/* 右：雷达图 */}
           <div className="flex flex-col items-center gap-1">
             <MemoryRadar values={radarValues} size={180} delay={300} />
-            <p className="text-[9px] font-bold uppercase tracking-wider text-white/35">认知风格画像</p>
+            <p className="text-[9px] font-bold uppercase tracking-wider text-white/35">记忆证据构成</p>
           </div>
         </div>
       </motion.div>
@@ -564,7 +563,7 @@ export default function LumiMemory() {
             )}
           >
             <ScanLine size={13} />
-            记忆分析
+            用户画像
             <ChevronDown size={12} className={cn('transition-transform', analysisOpen && 'rotate-180')} />
           </button>
         </div>
@@ -597,7 +596,7 @@ export default function LumiMemory() {
       </div>
 
       {/* ══════════════════════════════════════════════════
-          记忆分析面板（可折叠）
+          用户适应画像（可折叠）
           ══════════════════════════════════════════════════ */}
       <AnimatePresence initial={false}>
         {analysisOpen && (
@@ -615,124 +614,79 @@ export default function LumiMemory() {
                     <ScanLine size={15} />
                   </div>
                   <div>
-                    <h3 className="text-xs font-black text-white/90">记忆蒸馏分析</h3>
-                    <p className="text-[10px] text-white/35">从记忆数据中提取认知风格与分布特征</p>
+                    <h3 className="text-xs font-black text-white/90">用户适应画像</h3>
+                    <p className="text-[10px] text-white/35">只整理有来源的偏好、习惯、事实与经历，不推测人格</p>
                   </div>
                 </div>
-                {!analyzing && analysisProgress < 100 && (
-                  <button
-                    onClick={startAnalysis}
-                    disabled={memories.length === 0}
-                    className="rounded-lg border border-violet-400/30 bg-violet-400/10 px-3 py-1.5 text-[10px] font-black text-violet-300 transition-colors hover:bg-violet-400/20 disabled:opacity-30"
-                  >
-                    开始分析
-                  </button>
-                )}
-                {analyzing && (
-                  <span className="flex items-center gap-1.5 text-[10px] font-bold text-violet-300">
-                    <span className="h-2 w-2 animate-ping rounded-full bg-violet-400" />
-                    分析中 {Math.min(100, Math.round(analysisProgress))}%
-                  </span>
-                )}
+                <button
+                  onClick={() => void startAnalysis()}
+                  disabled={analyzing || memories.length === 0}
+                  className="rounded-lg border border-violet-400/30 bg-violet-400/10 px-3 py-1.5 text-[10px] font-black text-violet-300 transition-colors hover:bg-violet-400/20 disabled:opacity-30"
+                >
+                  {analyzing ? '正在固化…' : '更新画像并固化'}
+                </button>
               </div>
 
-              {/* 扫描进度条 */}
-              {(analyzing || analysisProgress >= 100) && (
-                <div className="mb-4">
-                  <div className="relative h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
-                    <motion.div
-                      className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-violet-500 to-celestial-saturn"
-                      initial={{ width: '0%' }}
-                      animate={{ width: `${Math.min(100, analysisProgress)}%` }}
-                      transition={{ duration: 0.2 }}
-                    />
-                    {analyzing && (
-                      <div className="absolute inset-0 animate-pulse bg-gradient-to-r from-transparent via-white/20 to-transparent" />
-                    )}
-                  </div>
-                </div>
+              {analysisNote && (
+                <p className="mb-4 rounded-lg border border-emerald-400/20 bg-emerald-400/[0.07] p-3 text-[10px] text-emerald-300">
+                  {analysisNote}
+                </p>
               )}
 
-              {/* 分析结果 */}
-              {analysisProgress >= 100 && !analyzing && (
-                <motion.div
-                  initial={{ opacity: 0, y: 8 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.4 }}
-                  className="grid grid-cols-1 gap-5 md:grid-cols-2"
-                >
-                  {/* 类型分布 */}
-                  <div>
-                    <p className="mb-3 text-[10px] font-bold uppercase tracking-wider text-white/40">类型分布</p>
-                    <div className="space-y-2.5">
-                      {typeDistribution.map((d) => (
-                        <div key={d.type} className="flex items-center gap-2">
-                          <span className="w-14 shrink-0 text-[10px] font-bold text-white/50">{d.label}</span>
-                          <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-white/[0.05]">
-                            <motion.div
-                              initial={{ width: 0 }}
-                              animate={{ width: `${d.pct}%` }}
-                              transition={{ duration: 0.8, ease: 'easeOut' }}
-                              className={cn('absolute inset-y-0 left-0 rounded-full', d.barCls)}
-                              style={{ opacity: 0.7 }}
-                            />
-                          </div>
-                          <span className="w-6 shrink-0 text-right text-[10px] font-bold tabular-nums text-white/40">{d.count}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* 重要性分布 + 摘要 */}
-                  <div className="space-y-4">
-                    <div>
-                      <p className="mb-3 text-[10px] font-bold uppercase tracking-wider text-white/40">重要性分布</p>
-                      <div className="flex gap-2">
-                        {[
-                          { label: '高', count: importanceDistribution.high, cls: 'bg-amber-400/20 text-amber-300 border-amber-400/30' },
-                          { label: '中', count: importanceDistribution.medium, cls: 'bg-cyan-400/20 text-cyan-300 border-cyan-400/30' },
-                          { label: '低', count: importanceDistribution.low, cls: 'bg-white/10 text-white/50 border-white/15' },
-                        ].map((b) => (
-                          <div key={b.label} className={cn('flex-1 rounded-lg border px-3 py-2 text-center', b.cls)}>
-                            <p className="text-lg font-black tabular-nums">{b.count}</p>
-                            <p className="text-[9px] font-bold uppercase tracking-wider opacity-70">{b.label}</p>
-                          </div>
-                        ))}
+              {profile ? (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                    {[
+                      ['画像覆盖度', `${profile.coverage_score}%`],
+                      ['稳定记忆', profile.durable_memories],
+                      ['情景记忆', profile.episodic_memories],
+                      ['已固化原始项', profile.consolidated_memories],
+                    ].map(([label, value]) => (
+                      <div key={String(label)} className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
+                        <p className="text-[9px] text-white/35">{label}</p>
+                        <p className="mt-1 text-lg font-black text-white/80">{value}</p>
                       </div>
-                    </div>
-                    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] p-3">
-                      <p className="text-[10px] leading-relaxed text-white/45">
-                        <span className="font-bold text-white/60">分析摘要：</span>
-                        当前记忆库共 <span className="text-celestial-saturn">{stats.total}</span> 条，
-                        平均权重 <span className="text-violet-300">{stats.avgImp}</span>，
-                        高重要性记忆占比 <span className="text-amber-300">{stats.total > 0 ? Math.round((stats.high / stats.total) * 100) : 0}%</span>。
-                        认知风格以 <span className="text-celestial-saturn">{
-                          Object.entries(radarValues).sort((a, b) => b[1] - a[1])[0]?.[0] === 'analytical' ? '分析性' :
-                          Object.entries(radarValues).sort((a, b) => b[1] - a[1])[0]?.[0] === 'intuitive' ? '直觉性' :
-                          Object.entries(radarValues).sort((a, b) => b[1] - a[1])[0]?.[0] === 'systematic' ? '系统性' :
-                          Object.entries(radarValues).sort((a, b) => b[1] - a[1])[0]?.[0] === 'creative' ? '创造性' :
-                          Object.entries(radarValues).sort((a, b) => b[1] - a[1])[0]?.[0] === 'warmth' ? '温暖度' :
-                          Object.entries(radarValues).sort((a, b) => b[1] - a[1])[0]?.[0] === 'directness' ? '直接度' :
-                          Object.entries(radarValues).sort((a, b) => b[1] - a[1])[0]?.[0] === 'playfulness' ? '趣味性' : '正式度'
-                        }</span> 为主导维度。
-                      </p>
-                    </div>
+                    ))}
                   </div>
-                </motion.div>
-              )}
 
-              {/* 未分析提示 */}
-              {analysisProgress < 100 && !analyzing && memories.length > 0 && (
-                <div className="flex flex-col items-center justify-center gap-2 py-6 text-center">
-                  <ScanLine size={24} className="text-white/20" />
-                  <p className="text-xs text-white/35">点击「开始分析」对记忆库进行蒸馏分析</p>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    {[
+                      { title: '明确偏好', items: profile.preferences, empty: '尚未记录明确偏好' },
+                      { title: '应用与工作习惯', items: profile.habits, empty: '尚未记录稳定习惯' },
+                      { title: '长期事实', items: profile.facts, empty: '尚未形成长期事实' },
+                      { title: '近期经历', items: profile.recent_experiences, empty: '暂无近期经历证据' },
+                    ].map((section) => (
+                      <div key={section.title} className="rounded-xl border border-white/[0.06] bg-black/10 p-3">
+                        <p className="mb-2 text-[10px] font-bold uppercase tracking-wider text-white/45">{section.title}</p>
+                        {section.items.length === 0 ? (
+                          <p className="text-[10px] text-white/25">{section.empty}</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {section.items.map((item) => (
+                              <button
+                                key={item.id}
+                                onClick={() => setSelectedId(item.id)}
+                                className="block w-full rounded-lg border border-white/[0.05] bg-white/[0.025] p-2 text-left transition-colors hover:border-violet-400/25"
+                              >
+                                <p className="line-clamp-2 text-[11px] leading-relaxed text-white/65">{item.content}</p>
+                                <p className="mt-1 text-[9px] text-white/25">
+                                  证据 {item.confidence}% · {['manual', 'user_explicit'].includes(item.source) ? '用户确认' : item.source}
+                                </p>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              )}
-              {memories.length === 0 && (
+              ) : memories.length === 0 ? (
                 <div className="flex flex-col items-center justify-center gap-2 py-6 text-center">
                   <Inbox size={24} className="text-white/20" />
                   <p className="text-xs text-white/35">暂无记忆数据，先记录几条记忆再分析</p>
                 </div>
+              ) : (
+                <LoadingSpinner label="正在生成可追溯画像..." />
               )}
             </div>
           </motion.div>

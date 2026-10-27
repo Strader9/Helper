@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, type CSSProperties } from 'react';
-import { HashRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+import { HashRouter, Navigate, Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import {
   Brain,
   Ear,
@@ -8,16 +9,11 @@ import {
   Mic,
   MicOff,
   Monitor,
-  Music,
   Orbit,
   Palette,
   Puzzle,
   ScrollText,
-  Settings as SettingsIcon,
   ShieldCheck,
-  UserRound,
-  Users,
-  Wrench,
 } from 'lucide-react';
 import { AppProvider } from './contexts/AppContext';
 import { LumiCoreSphere, type LumiCoreOrbitTask } from './components/LumiCoreSphere';
@@ -26,7 +22,9 @@ import GradientWaves from './components/reactbits/GradientWaves';
 import { GridScan } from './components/reactbits/GridScan';
 import type { MissionTheme } from './components/MissionCoreMaterial';
 import { LumiPermissionGate } from './components/lumi/LumiPermissionGate';
+import { LumiDeviceSummary } from './components/lumi/LumiDeviceSummary';
 import { useVoice } from './hooks/useVoice';
+import { applyTheme } from './lib/theme';
 import './index.css';
 import './styles/deep-space-command.css';
 
@@ -37,15 +35,12 @@ import './styles/deep-space-command.css';
 // 玻璃底板后，颜色只作为"身份标识"出现在图标上，不再整块铺开。
 const APP_ENTRIES = [
   { icon: ScrollText, label: '运行日志', color: '#7dd3fc', path: '/logs' },
-  { icon: Wrench, label: '工具', color: '#fcd34d', path: '/tools' },
-  { icon: Puzzle, label: '技能大厅', color: '#6ee7b7', path: '/skills' },
-  { icon: Users, label: '设备', color: '#93c5fd', path: '/devices' },
+  { icon: Puzzle, label: '能力中心', color: '#6ee7b7', path: '/capabilities' },
   { icon: Brain, label: '记忆化身', color: '#d8b4fe', path: '/memory' },
   { icon: Palette, label: '形象设计室', color: '#67e8f9', path: '/media' },
   // 「声音」原本和底栏的「设置」指向同一页，重复且没内容；
   // 换成贾维斯——语音输入与播报都在那一页，入口才有落点。
   { icon: Ear, label: 'Jarvis 设置', color: '#a5b4fc', path: '/jarvis' },
-  { icon: Music, label: '自动化', color: '#fda4af', path: '/automation' },
 ];
 
 // 底部导航
@@ -53,9 +48,6 @@ const BOTTOM_NAV = [
   { icon: Orbit, label: '指挥中心', path: '/' },
   { icon: Monitor, label: '系统', path: '/settings' },
   { icon: MessageSquare, label: '聊天', path: '/chat' },
-  { icon: UserRound, label: '人格', path: '/memory' },
-  { icon: ScrollText, label: '日志', path: '/logs' },
-  { icon: SettingsIcon, label: '设置', path: '/settings' },
 ];
 
 interface ThemeOption {
@@ -64,6 +56,23 @@ interface ThemeOption {
   engine: string;
   description: string;
   accent: string;
+}
+
+interface HomeTask {
+  id: string;
+  goal?: string;
+  title?: string;
+  status?: string;
+}
+
+interface ConversationSummary {
+  message_count?: number;
+  messageCount?: number;
+}
+
+interface MemoryProfileSummary {
+  active_memories?: number;
+  activeMemories?: number;
 }
 
 const THEME_OPTIONS: ThemeOption[] = [
@@ -76,59 +85,56 @@ function CommandCenter() {
   const navigate = useNavigate();
   const location = useLocation();
   const [activeTheme, setActiveTheme] = useState<MissionTheme>('nebula');
-  const [learningStats, setLearningStats] = useState({ interactions: 128, optimizations: 3, status: '正在学习你的使用习惯...' });
-  const [tasks, setTasks] = useState<LumiCoreOrbitTask[]>([
-    { id: '1', title: '系统监控', state: 'working', active: true },
-    { id: '2', title: '记忆整理', state: 'queued', active: true },
-  ]);
+  const [learningStats, setLearningStats] = useState<{
+    interactions: number | null;
+    memories: number | null;
+    status: string;
+  }>({ interactions: null, memories: null, status: '正在读取本机适应数据…' });
+  const [tasks, setTasks] = useState<LumiCoreOrbitTask[]>([]);
 
   const { isListening, transcript, startListening, stopListening, supported } = useVoice();
 
   // 接入真实数据：活跃任务
   useEffect(() => {
-    invoke<any>('get_active_task')
-      .then((task) => {
-        if (task && task.id) {
-          setTasks([{
-            id: String(task.id),
-            title: task.title || '执行中任务',
-            state: task.status === 'completed' ? 'completed' : task.status === 'failed' ? 'attention' : 'working',
-            active: true,
-          }]);
-        }
-      })
-      .catch(() => { /* 保持默认任务 */ });
-
-    invoke<any[]>('get_tasks')
+    invoke<HomeTask[]>('get_active_tasks', { limit: 6 })
       .then((taskList) => {
-        if (Array.isArray(taskList) && taskList.length > 0) {
-          const active = taskList.filter((t: any) => t.status === 'running' || t.status === 'pending').slice(0, 3);
-          if (active.length > 0) {
-            setTasks(active.map((t: any) => ({
-              id: String(t.id),
-              title: t.title || t.name || '任务',
-              state: t.status === 'running' ? 'working' : 'queued',
-              active: true,
-            })));
-          }
-        }
+        const active = Array.isArray(taskList) ? taskList.slice(0, 3) : [];
+        setTasks(active.map((task) => ({
+          id: String(task.id),
+          title: task.goal || task.title || '未命名任务',
+          state: task.status === 'PENDING' || task.status === 'PLANNING' ? 'queued' : 'working',
+          active: true,
+        })));
       })
-      .catch(() => { /* 保持默认 */ });
+      .catch(() => setTasks([]));
   }, []);
 
-  // 接入真实数据：学习流统计
+  // 适应统计只展示能从数据库验证的数据，不再用演示数字填充失败请求。
   useEffect(() => {
-    invoke<any>('get_system_status')
-      .then((status) => {
-        if (status) {
-          setLearningStats({
-            interactions: status.total_interactions || 128,
-            optimizations: status.optimizations_today || 3,
-            status: status.learning_status || '正在学习你的使用习惯...',
-          });
-        }
-      })
-      .catch(() => { /* 保持默认 */ });
+    void Promise.allSettled([
+      invoke<ConversationSummary[]>('get_conversations'),
+      invoke<MemoryProfileSummary>('get_memory_profile'),
+    ]).then(([conversationResult, memoryResult]) => {
+      const interactions = conversationResult.status === 'fulfilled'
+        ? conversationResult.value.reduce(
+          (sum, conversation) => sum + Number(conversation.message_count ?? conversation.messageCount ?? 0),
+          0,
+        )
+        : null;
+      const memories = memoryResult.status === 'fulfilled'
+        ? Number(memoryResult.value.active_memories ?? memoryResult.value.activeMemories ?? 0)
+        : null;
+      const unavailable = interactions === null && memories === null;
+      setLearningStats({
+        interactions,
+        memories,
+        status: unavailable
+          ? '本机适应数据暂时不可用'
+          : memories && memories > 0
+            ? `已从 ${memories} 条有效记忆中适应你的偏好`
+            : '尚未形成长期偏好，可在记忆化身中添加',
+      });
+    });
   }, []);
 
   const handleVoiceToggle = useCallback(() => {
@@ -316,13 +322,13 @@ function CommandCenter() {
 
         <div className="mission-panel mission-panel--learning">
           <div className="mission-panel__header">
-            <span>LEARNING STREAM</span>
-            <span className="mission-live"><i />实时</span>
+            <span>ADAPTATION STREAM</span>
+            <span className="mission-live"><i />本机</span>
           </div>
           <p>{learningStats.status}</p>
           <div className="mission-metrics">
-            <div><strong>{learningStats.interactions}</strong><span>交互样本</span></div>
-            <div><strong>{learningStats.optimizations}</strong><span>今日优化</span></div>
+            <div><strong>{learningStats.interactions ?? '—'}</strong><span>对话消息</span></div>
+            <div><strong>{learningStats.memories ?? '—'}</strong><span>有效记忆</span></div>
           </div>
         </div>
       </aside>
@@ -337,6 +343,8 @@ function CommandCenter() {
         </button>
         <span>{isListening ? `正在监听 ${transcript || ''}` : 'VOICE LINK · 点击建立语音链路'}</span>
       </div>
+
+      <LumiDeviceSummary onOpen={() => navigate('/devices')} />
 
       <nav className="mission-dock" aria-label="主导航">
         {BOTTOM_NAV.map((item) => {
@@ -399,15 +407,14 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: string |
 const LumiChat = lazy(() => import('./pages/lumi/LumiChat'));
 const LumiSettings = lazy(() => import('./pages/lumi/LumiSettings'));
 const LumiLogs = lazy(() => import('./pages/lumi/LumiLogs'));
-const LumiTools = lazy(() => import('./pages/lumi/LumiTools'));
-const LumiSkills = lazy(() => import('./pages/lumi/LumiSkills'));
+const LumiCapabilities = lazy(() => import('./pages/lumi/LumiCapabilities'));
 const LumiMemory = lazy(() => import('./pages/lumi/LumiMemory'));
 const LumiTasks = lazy(() => import('./pages/lumi/LumiTasks'));
 const LumiMedia = lazy(() => import('./pages/lumi/LumiMedia'));
 const LumiMail = lazy(() => import('./pages/lumi/LumiMail'));
-const LumiAutomation = lazy(() => import('./pages/lumi/LumiAutomation'));
 const LumiDevices = lazy(() => import('./pages/lumi/LumiDevices'));
 const LumiJarvis = lazy(() => import('./pages/lumi/LumiJarvis'));
+const MiniChat = lazy(() => import('./pages/MiniChat'));
 
 function PageFallback() {
   return (
@@ -418,6 +425,39 @@ function PageFallback() {
 }
 
 export default function LumiApp() {
+  const [isMiniWindow, setIsMiniWindow] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    invoke<Array<{ key: string; value: string }>>('get_settings')
+      .then((items) => applyTheme(items.find((item) => item.key === 'ui.theme')?.value ?? 'dark'))
+      .catch(() => applyTheme('dark'));
+
+    let unlisten: (() => void) | undefined;
+    void listen<string>('theme:changed', (event) => applyTheme(String(event.payload))).then((stop) => {
+      unlisten = stop;
+    });
+
+    return () => unlisten?.();
+  }, []);
+
+  useEffect(() => {
+    invoke<boolean>('is_mini_window')
+      .then(setIsMiniWindow)
+      .catch(() => setIsMiniWindow(false));
+  }, []);
+
+  if (isMiniWindow === null) {
+    return <div className="h-screen w-screen bg-transparent" />;
+  }
+
+  if (isMiniWindow) {
+    return (
+      <Suspense fallback={<div className="h-screen w-screen bg-transparent" />}>
+        <MiniChat />
+      </Suspense>
+    );
+  }
+
   return (
     <AppProvider>
       <HashRouter>
@@ -428,13 +468,14 @@ export default function LumiApp() {
               <Route path="/chat" element={<LumiChat />} />
               <Route path="/settings" element={<LumiSettings />} />
               <Route path="/logs" element={<LumiLogs />} />
-              <Route path="/tools" element={<LumiTools />} />
-              <Route path="/skills" element={<LumiSkills />} />
+              <Route path="/capabilities" element={<LumiCapabilities />} />
+              <Route path="/tools" element={<Navigate to="/capabilities?tab=tools" replace />} />
+              <Route path="/skills" element={<Navigate to="/capabilities?tab=skills" replace />} />
               <Route path="/memory" element={<LumiMemory />} />
               <Route path="/tasks" element={<LumiTasks />} />
               <Route path="/media" element={<LumiMedia />} />
               <Route path="/mail" element={<LumiMail />} />
-              <Route path="/automation" element={<LumiAutomation />} />
+              <Route path="/automation" element={<Navigate to="/chat" replace />} />
               <Route path="/devices" element={<LumiDevices />} />
               <Route path="/jarvis" element={<LumiJarvis />} />
               <Route path="*" element={<CommandCenter />} />

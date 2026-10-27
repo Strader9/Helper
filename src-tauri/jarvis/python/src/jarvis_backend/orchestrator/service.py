@@ -44,6 +44,9 @@ ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
 
 AMBIENT_DUPLEX_SESSION_ID = "jarvis-ambient"
 PET_CHAT_TIMEOUT_SECONDS = 600.0
+# 路由建议不是最终回答；超过这个时间继续占用前台只会让整条请求卡死。
+# Rust 层会在失败后用保守关键词分类器签发降级交接包。
+HANDOFF_TIMEOUT_SECONDS = 45.0
 HANDOFF_CAPABILITIES = frozenset(
     {
         "conversation",
@@ -363,7 +366,7 @@ class OrchestrationService:
         async with self._pet_chat_lock:
             prompt = build_handoff_prompt(cleaned_message, cleaned_observation)
             response = await self.native_client.request(
-                "ask", {"text": prompt, "_timeout_seconds": PET_CHAT_TIMEOUT_SECONDS}
+                "ask", {"text": prompt, "_timeout_seconds": HANDOFF_TIMEOUT_SECONDS}
             )
         result = self._parse_handoff_response(str(response.get("text", "")))
         await self.events.publish(

@@ -286,176 +286,542 @@ impl ToolRegistry {
 
         // === File 类 ===
         use crate::tools::executors;
-        self.register_with_category(Arc::new(executors::file_ops::OpenFileTool), ToolCategory::File);
-        self.register_with_category(Arc::new(executors::file_ops::ReadFileTool), ToolCategory::File);
-        self.register_with_category(Arc::new(executors::file_ops::ReadFilesBatchTool), ToolCategory::File);
-        self.register_with_category(Arc::new(executors::file_ops::WriteFileTool), ToolCategory::File);
-        self.register_with_category(Arc::new(executors::file_ops::ListDirectoryTool), ToolCategory::File);
+        self.register_with_category(
+            Arc::new(executors::file_ops::OpenFileTool),
+            ToolCategory::File,
+        );
+        self.register_with_category(
+            Arc::new(executors::file_ops::ReadFileTool),
+            ToolCategory::File,
+        );
+        self.register_with_category(
+            Arc::new(executors::file_ops::ReadFilesBatchTool),
+            ToolCategory::File,
+        );
+        self.register_with_category(
+            Arc::new(executors::file_ops::WriteFileTool),
+            ToolCategory::File,
+        );
+        self.register_with_category(
+            Arc::new(executors::file_ops::ListDirectoryTool),
+            ToolCategory::File,
+        );
 
         // === File 类（文件管理扩容：复制/移动/删除/属性/检索/建目录）===
-        self.register_with_category(Arc::new(executors::fs_extra::CopyPathTool), ToolCategory::File);
-        self.register_with_category(Arc::new(executors::fs_extra::MovePathTool), ToolCategory::File);
-        self.register_with_category(Arc::new(executors::fs_extra::DeletePathTool), ToolCategory::File);
-        self.register_with_category(Arc::new(executors::fs_extra::GetFileInfoTool), ToolCategory::File);
-        self.register_with_category(Arc::new(executors::fs_extra::SearchFilesTool), ToolCategory::File);
-        self.register_with_category(Arc::new(executors::fs_extra::SearchContentTool), ToolCategory::File);
-        self.register_with_category(Arc::new(executors::fs_extra::CreateDirectoryTool), ToolCategory::File);
+        self.register_with_category(
+            Arc::new(executors::fs_extra::CopyPathTool),
+            ToolCategory::File,
+        );
+        self.register_with_category(
+            Arc::new(executors::fs_extra::MovePathTool),
+            ToolCategory::File,
+        );
+        self.register_with_category(
+            Arc::new(executors::fs_extra::DeletePathTool),
+            ToolCategory::File,
+        );
+        self.register_with_category(
+            Arc::new(executors::fs_extra::GetFileInfoTool),
+            ToolCategory::File,
+        );
+        self.register_with_category(
+            Arc::new(executors::fs_extra::SearchFilesTool),
+            ToolCategory::File,
+        );
+        self.register_with_category(
+            Arc::new(executors::fs_extra::SearchContentTool),
+            ToolCategory::File,
+        );
+        self.register_with_category(
+            Arc::new(executors::fs_extra::CreateDirectoryTool),
+            ToolCategory::File,
+        );
 
         // === Program 类 ===
-        self.register_with_category(Arc::new(executors::program::LaunchProgramTool), ToolCategory::Program);
-        self.register_with_category(Arc::new(executors::program::FindProgramTool), ToolCategory::Program);
-        self.register_with_category(Arc::new(executors::program::CloseProgramTool), ToolCategory::Program);
+        self.register_with_category(
+            Arc::new(executors::program::LaunchProgramTool),
+            ToolCategory::Program,
+        );
+        self.register_with_category(
+            Arc::new(executors::program::FindProgramTool),
+            ToolCategory::Program,
+        );
+        self.register_with_category(
+            Arc::new(executors::program::CloseProgramTool),
+            ToolCategory::Program,
+        );
 
         // === System 类 ===
-        self.register_with_category(Arc::new(executors::system::ExecuteCommandTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::system::TakeScreenshotTool), ToolCategory::System);
+        self.register_with_category(
+            Arc::new(executors::system::ExecuteCommandTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::system::TakeScreenshotTool),
+            ToolCategory::System,
+        );
 
         // === System 类（系统设置扩容：剪贴板/通知/网络/磁盘/环境/锁屏/开链接）===
-        self.register_with_category(Arc::new(executors::os_extra::ReadClipboardTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::os_extra::WriteClipboardTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::os_extra::SendNotificationTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::os_extra::GetNetworkStatusTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::os_extra::GetDiskUsageTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::os_extra::GetEnvironmentTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::os_extra::LockScreenTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::os_extra::OpenUrlTool), ToolCategory::System);
+        self.register_with_category(
+            Arc::new(executors::os_extra::ReadClipboardTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::os_extra::WriteClipboardTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::os_extra::SendNotificationTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::os_extra::GetNetworkStatusTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::os_extra::GetDiskUsageTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::os_extra::GetEnvironmentTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::os_extra::LockScreenTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::os_extra::OpenUrlTool),
+            ToolCategory::System,
+        );
 
         // === ProcessWindow 类 ===
         use crate::computer;
-        self.register_with_category(Arc::new(computer::processes::ListProcessesTool), ToolCategory::ProcessWindow);
-        self.register_with_category(Arc::new(computer::processes::KillProcessTool), ToolCategory::ProcessWindow);
-        self.register_with_category(Arc::new(computer::windows::GetActiveWindowTool), ToolCategory::ProcessWindow);
-        self.register_with_category(Arc::new(computer::windows::ListWindowsTool), ToolCategory::ProcessWindow);
-        self.register_with_category(Arc::new(computer::windows::FocusWindowTool), ToolCategory::ProcessWindow);
-        self.register_with_category(Arc::new(computer::windows::MinimizeWindowTool), ToolCategory::ProcessWindow);
-        self.register_with_category(Arc::new(computer::windows::CloseWindowTool), ToolCategory::ProcessWindow);
+        self.register_with_category(
+            Arc::new(computer::processes::ListProcessesTool),
+            ToolCategory::ProcessWindow,
+        );
+        self.register_with_category(
+            Arc::new(computer::processes::KillProcessTool),
+            ToolCategory::ProcessWindow,
+        );
+        self.register_with_category(
+            Arc::new(computer::windows::GetActiveWindowTool),
+            ToolCategory::ProcessWindow,
+        );
+        self.register_with_category(
+            Arc::new(computer::windows::ListWindowsTool),
+            ToolCategory::ProcessWindow,
+        );
+        self.register_with_category(
+            Arc::new(computer::windows::FocusWindowTool),
+            ToolCategory::ProcessWindow,
+        );
+        self.register_with_category(
+            Arc::new(computer::windows::MinimizeWindowTool),
+            ToolCategory::ProcessWindow,
+        );
+        self.register_with_category(
+            Arc::new(computer::windows::CloseWindowTool),
+            ToolCategory::ProcessWindow,
+        );
 
         // === Input 类（键鼠模拟）===
         // 放在 ProcessWindow 分类下：它们服务的是同一个场景——操控别人的窗口。
-        self.register_with_category(Arc::new(computer::input::MouseMoveTool), ToolCategory::ProcessWindow);
-        self.register_with_category(Arc::new(computer::input::MouseClickTool), ToolCategory::ProcessWindow);
-        self.register_with_category(Arc::new(computer::input::MouseDragTool), ToolCategory::ProcessWindow);
-        self.register_with_category(Arc::new(computer::input::MouseScrollTool), ToolCategory::ProcessWindow);
-        self.register_with_category(Arc::new(computer::input::KeyboardTypeTool), ToolCategory::ProcessWindow);
-        self.register_with_category(Arc::new(computer::input::KeyboardPressTool), ToolCategory::ProcessWindow);
+        self.register_with_category(
+            Arc::new(computer::input::MouseMoveTool),
+            ToolCategory::ProcessWindow,
+        );
+        self.register_with_category(
+            Arc::new(computer::input::MouseClickTool),
+            ToolCategory::ProcessWindow,
+        );
+        self.register_with_category(
+            Arc::new(computer::input::MouseDragTool),
+            ToolCategory::ProcessWindow,
+        );
+        self.register_with_category(
+            Arc::new(computer::input::MouseScrollTool),
+            ToolCategory::ProcessWindow,
+        );
+        self.register_with_category(
+            Arc::new(computer::input::KeyboardTypeTool),
+            ToolCategory::ProcessWindow,
+        );
+        self.register_with_category(
+            Arc::new(computer::input::KeyboardPressTool),
+            ToolCategory::ProcessWindow,
+        );
 
         // === System 类（系统信息）===
-        self.register_with_category(Arc::new(computer::system_info::GetSystemContextTool), ToolCategory::System);
+        self.register_with_category(
+            Arc::new(computer::system_info::GetSystemContextTool),
+            ToolCategory::System,
+        );
 
         // === Program 类（应用管理器）===
-        self.register_with_category(Arc::new(computer::app_manager::IsApplicationRunningTool), ToolCategory::Program);
-        self.register_with_category(Arc::new(computer::app_manager::GetApplicationStatusTool), ToolCategory::Program);
-        self.register_with_category(Arc::new(computer::app_manager::GetApplicationInfoTool), ToolCategory::Program);
-        self.register_with_category(Arc::new(computer::app_manager::RestartApplicationTool), ToolCategory::Program);
-        self.register_with_category(Arc::new(computer::app_manager::ListInstalledApplicationsTool), ToolCategory::Program);
-        self.register_with_category(Arc::new(computer::app_manager::CloseAllApplicationsTool), ToolCategory::Program);
-        self.register_with_category(Arc::new(computer::app_manager::LaunchWorkspaceTool), ToolCategory::Program);
+        self.register_with_category(
+            Arc::new(computer::app_manager::IsApplicationRunningTool),
+            ToolCategory::Program,
+        );
+        self.register_with_category(
+            Arc::new(computer::app_manager::GetApplicationStatusTool),
+            ToolCategory::Program,
+        );
+        self.register_with_category(
+            Arc::new(computer::app_manager::GetApplicationInfoTool),
+            ToolCategory::Program,
+        );
+        self.register_with_category(
+            Arc::new(computer::app_manager::RestartApplicationTool),
+            ToolCategory::Program,
+        );
+        self.register_with_category(
+            Arc::new(computer::app_manager::ListInstalledApplicationsTool),
+            ToolCategory::Program,
+        );
+        self.register_with_category(
+            Arc::new(computer::app_manager::CloseAllApplicationsTool),
+            ToolCategory::Program,
+        );
+        self.register_with_category(
+            Arc::new(computer::app_manager::LaunchWorkspaceTool),
+            ToolCategory::Program,
+        );
 
         // === Memory 类 ===
-        self.register_with_category(Arc::new(executors::memory::RememberTool), ToolCategory::Memory);
-        self.register_with_category(Arc::new(executors::memory::RecallTool), ToolCategory::Memory);
-        self.register_with_category(Arc::new(executors::memory::ForgetTool), ToolCategory::Memory);
-        self.register_with_category(Arc::new(executors::memory::ListMemoriesTool), ToolCategory::Memory);
-        self.register_with_category(Arc::new(executors::memory::UpdateMemoryTool), ToolCategory::Memory);
-        self.register_with_category(Arc::new(executors::memory::MemoryStatsTool), ToolCategory::Memory);
+        self.register_with_category(
+            Arc::new(executors::memory::RememberTool),
+            ToolCategory::Memory,
+        );
+        self.register_with_category(
+            Arc::new(executors::memory::RecallTool),
+            ToolCategory::Memory,
+        );
+        self.register_with_category(
+            Arc::new(executors::memory::ForgetTool),
+            ToolCategory::Memory,
+        );
+        self.register_with_category(
+            Arc::new(executors::memory::ListMemoriesTool),
+            ToolCategory::Memory,
+        );
+        self.register_with_category(
+            Arc::new(executors::memory::UpdateMemoryTool),
+            ToolCategory::Memory,
+        );
+        self.register_with_category(
+            Arc::new(executors::memory::MemoryStatsTool),
+            ToolCategory::Memory,
+        );
 
         // === Client 类（自身状态 / 能力清单 / 自检 / 使用统计）===
-        self.register_with_category(Arc::new(executors::client::ClientStateTool), ToolCategory::Client);
-        self.register_with_category(Arc::new(executors::client::CapabilityManifestTool), ToolCategory::Client);
-        self.register_with_category(Arc::new(executors::client::ClientHealthCheckTool), ToolCategory::Client);
-        self.register_with_category(Arc::new(executors::client::ClientUsageStatsTool), ToolCategory::Client);
+        self.register_with_category(
+            Arc::new(executors::client::ClientStateTool),
+            ToolCategory::Client,
+        );
+        self.register_with_category(
+            Arc::new(executors::client::CapabilityManifestTool),
+            ToolCategory::Client,
+        );
+        self.register_with_category(
+            Arc::new(executors::client::ClientHealthCheckTool),
+            ToolCategory::Client,
+        );
+        self.register_with_category(
+            Arc::new(executors::client::ClientUsageStatsTool),
+            ToolCategory::Client,
+        );
         // === Client 类（桌面 AI 目标：寻址 / 发现 / 注册 / 提问 / 收集答案）===
-        self.register_with_category(Arc::new(executors::desktop_ai::DesktopAiListTargetsTool), ToolCategory::Client);
-        self.register_with_category(Arc::new(executors::desktop_ai::DesktopAiDiscoveryPlanTool), ToolCategory::Client);
-        self.register_with_category(Arc::new(executors::desktop_ai::DesktopAiRegisterTargetTool), ToolCategory::Client);
-        self.register_with_category(Arc::new(executors::desktop_ai::DesktopAiAskTool), ToolCategory::Client);
-        self.register_with_category(Arc::new(executors::desktop_ai::DesktopAiCollectAnswerTool), ToolCategory::Client);
+        self.register_with_category(
+            Arc::new(executors::desktop_ai::DesktopAiListTargetsTool),
+            ToolCategory::Client,
+        );
+        self.register_with_category(
+            Arc::new(executors::desktop_ai::DesktopAiDiscoveryPlanTool),
+            ToolCategory::Client,
+        );
+        self.register_with_category(
+            Arc::new(executors::desktop_ai::DesktopAiRegisterTargetTool),
+            ToolCategory::Client,
+        );
+        self.register_with_category(
+            Arc::new(executors::desktop_ai::DesktopAiAskTool),
+            ToolCategory::Client,
+        );
+        self.register_with_category(
+            Arc::new(executors::desktop_ai::DesktopAiCollectAnswerTool),
+            ToolCategory::Client,
+        );
 
         // === Client 类（P3 运维簇：用量 / 模型配置 / 休眠 / 外部 CLI / 运行时工作）===
-        self.register_with_category(Arc::new(executors::ops::UsageGetSummaryTool), ToolCategory::Client);
-        self.register_with_category(Arc::new(executors::ops::ModelConfigurationGetTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::ops::ModelConfigurationUpdateTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::ops::ModelConfigurationTestTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::ops::SleepStatusTool), ToolCategory::Client);
-        self.register_with_category(Arc::new(executors::ops::SleepCycleTool), ToolCategory::Client);
-        self.register_with_category(Arc::new(executors::ops::ExternalCliRunTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::ops::ExternalCliStatusTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::ops::ExternalCliGetRunTool), ToolCategory::System);
-        self.register_with_category(Arc::new(executors::ops::RuntimeWorkStatusTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::ops::RuntimeWorkPauseTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::ops::RuntimeWorkResumeTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::ops::RuntimeWorkCancelTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::ops::KnowledgeFileStatsTool), ToolCategory::Knowledge);
-        self.register_with_category(Arc::new(executors::ops::KnowledgeCoverageReportTool), ToolCategory::Knowledge);
+        self.register_with_category(
+            Arc::new(executors::ops::UsageGetSummaryTool),
+            ToolCategory::Client,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::ModelConfigurationGetTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::ModelConfigurationUpdateTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::ModelConfigurationTestTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::SleepStatusTool),
+            ToolCategory::Client,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::SleepCycleTool),
+            ToolCategory::Client,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::ExternalCliRunTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::ExternalCliStatusTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::ExternalCliGetRunTool),
+            ToolCategory::System,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::RuntimeWorkStatusTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::RuntimeWorkPauseTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::RuntimeWorkResumeTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::RuntimeWorkCancelTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::KnowledgeFileStatsTool),
+            ToolCategory::Knowledge,
+        );
+        self.register_with_category(
+            Arc::new(executors::ops::KnowledgeCoverageReportTool),
+            ToolCategory::Knowledge,
+        );
 
         // === Messaging 类（P3 本地日历事件台账）===
-        self.register_with_category(Arc::new(executors::calendar::CalendarCreateTool), ToolCategory::Messaging);
-        self.register_with_category(Arc::new(executors::calendar::CalendarTodayTool), ToolCategory::Messaging);
-        self.register_with_category(Arc::new(executors::calendar::UpcomingEventsTool), ToolCategory::Messaging);
-        self.register_with_category(Arc::new(executors::calendar::CalendarModifyTool), ToolCategory::Messaging);
-        self.register_with_category(Arc::new(executors::calendar::CalendarDeleteTool), ToolCategory::Messaging);
+        self.register_with_category(
+            Arc::new(executors::calendar::CalendarCreateTool),
+            ToolCategory::Messaging,
+        );
+        self.register_with_category(
+            Arc::new(executors::calendar::CalendarTodayTool),
+            ToolCategory::Messaging,
+        );
+        self.register_with_category(
+            Arc::new(executors::calendar::UpcomingEventsTool),
+            ToolCategory::Messaging,
+        );
+        self.register_with_category(
+            Arc::new(executors::calendar::CalendarModifyTool),
+            ToolCategory::Messaging,
+        );
+        self.register_with_category(
+            Arc::new(executors::calendar::CalendarDeleteTool),
+            ToolCategory::Messaging,
+        );
 
         // === Client 类（P3 自治策略）===
-        self.register_with_category(Arc::new(executors::autonomy::AutonomyGetPolicyTool), ToolCategory::Client);
-        self.register_with_category(Arc::new(executors::autonomy::AutonomyUpdatePolicyTool), ToolCategory::Client);
+        self.register_with_category(
+            Arc::new(executors::autonomy::AutonomyGetPolicyTool),
+            ToolCategory::Client,
+        );
+        self.register_with_category(
+            Arc::new(executors::autonomy::AutonomyUpdatePolicyTool),
+            ToolCategory::Client,
+        );
 
         // === Office 类（P3 文档工具：拆分 / 差异对比 / 表格 / 转 CSV / 区域 OCR）===
         self.register_with_category(Arc::new(executors::pdf::SplitPdfTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::diff::DiffDocumentsTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::pdf::ExtractPdfTablesTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::office::XlsxToCsvTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::ocr::OcrRegionTool), ToolCategory::Office);
+        self.register_with_category(
+            Arc::new(executors::diff::DiffDocumentsTool),
+            ToolCategory::Office,
+        );
+        self.register_with_category(
+            Arc::new(executors::pdf::ExtractPdfTablesTool),
+            ToolCategory::Office,
+        );
+        self.register_with_category(
+            Arc::new(executors::office::XlsxToCsvTool),
+            ToolCategory::Office,
+        );
+        self.register_with_category(
+            Arc::new(executors::ocr::OcrRegionTool),
+            ToolCategory::Office,
+        );
 
         // === Media 类（图像处理 + 音视频能力探测）===
-        self.register_with_category(Arc::new(executors::media::ImageInfoTool), ToolCategory::Media);
-        self.register_with_category(Arc::new(executors::media::ImageResizeTool), ToolCategory::Media);
-        self.register_with_category(Arc::new(executors::media::ImageCropTool), ToolCategory::Media);
-        self.register_with_category(Arc::new(executors::media::ImageConvertTool), ToolCategory::Media);
-        self.register_with_category(Arc::new(executors::media::ImageRotateTool), ToolCategory::Media);
-        self.register_with_category(Arc::new(executors::media::MediaToolsStatusTool), ToolCategory::Media);
-        self.register_with_category(Arc::new(executors::media::VideoInfoTool), ToolCategory::Media);
-        self.register_with_category(Arc::new(executors::media::AudioInfoTool), ToolCategory::Media);
-        self.register_with_category(Arc::new(executors::media::ExtractAudioTool), ToolCategory::Media);
-        self.register_with_category(Arc::new(executors::media::VideoTrimTool), ToolCategory::Media);
+        self.register_with_category(
+            Arc::new(executors::media::ImageInfoTool),
+            ToolCategory::Media,
+        );
+        self.register_with_category(
+            Arc::new(executors::media::ImageResizeTool),
+            ToolCategory::Media,
+        );
+        self.register_with_category(
+            Arc::new(executors::media::ImageCropTool),
+            ToolCategory::Media,
+        );
+        self.register_with_category(
+            Arc::new(executors::media::ImageConvertTool),
+            ToolCategory::Media,
+        );
+        self.register_with_category(
+            Arc::new(executors::media::ImageRotateTool),
+            ToolCategory::Media,
+        );
+        self.register_with_category(
+            Arc::new(executors::media::MediaToolsStatusTool),
+            ToolCategory::Media,
+        );
+        self.register_with_category(
+            Arc::new(executors::media::VideoInfoTool),
+            ToolCategory::Media,
+        );
+        self.register_with_category(
+            Arc::new(executors::media::AudioInfoTool),
+            ToolCategory::Media,
+        );
+        self.register_with_category(
+            Arc::new(executors::media::ExtractAudioTool),
+            ToolCategory::Media,
+        );
+        self.register_with_category(
+            Arc::new(executors::media::VideoTrimTool),
+            ToolCategory::Media,
+        );
 
         // === Media 类（AI 生成：真调用外部服务商，凭据来自设置）===
-        self.register_with_category(Arc::new(executors::media_provider::MediaProviderStatusTool), ToolCategory::Media);
-        self.register_with_category(Arc::new(executors::image_gen::ImageGenerateTool), ToolCategory::Media);
-        self.register_with_category(Arc::new(executors::video_gen::VideoGenerateTool), ToolCategory::Media);
-        self.register_with_category(Arc::new(executors::video_gen::VideoGenerationStatusTool), ToolCategory::Media);
+        self.register_with_category(
+            Arc::new(executors::media_provider::MediaProviderStatusTool),
+            ToolCategory::Media,
+        );
+        self.register_with_category(
+            Arc::new(executors::image_gen::ImageGenerateTool),
+            ToolCategory::Media,
+        );
+        self.register_with_category(
+            Arc::new(executors::video_gen::VideoGenerateTool),
+            ToolCategory::Media,
+        );
+        self.register_with_category(
+            Arc::new(executors::video_gen::VideoGenerationStatusTool),
+            ToolCategory::Media,
+        );
 
         // === Messaging 类（邮件：发送 / 草稿 / 配置体检）===
-        self.register_with_category(Arc::new(executors::messaging::SendEmailTool), ToolCategory::Messaging);
-        self.register_with_category(Arc::new(executors::messaging::ComposeMailTool), ToolCategory::Messaging);
-        self.register_with_category(Arc::new(executors::messaging::CheckMailConfigTool), ToolCategory::Messaging);
-        self.register_with_category(Arc::new(executors::messaging::CreateCalendarEventTool), ToolCategory::Messaging);
-        self.register_with_category(Arc::new(executors::messaging::SendWebhookTool), ToolCategory::Messaging);
-        self.register_with_category(Arc::new(executors::messaging::SendSmsTool), ToolCategory::Messaging);
+        self.register_with_category(
+            Arc::new(executors::messaging::SendEmailTool),
+            ToolCategory::Messaging,
+        );
+        self.register_with_category(
+            Arc::new(executors::messaging::ComposeMailTool),
+            ToolCategory::Messaging,
+        );
+        self.register_with_category(
+            Arc::new(executors::messaging::CheckMailConfigTool),
+            ToolCategory::Messaging,
+        );
+        self.register_with_category(
+            Arc::new(executors::messaging::CreateCalendarEventTool),
+            ToolCategory::Messaging,
+        );
+        self.register_with_category(
+            Arc::new(executors::messaging::SendWebhookTool),
+            ToolCategory::Messaging,
+        );
+        self.register_with_category(
+            Arc::new(executors::messaging::SendSmsTool),
+            ToolCategory::Messaging,
+        );
 
         // === Messaging 类（邮件收件：IMAP，与 SMTP 发信互补）===
-        self.register_with_category(Arc::new(executors::mail_read::RecentEmailsTool), ToolCategory::Messaging);
-        self.register_with_category(Arc::new(executors::mail_read::ReadEmailTool), ToolCategory::Messaging);
-        self.register_with_category(Arc::new(executors::mail_read::ReadEmailAttachmentsTool), ToolCategory::Messaging);
+        self.register_with_category(
+            Arc::new(executors::mail_read::RecentEmailsTool),
+            ToolCategory::Messaging,
+        );
+        self.register_with_category(
+            Arc::new(executors::mail_read::ReadEmailTool),
+            ToolCategory::Messaging,
+        );
+        self.register_with_category(
+            Arc::new(executors::mail_read::ReadEmailAttachmentsTool),
+            ToolCategory::Messaging,
+        );
 
         // === Cad 类（DXF 图纸生成与读取）===
-        self.register_with_category(Arc::new(executors::cad::CadGenerateDxfTool), ToolCategory::Cad);
+        self.register_with_category(
+            Arc::new(executors::cad::CadGenerateDxfTool),
+            ToolCategory::Cad,
+        );
         self.register_with_category(Arc::new(executors::cad::CadDxfInfoTool), ToolCategory::Cad);
 
         // === Industry 类（行业场景模板）===
-        self.register_with_category(Arc::new(executors::industry::IndustryScenariosTool), ToolCategory::Industry);
-        self.register_with_category(Arc::new(executors::industry::IndustryGuideTool), ToolCategory::Industry);
+        self.register_with_category(
+            Arc::new(executors::industry::IndustryScenariosTool),
+            ToolCategory::Industry,
+        );
+        self.register_with_category(
+            Arc::new(executors::industry::IndustryGuideTool),
+            ToolCategory::Industry,
+        );
         // === Industry 类（电商经营台账 + 工作区 + 行业工作流）===
-        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryWorkspaceStatusTool), ToolCategory::Industry);
-        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryWorkspaceBindTool), ToolCategory::Industry);
-        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryEcommerceSnapshotTool), ToolCategory::Industry);
-        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryEcommerceActionQueueTool), ToolCategory::Industry);
-        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryEcommerceServiceDraftsTool), ToolCategory::Industry);
-        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryWorkflowStartTool), ToolCategory::Industry);
-        self.register_with_category(Arc::new(executors::industry_ecommerce::IndustryWorkflowCompleteTool), ToolCategory::Industry);
-        self.register_with_category(Arc::new(executors::industry_ecommerce::BusinessArchiveGetTool), ToolCategory::Industry);
+        self.register_with_category(
+            Arc::new(executors::industry_ecommerce::IndustryWorkspaceStatusTool),
+            ToolCategory::Industry,
+        );
+        self.register_with_category(
+            Arc::new(executors::industry_ecommerce::IndustryWorkspaceBindTool),
+            ToolCategory::Industry,
+        );
+        self.register_with_category(
+            Arc::new(executors::industry_ecommerce::IndustryEcommerceSnapshotTool),
+            ToolCategory::Industry,
+        );
+        self.register_with_category(
+            Arc::new(executors::industry_ecommerce::IndustryEcommerceActionQueueTool),
+            ToolCategory::Industry,
+        );
+        self.register_with_category(
+            Arc::new(executors::industry_ecommerce::IndustryEcommerceServiceDraftsTool),
+            ToolCategory::Industry,
+        );
+        self.register_with_category(
+            Arc::new(executors::industry_ecommerce::IndustryWorkflowStartTool),
+            ToolCategory::Industry,
+        );
+        self.register_with_category(
+            Arc::new(executors::industry_ecommerce::IndustryWorkflowCompleteTool),
+            ToolCategory::Industry,
+        );
+        self.register_with_category(
+            Arc::new(executors::industry_ecommerce::BusinessArchiveGetTool),
+            ToolCategory::Industry,
+        );
 
         // === Mcp 类（Model Context Protocol 外部工具转发）===
-        self.register_with_category(Arc::new(executors::mcp::McpListToolsTool), ToolCategory::Mcp);
+        self.register_with_category(
+            Arc::new(executors::mcp::McpListToolsTool),
+            ToolCategory::Mcp,
+        );
         self.register_with_category(Arc::new(executors::mcp::McpCallTool), ToolCategory::Mcp);
 
         // === Web 类（联网检索）===
@@ -470,116 +836,387 @@ impl ToolRegistry {
         self.register_with_category(Arc::new(executors::git::GitCommitTool), ToolCategory::Git);
 
         // === Agents 类（任务编排：计划 / 步骤 / 断点）===
-        self.register_with_category(Arc::new(executors::tasks::CreateTaskPlanTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::tasks::ListAgentTasksTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::tasks::GetAgentTaskTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::tasks::UpdateTaskStepTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::tasks::CancelAgentTaskTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::tasks::ResumeTaskContextTool), ToolCategory::Agents);
+        self.register_with_category(
+            Arc::new(executors::tasks::CreateTaskPlanTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::tasks::ListAgentTasksTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::tasks::GetAgentTaskTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::tasks::UpdateTaskStepTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::tasks::CancelAgentTaskTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::tasks::ResumeTaskContextTool),
+            ToolCategory::Agents,
+        );
 
         // === Agents 类（工作接管：断点续做台账 + 确认边界 + 证据链）===
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskCreateTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskListTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskGetTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskUpdateTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskContinueTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskAdvanceTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverTaskExportPacketTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverCapabilityReuseProbeTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverEvidenceStartTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverEvidenceUpdateTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverEvidenceStatusTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverEvidencePromoteTool), ToolCategory::Agents);
-        self.register_with_category(Arc::new(executors::work_takeover::WorkTakeoverEvidenceListTool), ToolCategory::Agents);
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverTaskCreateTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverTaskListTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverTaskGetTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverTaskUpdateTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverTaskContinueTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverTaskAdvanceTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverTaskExportPacketTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverCapabilityReuseProbeTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverEvidenceStartTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverEvidenceUpdateTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverEvidenceStatusTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverEvidencePromoteTool),
+            ToolCategory::Agents,
+        );
+        self.register_with_category(
+            Arc::new(executors::work_takeover::WorkTakeoverEvidenceListTool),
+            ToolCategory::Agents,
+        );
 
         // === Skill 类（技能管理 + 技能市场）===
-        self.register_with_category(Arc::new(executors::skill::SkillListTool), ToolCategory::Skill);
-        self.register_with_category(Arc::new(executors::skill::SkillGetTool), ToolCategory::Skill);
-        self.register_with_category(Arc::new(executors::skill::SkillToggleTool), ToolCategory::Skill);
-        self.register_with_category(Arc::new(executors::skill::SkillInstallTool), ToolCategory::Skill);
-        self.register_with_category(Arc::new(executors::skill::SkillUninstallTool), ToolCategory::Skill);
-        self.register_with_category(Arc::new(executors::skill::SkillMarketplaceSearchTool), ToolCategory::Skill);
-        self.register_with_category(Arc::new(executors::skill::SkillMarketplaceInstallTool), ToolCategory::Skill);
+        self.register_with_category(
+            Arc::new(executors::skill::SkillListTool),
+            ToolCategory::Skill,
+        );
+        self.register_with_category(
+            Arc::new(executors::skill::SkillGetTool),
+            ToolCategory::Skill,
+        );
+        self.register_with_category(
+            Arc::new(executors::skill::SkillRunTool),
+            ToolCategory::Skill,
+        );
+        self.register_with_category(
+            Arc::new(executors::skill::SkillToggleTool),
+            ToolCategory::Skill,
+        );
+        self.register_with_category(
+            Arc::new(executors::skill::SkillInstallTool),
+            ToolCategory::Skill,
+        );
+        self.register_with_category(
+            Arc::new(executors::skill::SkillUninstallTool),
+            ToolCategory::Skill,
+        );
+        self.register_with_category(
+            Arc::new(executors::skill::SkillMarketplaceSearchTool),
+            ToolCategory::Skill,
+        );
+        self.register_with_category(
+            Arc::new(executors::skill::SkillMarketplaceInstallTool),
+            ToolCategory::Skill,
+        );
 
         // === General 类（JS 沙箱：纯计算 / 数据变换）===
-        self.register_with_category(Arc::new(executors::code::CodeExecutionTool), ToolCategory::General);
+        self.register_with_category(
+            Arc::new(executors::code::CodeExecutionTool),
+            ToolCategory::General,
+        );
 
         // === Skill 类（扩展注册表：清单 + 生命周期回执）===
-        self.register_with_category(Arc::new(executors::extension::ExtensionListTool), ToolCategory::Skill);
-        self.register_with_category(Arc::new(executors::extension::ExtensionInstallTool), ToolCategory::Skill);
-        self.register_with_category(Arc::new(executors::extension::ExtensionDisableTool), ToolCategory::Skill);
-        self.register_with_category(Arc::new(executors::extension::ExtensionEnableTool), ToolCategory::Skill);
-        self.register_with_category(Arc::new(executors::extension::ExtensionReceiptsTool), ToolCategory::Skill);
+        self.register_with_category(
+            Arc::new(executors::extension::ExtensionListTool),
+            ToolCategory::Skill,
+        );
+        self.register_with_category(
+            Arc::new(executors::extension::ExtensionInstallTool),
+            ToolCategory::Skill,
+        );
+        self.register_with_category(
+            Arc::new(executors::extension::ExtensionDisableTool),
+            ToolCategory::Skill,
+        );
+        self.register_with_category(
+            Arc::new(executors::extension::ExtensionEnableTool),
+            ToolCategory::Skill,
+        );
+        self.register_with_category(
+            Arc::new(executors::extension::ExtensionReceiptsTool),
+            ToolCategory::Skill,
+        );
 
         // === Automation 类（常驻定时任务：到点自动跑一次完整 Agent 循环）===
-        self.register_with_category(Arc::new(executors::scheduler::ScheduleJobTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::scheduler::ListScheduledJobsTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::scheduler::CancelScheduledJobTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::scheduler::SetJobEnabledTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::scheduler::RunJobNowTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::scheduler::JobRunHistoryTool), ToolCategory::Automation);
+        self.register_with_category(
+            Arc::new(executors::scheduler::ScheduleJobTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::scheduler::ListScheduledJobsTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::scheduler::CancelScheduledJobTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::scheduler::SetJobEnabledTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::scheduler::RunJobNowTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::scheduler::JobRunHistoryTool),
+            ToolCategory::Automation,
+        );
+
+        // === Automation 类（条件触发的主动规则，由对话发布与管理）===
+        self.register_with_category(
+            Arc::new(executors::proactive_rule::CreateProactiveRuleTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::proactive_rule::ListProactiveRulesTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::proactive_rule::SetProactiveRuleEnabledTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::proactive_rule::DeleteProactiveRuleTool),
+            ToolCategory::Automation,
+        );
 
         // === Automation 类（工作流引擎：定义 / 校验 / 运行 / 历史）===
-        self.register_with_category(Arc::new(executors::workflow::WorkflowCreateTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowListTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowGetTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowUpdateTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowDeleteTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowValidateTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowRunTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowRunsTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowRunDetailTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowSetEnabledTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowCloneTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowExportTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowImportTool), ToolCategory::Automation);
-        self.register_with_category(Arc::new(executors::workflow::WorkflowTemplatesTool), ToolCategory::Automation);
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowCreateTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowListTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowGetTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowUpdateTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowDeleteTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowValidateTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowRunTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowRunsTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowRunDetailTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowSetEnabledTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowCloneTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowExportTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowImportTool),
+            ToolCategory::Automation,
+        );
+        self.register_with_category(
+            Arc::new(executors::workflow::WorkflowTemplatesTool),
+            ToolCategory::Automation,
+        );
 
         // === Office 类（Word / Excel / PowerPoint 读写）===
-        self.register_with_category(Arc::new(executors::office::ReadDocxTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::office::ReadXlsxTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::office::ReadPptxTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::office::WriteDocxTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::office::WriteXlsxTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::office::WritePptxTool), ToolCategory::Office);
+        self.register_with_category(
+            Arc::new(executors::office::ReadDocxTool),
+            ToolCategory::Office,
+        );
+        self.register_with_category(
+            Arc::new(executors::office::ReadXlsxTool),
+            ToolCategory::Office,
+        );
+        self.register_with_category(
+            Arc::new(executors::office::ReadPptxTool),
+            ToolCategory::Office,
+        );
+        self.register_with_category(
+            Arc::new(executors::office::WriteDocxTool),
+            ToolCategory::Office,
+        );
+        self.register_with_category(
+            Arc::new(executors::office::WriteXlsxTool),
+            ToolCategory::Office,
+        );
+        self.register_with_category(
+            Arc::new(executors::office::WritePptxTool),
+            ToolCategory::Office,
+        );
 
         // === Office 类（增量修改：在已有文档上改，不整份重写）===
-        self.register_with_category(Arc::new(executors::office::ModifyDocxTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::office::ModifyXlsxTool), ToolCategory::Office);
+        self.register_with_category(
+            Arc::new(executors::office::ModifyDocxTool),
+            ToolCategory::Office,
+        );
+        self.register_with_category(
+            Arc::new(executors::office::ModifyXlsxTool),
+            ToolCategory::Office,
+        );
 
         // === Office 类（PDF 家族：读取/抽取/信息/合并/生成/转换）===
         self.register_with_category(Arc::new(executors::pdf::ReadPdfTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::pdf::PdfToTextTool), ToolCategory::Office);
+        self.register_with_category(
+            Arc::new(executors::pdf::PdfToTextTool),
+            ToolCategory::Office,
+        );
         self.register_with_category(Arc::new(executors::pdf::PdfInfoTool), ToolCategory::Office);
         self.register_with_category(Arc::new(executors::pdf::MergePdfTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::pdf::CreatePdfTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::pdf::ConvertToPdfTool), ToolCategory::Office);
+        self.register_with_category(
+            Arc::new(executors::pdf::CreatePdfTool),
+            ToolCategory::Office,
+        );
+        self.register_with_category(
+            Arc::new(executors::pdf::ConvertToPdfTool),
+            ToolCategory::Office,
+        );
 
         // === Office 类（OCR：图片文字识别，走系统 Windows.Media.Ocr）===
-        self.register_with_category(Arc::new(executors::ocr::OcrImageFileTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::ocr::OcrScreenTool), ToolCategory::Office);
-        self.register_with_category(Arc::new(executors::ocr::OcrLanguagesTool), ToolCategory::Office);
+        self.register_with_category(
+            Arc::new(executors::ocr::OcrImageFileTool),
+            ToolCategory::Office,
+        );
+        self.register_with_category(
+            Arc::new(executors::ocr::OcrScreenTool),
+            ToolCategory::Office,
+        );
+        self.register_with_category(
+            Arc::new(executors::ocr::OcrLanguagesTool),
+            ToolCategory::Office,
+        );
 
         // === Knowledge 类（本地文档索引与检索）===
-        self.register_with_category(Arc::new(executors::knowledge::IndexDocumentTool), ToolCategory::Knowledge);
-        self.register_with_category(Arc::new(executors::knowledge::SearchKnowledgeTool), ToolCategory::Knowledge);
-        self.register_with_category(Arc::new(executors::knowledge::ListKnowledgeTool), ToolCategory::Knowledge);
-        self.register_with_category(Arc::new(executors::knowledge::ForgetDocumentTool), ToolCategory::Knowledge);
+        self.register_with_category(
+            Arc::new(executors::knowledge::IndexDocumentTool),
+            ToolCategory::Knowledge,
+        );
+        self.register_with_category(
+            Arc::new(executors::knowledge::SearchKnowledgeTool),
+            ToolCategory::Knowledge,
+        );
+        self.register_with_category(
+            Arc::new(executors::knowledge::ListKnowledgeTool),
+            ToolCategory::Knowledge,
+        );
+        self.register_with_category(
+            Arc::new(executors::knowledge::ForgetDocumentTool),
+            ToolCategory::Knowledge,
+        );
 
         // === Browser 类（13 个）===
-        self.register_with_category(Arc::new(executors::browser::BrowserOpenTool), ToolCategory::Browser);
-        self.register_with_category(Arc::new(executors::browser::BrowserCloseTool), ToolCategory::Browser);
-        self.register_with_category(Arc::new(executors::browser::BrowserNavigateTool), ToolCategory::Browser);
-        self.register_with_category(Arc::new(executors::browser::BrowserScreenshotTool), ToolCategory::Browser);
-        self.register_with_category(Arc::new(executors::browser::BrowserGetContentTool), ToolCategory::Browser);
-        self.register_with_category(Arc::new(executors::browser::BrowserGetTitleTool), ToolCategory::Browser);
-        self.register_with_category(Arc::new(executors::browser::BrowserClickTool), ToolCategory::Browser);
-        self.register_with_category(Arc::new(executors::browser::BrowserTypeTool), ToolCategory::Browser);
-        self.register_with_category(Arc::new(executors::browser::BrowserScrollTool), ToolCategory::Browser);
-        self.register_with_category(Arc::new(executors::browser::BrowserWaitTool), ToolCategory::Browser);
-        self.register_with_category(Arc::new(executors::browser::BrowserExecuteJsTool), ToolCategory::Browser);
-        self.register_with_category(Arc::new(executors::browser::BrowserListTabsTool), ToolCategory::Browser);
-        self.register_with_category(Arc::new(executors::browser::BrowserSwitchTabTool), ToolCategory::Browser);
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserOpenTool),
+            ToolCategory::Browser,
+        );
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserCloseTool),
+            ToolCategory::Browser,
+        );
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserNavigateTool),
+            ToolCategory::Browser,
+        );
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserScreenshotTool),
+            ToolCategory::Browser,
+        );
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserGetContentTool),
+            ToolCategory::Browser,
+        );
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserGetTitleTool),
+            ToolCategory::Browser,
+        );
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserClickTool),
+            ToolCategory::Browser,
+        );
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserTypeTool),
+            ToolCategory::Browser,
+        );
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserScrollTool),
+            ToolCategory::Browser,
+        );
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserWaitTool),
+            ToolCategory::Browser,
+        );
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserExecuteJsTool),
+            ToolCategory::Browser,
+        );
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserListTabsTool),
+            ToolCategory::Browser,
+        );
+        self.register_with_category(
+            Arc::new(executors::browser::BrowserSwitchTabTool),
+            ToolCategory::Browser,
+        );
     }
 
     /// 注册一个工具（带类别）
@@ -616,7 +1253,11 @@ impl ToolRegistry {
     pub fn list_names_by_categories(&self, categories: &[ToolCategory]) -> Vec<String> {
         let effective_categories: Vec<ToolCategory> = if categories.is_empty() {
             // 安全默认子集：通用 + 程序 + 系统
-            vec![ToolCategory::General, ToolCategory::Program, ToolCategory::System]
+            vec![
+                ToolCategory::General,
+                ToolCategory::Program,
+                ToolCategory::System,
+            ]
         } else {
             categories.to_vec()
         };

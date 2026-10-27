@@ -13,7 +13,9 @@ use std::path::PathBuf;
 
 fn main() {
     let appdata = std::env::var("APPDATA").expect("需要 APPDATA");
-    let real = PathBuf::from(&appdata).join("pc-guardian").join("pc-guardian.db");
+    let real = PathBuf::from(&appdata)
+        .join("pc-guardian")
+        .join("pc-guardian.db");
     let work = std::env::temp_dir().join("pcg-ui-probe");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).expect("建目录");
@@ -37,10 +39,7 @@ fn main() {
         let unit = item.unit.as_deref().unwrap_or("");
         println!(
             "  {:<32} type={:<8} {:<18} {}",
-            item.key,
-            item.value_type,
-            range,
-            unit
+            item.key, item.value_type, range, unit
         );
 
         // 数值项必须有区间，否则前端只能放个裸输入框
@@ -48,8 +47,7 @@ fn main() {
             failures.push(format!("数值项 {} 没有任何区间约束", item.key));
         }
         // 布尔项不该带区间
-        if item.value_type == "boolean" && (item.min_value.is_some() || item.max_value.is_some())
-        {
+        if item.value_type == "boolean" && (item.min_value.is_some() || item.max_value.is_some()) {
             failures.push(format!("布尔项 {} 不该有区间", item.key));
         }
         // 每一项都要有说明，否则界面上是个没头没脑的键名
@@ -62,7 +60,12 @@ fn main() {
     println!("\n=== 浏览器设置 ===");
     for key in ["browser.default", "browser.cdp_port"] {
         match items.iter().find(|s| s.key == key) {
-            Some(item) => println!("  {} = {} ({})", key, item.value, item.description.clone().unwrap_or_default()),
+            Some(item) => println!(
+                "  {} = {} ({})",
+                key,
+                item.value,
+                item.description.clone().unwrap_or_default()
+            ),
             None => failures.push(format!("浏览器设置项 {} 不存在", key)),
         }
     }
@@ -83,7 +86,11 @@ fn main() {
         };
         println!(
             "  [{}] {:<16} type={:<14} 阈值={:?} enabled={}",
-            if rule.id.starts_with("preset_") { "预设" } else { "自定义" },
+            if rule.id.starts_with("preset_") {
+                "预设"
+            } else {
+                "自定义"
+            },
             rule.name,
             rule.trigger_type,
             threshold,
@@ -112,7 +119,16 @@ fn main() {
             Some((_, None, Some(hi), _)) => bad.parse::<f64>().unwrap_or(f64::NAN) > hi,
             _ => false,
         };
-        println!("  {} = {} → {}", key, bad, if rejected { "会被拒绝 ✓" } else { "会被接受 ✗" });
+        println!(
+            "  {} = {} → {}",
+            key,
+            bad,
+            if rejected {
+                "会被拒绝 ✓"
+            } else {
+                "会被接受 ✗"
+            }
+        );
         if !rejected {
             failures.push(format!("{} 填 {} 应被拒绝，但区间判定放行了", key, bad));
         }
@@ -201,7 +217,10 @@ fn main() {
             && !raw_in_db.starts_with("pat-")
             && raw_in_db.len() < 12
         {
-            failures.push(format!("{} 的库内存值看起来不像凭据，探针假设可能失效", key));
+            failures.push(format!(
+                "{} 的库内存值看起来不像凭据，探针假设可能失效",
+                key
+            ));
         }
         println!(
             "  {:<26} 库内长度={:<3} 下发值={:?}",
@@ -227,7 +246,8 @@ fn main() {
 
     let _ = std::fs::remove_dir_all(&work);
 
-    if failures.is_empty() {        println!("\n[PASS] 设置界面数据全部可调，无摆设项");
+    if failures.is_empty() {
+        println!("\n[PASS] 设置界面数据全部可调，无摆设项");
     } else {
         println!("\n[FAIL] {} 处问题:", failures.len());
         for f in &failures {

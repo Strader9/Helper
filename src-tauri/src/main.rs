@@ -163,6 +163,12 @@ fn main() {
             pc_guardian_lib::commands::close_mini_window,
             pc_guardian_lib::commands::is_mini_window,
             pc_guardian_lib::commands::toggle_mini_window,
+            pc_guardian_lib::commands::get_mini_window_config,
+            pc_guardian_lib::commands::update_mini_window_config,
+            pc_guardian_lib::commands::set_mini_window_visible,
+            pc_guardian_lib::commands::list_mini_skin_assets,
+            pc_guardian_lib::commands::import_mini_skin_asset,
+            pc_guardian_lib::commands::delete_mini_skin_asset,
             // 系统监控命令
             pc_guardian_lib::commands::get_system_metrics,
             pc_guardian_lib::commands::get_jarvis_vram_status,
@@ -178,11 +184,15 @@ fn main() {
             // 任务管理命令
             pc_guardian_lib::commands::get_tasks,
             pc_guardian_lib::commands::get_active_task,
+            pc_guardian_lib::commands::get_active_tasks,
             pc_guardian_lib::commands::cancel_task,
             // V17: 记忆管理命令
             pc_guardian_lib::commands::get_memories,
             pc_guardian_lib::commands::add_memory,
             pc_guardian_lib::commands::delete_memory,
+            pc_guardian_lib::commands::update_memory_item,
+            pc_guardian_lib::commands::get_memory_profile,
+            pc_guardian_lib::commands::analyze_and_consolidate_memories,
             pc_guardian_lib::commands::search_memories,
             // V18: Proactive 主动助手命令
             pc_guardian_lib::commands::get_proactive_rules,
@@ -206,6 +216,10 @@ fn main() {
             pc_guardian_lib::commands::get_gateway_status,
             // 模型网关状态
             pc_guardian_lib::commands::get_model_gateway_status,
+            // 外部 MCP 工具源
+            pc_guardian_lib::commands::list_mcp_capabilities,
+            pc_guardian_lib::commands::install_mcp_server,
+            pc_guardian_lib::commands::remove_mcp_server,
             // V20: 技能管理命令
             pc_guardian_lib::commands::get_skills,
             pc_guardian_lib::commands::get_skill_details,
@@ -230,8 +244,13 @@ fn main() {
             // V10: GitHub 趋势
             pc_guardian_lib::commands::fetch_github_trending,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running PC Guardian");
+        .build(tauri::generate_context!())
+        .expect("error while building PC Guardian")
+        .run(|_app_handle, event| {
+            if matches!(event, tauri::RunEvent::Exit { .. }) {
+                pc_guardian_lib::commands::shutdown_managed_jarvis_children();
+            }
+        });
 }
 
 /// V21: 创建系统托盘图标和菜单
@@ -289,7 +308,6 @@ fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-
 /// 启动时注册全局快捷键：从设置读，注册，并把最终生效值写回库。
 ///
 /// 写回的必要性：如果用户填的键被别的软件占用，这里会回退到备用键，
@@ -304,11 +322,8 @@ fn register_global_shortcut(
         guard.clone()
     };
 
-    let effective = pc_guardian_lib::shortcut::register_global_shortcut_at(
-        app_handle,
-        &shortcut_str,
-        None,
-    );
+    let effective =
+        pc_guardian_lib::shortcut::register_global_shortcut_at(app_handle, &shortcut_str, None);
 
     // 回退链可能选中了别的键（用户填的被占用），把实际生效值写回两处：
     // 内存里的句柄供下次热切换注销，库里供界面显示。

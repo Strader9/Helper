@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "deploy:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-windows.ps1"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",

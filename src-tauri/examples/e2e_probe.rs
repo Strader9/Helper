@@ -138,9 +138,15 @@ fn stream_generate(system: &str, user: &str) -> String {
     let json: serde_json::Value = resp.json().expect("解析响应失败");
 
     if let Some(usage_line) = json.get("eval_count") {
-        let prompt_tokens = json.get("prompt_eval_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let prompt_tokens = json
+            .get("prompt_eval_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let output_tokens = usage_line.as_u64().unwrap_or(0);
-        let eval_ns = json.get("eval_duration").and_then(|v| v.as_u64()).unwrap_or(0);
+        let eval_ns = json
+            .get("eval_duration")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let rate = if eval_ns > 0 {
             format!("{:.1} tok/s", output_tokens as f64 / (eval_ns as f64 / 1e9))
         } else {

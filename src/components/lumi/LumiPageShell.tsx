@@ -20,7 +20,7 @@ export function LumiPageShell({ children, icon, iconBg, title, subtitle, actions
   const navigate = useNavigate();
 
   return (
-    <div className={cn('lumi-surface flex h-screen w-full flex-col overflow-hidden text-white', className)}>
+    <div className={cn('lumi-surface lumi-work-surface flex h-screen w-full flex-col overflow-hidden text-white', className)}>
       <PageHeader
         icon={icon}
         iconBg={iconBg}

@@ -90,7 +90,12 @@ function formatInstalledAt(raw: unknown): string {
   }
 }
 
-export default function LumiSkills() {
+interface LumiSkillsProps {
+  /** 嵌入“能力中心”时由父页面提供标题与页签。 */
+  embedded?: boolean;
+}
+
+export default function LumiSkills({ embedded = false }: LumiSkillsProps) {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
@@ -239,22 +244,19 @@ export default function LumiSkills() {
     { key: 'disabled', label: '已禁用' },
   ];
 
-  return (
-    <LumiPageShell
-      icon={<Puzzle size={20} />}
-      iconBg="bg-emerald-500/15 border-emerald-400/20 text-emerald-400"
-      title="技能大厅"
-      subtitle={loading ? '正在加载...' : `${skills.length} 个已安装技能`}
-      actions={
-        <button
-          onClick={() => setShowInstall(true)}
-          className="flex items-center gap-1.5 rounded-xl border border-celestial-saturn/25 bg-celestial-saturn/[0.12] px-3 py-2 text-xs font-black text-celestial-saturn transition-colors hover:bg-celestial-saturn/[0.18]"
-        >
-          <Plus size={14} />
-          安装技能
-        </button>
-      }
+  const installButton = (
+    <button
+      onClick={() => setShowInstall(true)}
+      className="flex items-center gap-1.5 rounded-xl border border-celestial-saturn/25 bg-celestial-saturn/[0.12] px-3 py-2 text-xs font-black text-celestial-saturn transition-colors hover:bg-celestial-saturn/[0.18]"
     >
+      <Plus size={14} />
+      安装技能
+    </button>
+  );
+
+  const content = (
+    <>
+      {embedded && <div className="mb-4 flex justify-end">{installButton}</div>}
       {/* 搜索 */}
       <div className="relative mb-4">
         <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/35" />
@@ -552,6 +554,20 @@ export default function LumiSkills() {
           </motion.div>
         )}
       </AnimatePresence>
+    </>
+  );
+
+  if (embedded) return content;
+
+  return (
+    <LumiPageShell
+      icon={<Puzzle size={20} />}
+      iconBg="bg-emerald-500/15 border-emerald-400/20 text-emerald-400"
+      title="技能大厅"
+      subtitle={loading ? '正在加载...' : `${skills.length} 个已安装技能`}
+      actions={installButton}
+    >
+      {content}
     </LumiPageShell>
   );
 }

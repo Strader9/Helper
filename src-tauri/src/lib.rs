@@ -27,18 +27,13 @@ pub mod tools;
 pub mod utils;
 pub mod webgen;
 pub mod webpublish;
-pub mod workflow;
 pub mod work_takeover;
+pub mod workflow;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
-#[cfg(target_os = "windows")]
-use windows::Win32::Foundation::*;
-#[cfg(target_os = "windows")]
-use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::tools::executor::{PendingPermission, ToolExecutor};
 use agent::AgentRuntime;
@@ -332,45 +327,6 @@ impl AppState {
     }
 }
 
-// ============================================================
-// Windows API: 浮窗拖动（WM_NCHITTEST 返回 HTCAPTION）
-// ============================================================
-
-#[cfg(target_os = "windows")]
-static mut PREV_MINI_WINDOW_PROC: isize = 0;
-
-/// 浮窗窗口过程：拦截 WM_NCHITTEST，返回 HTCAPTION 让 Windows 认为整个窗口都是标题栏
-#[cfg(target_os = "windows")]
-unsafe extern "system" fn mini_window_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    if msg == WM_NCHITTEST {
-        // 告诉 Windows 鼠标在标题栏上，从而允许拖动整个窗口
-        return LRESULT(HTCAPTION as isize);
-    }
-    // 其他消息交给原窗口过程处理
-    if PREV_MINI_WINDOW_PROC != 0 {
-        let prev_proc: WNDPROC = std::mem::transmute(PREV_MINI_WINDOW_PROC);
-        return CallWindowProcW(prev_proc, hwnd, msg, wparam, lparam);
-    }
-    DefWindowProcW(hwnd, msg, wparam, lparam)
-}
-
-/// 子类化浮窗窗口过程，启用整个窗口拖动
-#[cfg(target_os = "windows")]
-pub fn subclass_mini_window(hwnd: isize) {
-    unsafe {
-        let hwnd = HWND(hwnd);
-        let prev_proc =
-            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, mini_window_proc as *const () as isize);
-        PREV_MINI_WINDOW_PROC = prev_proc;
-        eprintln!("[MiniWindow] 窗口子类化成功，启用整个窗口拖动");
-    }
-}
-
 /// Tauri Command 注册模块
 ///
 /// 所有暴露给前端的 IPC 命令都在这里定义。
@@ -384,14 +340,14 @@ pub mod commands {
     use crate::db::conversation::{Conversation, ConversationManager, ConversationMessage};
     use crate::db::{AllowedDirectory, TrustedTool};
     use crate::llm::{ChatChunk, OllamaClient, OllamaMessage, OllamaModel};
-    use crate::security::{AccessType, PathPolicyResult, PermissionDecision, PermissionResponse};
     use crate::routing::{
-        Capability, HandoffPacket, InferenceRuntimeManager, ModelRole, ResourceRef,
-        RouteDecision, RoutingPolicy, RuntimeSnapshot,
+        Capability, HandoffPacket, InferenceRuntimeManager, ModelRole, ResourceRef, RouteDecision,
+        RoutingPolicy, RuntimeSnapshot,
     };
-    use std::sync::Arc;
+    use crate::security::{AccessType, PathPolicyResult, PermissionDecision, PermissionResponse};
     use crate::webgen;
     use crate::AppState;
+    use std::sync::Arc;
 
     // ============================================================
     // 对话相关命令
@@ -567,10 +523,7 @@ pub mod commands {
                 }
             }
             // 即使 Agent 事件通道异常关闭，串行交接仍必须释放 Ollama 并恢复 Jarvis。
-            let should_restore_jarvis = handoff_restore_runs
-                .lock()
-                .await
-                .remove(&event_run_id);
+            let should_restore_jarvis = handoff_restore_runs.lock().await.remove(&event_run_id);
             if should_restore_jarvis {
                 let _ = restore_jarvis_after_handoff(
                     &app_handle,
@@ -611,7 +564,7 @@ pub mod commands {
         if packet.from != ModelRole::Jarvis || packet.to != ModelRole::Ollama {
             return Err("执行器只接受 Jarvis 到 Ollama 的交接包".to_string());
         }
-        if !matches!(
+        if !packet.degraded_fallback && !matches!(
             RoutingPolicy::default().decide(packet.capability),
             RouteDecision::Direct {
                 owner: ModelRole::Ollama
@@ -622,7 +575,10 @@ pub mod commands {
 
         let stopped = stop_managed_jarvis(&state).await?;
         if !stopped["stopped"].as_bool().unwrap_or(false) && jarvis_health().await.is_ok() {
-            return Err("检测到未由 PC-Guardian 托管的 Jarvis；为避免结束外部任务，已拒绝切换到 Ollama".to_string());
+            return Err(
+                "检测到未由 PC-Guardian 托管的 Jarvis；为避免结束外部任务，已拒绝切换到 Ollama"
+                    .to_string(),
+            );
         }
         for _ in 0..15 {
             if jarvis_health().await.is_err() {
@@ -639,8 +595,14 @@ pub mod commands {
             state.inference_runtime.force_idle().await;
         }
 
-        state.inference_runtime.begin_start(ModelRole::Ollama).await?;
-        state.inference_runtime.mark_active(ModelRole::Ollama).await?;
+        state
+            .inference_runtime
+            .begin_start(ModelRole::Ollama)
+            .await?;
+        state
+            .inference_runtime
+            .mark_active(ModelRole::Ollama)
+            .await?;
         let run_id = request_id
             .filter(|id| !id.trim().is_empty() && id.len() <= 128)
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -680,16 +642,112 @@ pub mod commands {
         .await;
         if let Err(error) = sent {
             restore_runs.lock().await.remove(&run_id);
-            let _ = restore_jarvis_after_handoff(
-                &app_handle,
-                runtime_manager,
-                ollama,
-                ollama_model,
-            )
-            .await;
+            let _ =
+                restore_jarvis_after_handoff(&app_handle, runtime_manager, ollama, ollama_model)
+                    .await;
             return Err(error);
         }
         sent
+    }
+
+    fn fallback_handoff_capability(message: &str) -> Capability {
+        let text = message.to_ascii_lowercase();
+        let contains_any = |words: &[&str]| words.iter().any(|word| text.contains(word));
+        if contains_any(&[
+            "cpu", "gpu", "内存", "显存", "磁盘", "进程", "运行状态", "电脑状态",
+            "系统状态", "性能", "优化", "卡顿", "清理缓存",
+        ]) {
+            Capability::SystemOperations
+        } else if contains_any(&["文件", "文件夹", "桌面", "目录", "移动", "重命名", "删除"])
+        {
+            Capability::FileWork
+        } else if contains_any(&["浏览器", "网页", "搜索", "网站", "网址", "链接"])
+        {
+            Capability::BrowserWork
+        } else if contains_any(&["文档", "pdf", "word", "表格", "excel", "幻灯片", "ppt"])
+        {
+            Capability::DocumentWork
+        } else if contains_any(&["代码", "仓库", "git", "编译", "测试", "程序", "bug"])
+        {
+            Capability::CodeGit
+        } else if contains_any(&["自动化", "定时", "提醒", "每天", "每周", "工作流"])
+        {
+            Capability::WorkflowAutomation
+        } else if contains_any(&["网页设计", "生成网页", "落地页", "web studio"])
+        {
+            Capability::WebStudio
+        } else {
+            Capability::Conversation
+        }
+    }
+
+    fn fallback_requires_write_confirmation(message: &str) -> bool {
+        let mut effective = message.to_string();
+        // 先剔除明确否定的操作，避免“只查看，先不要移动或删除”被关键词误伤。
+        for negated in [
+            "最近修改的",
+            "最近被修改的",
+            "已经修改的",
+            "已修改的",
+            "先不要移动或删除",
+            "先不要删除或移动",
+            "不要移动或删除",
+            "不要删除或移动",
+            "先不要移动",
+            "先不要删除",
+            "不要移动",
+            "不要删除",
+            "不移动",
+            "不删除",
+        ] {
+            effective = effective.replace(negated, "");
+        }
+        [
+            "创建", "新建", "修改", "写入", "移动", "重命名", "删除", "清理", "安装",
+            "发送", "发布", "执行", "运行命令", "设置", "提醒", "关闭", "重启",
+        ]
+        .iter()
+        .any(|word| effective.contains(word))
+    }
+
+    #[cfg(test)]
+    mod fallback_routing_tests {
+        use super::*;
+
+        #[test]
+        fn classifies_common_read_only_requests_conservatively() {
+            assert_eq!(
+                fallback_handoff_capability("帮我看看当前电脑的 CPU 和内存状态"),
+                Capability::SystemOperations
+            );
+            assert_eq!(
+                fallback_handoff_capability("找出桌面最近修改的文件，先不要移动"),
+                Capability::FileWork
+            );
+            assert_eq!(
+                fallback_handoff_capability("你好，今天过得怎么样"),
+                Capability::Conversation
+            );
+            assert_eq!(
+                fallback_handoff_capability("搜索今天的人工智能新闻"),
+                Capability::BrowserWork
+            );
+            assert_eq!(
+                fallback_handoff_capability("明天上午九点提醒我开会"),
+                Capability::WorkflowAutomation
+            );
+        }
+
+        #[test]
+        fn write_intent_requires_confirmation() {
+            assert!(!fallback_requires_write_confirmation("查看当前电脑状态"));
+            assert!(!fallback_requires_write_confirmation(
+                "找出桌面最近修改的 5 个文件，但先不要移动或删除"
+            ));
+            assert!(fallback_requires_write_confirmation("明天上午九点提醒我开会"));
+            assert!(fallback_requires_write_confirmation("删除桌面上的重复文件"));
+            assert!(fallback_requires_write_confirmation("发送这封邮件"));
+        }
     }
 
     /// 主对话的 Jarvis 前台路径。
@@ -795,14 +853,54 @@ pub mod commands {
         if message.trim().is_empty() {
             return Err("交接请求不能为空".to_string());
         }
-        jarvis_health().await?;
-        state
-            .inference_runtime
-            .adopt_active(ModelRole::Jarvis)
-            .await?;
-
         let observation_summary = observation_summary.unwrap_or_default();
-        let recommendation = jarvis_handoff(message, observation_summary.clone()).await?;
+        let fast_capability = fallback_handoff_capability(&message);
+        // 明确的工具意图不需要先花几十秒让模型重复做一次分类。Rust 只决定职责域，
+        // 真正的规划与工具执行仍由 Ollama Agent 和权限闸门完成。
+        let (recommendation, degraded_fallback) = if fast_capability != Capability::Conversation {
+            (
+                serde_json::json!({
+                    "capability": fast_capability,
+                    "owner": "ollama",
+                    "handoff_to_ollama": true,
+                    "user_goal": message.trim(),
+                    "context_summary": if observation_summary.trim().is_empty() {
+                        "本地安全路由器识别到明确的工具型请求。".to_string()
+                    } else {
+                        observation_summary.clone()
+                    },
+                    "requires_confirmation_for_write": fallback_requires_write_confirmation(&message),
+                    "local_fast_route": true,
+                }),
+                false,
+            )
+        } else {
+            let jarvis_recommendation = async {
+                jarvis_health().await?;
+                state
+                    .inference_runtime
+                    .adopt_active(ModelRole::Jarvis)
+                    .await?;
+                jarvis_handoff(message.clone(), observation_summary.clone()).await
+            }
+            .await;
+            match jarvis_recommendation {
+                Ok(value) => (value, false),
+                Err(error) => (
+                    serde_json::json!({
+                        "capability": Capability::Conversation,
+                        "owner": "ollama",
+                        "handoff_to_ollama": true,
+                        "user_goal": message.trim(),
+                        "context_summary": "Jarvis 暂时不可用，由本地安全路由器生成最小化交接。",
+                        "requires_confirmation_for_write": fallback_requires_write_confirmation(&message),
+                        "degraded_fallback": true,
+                        "fallback_reason": error,
+                    }),
+                    true,
+                ),
+            }
+        };
         let capability: Capability = serde_json::from_value(
             recommendation
                 .get("capability")
@@ -814,7 +912,7 @@ pub mod commands {
             .get("handoff_to_ollama")
             .and_then(serde_json::Value::as_bool)
             .ok_or_else(|| "Jarvis 交接建议缺少 handoff_to_ollama".to_string())?;
-        let expected_handoff = matches!(
+        let expected_handoff = degraded_fallback || matches!(
             RoutingPolicy::default().decide(capability),
             RouteDecision::Direct {
                 owner: ModelRole::Ollama
@@ -860,6 +958,7 @@ pub mod commands {
                 conversation_summary,
                 resources,
                 requires_confirmation_for_write,
+                degraded_fallback,
             };
             packet.validate()?;
             Some(packet)
@@ -1042,13 +1141,16 @@ pub mod commands {
 
     /// 读取经用户确认的模型职责矩阵。此命令不触发模型启动或显存切换。
     #[tauri::command]
-    pub async fn get_model_routing() -> Result<Vec<(crate::routing::Capability, crate::routing::RouteDecision)>, String> {
+    pub async fn get_model_routing(
+    ) -> Result<Vec<(crate::routing::Capability, crate::routing::RouteDecision)>, String> {
         Ok(RoutingPolicy::all())
     }
 
     /// 读取统一推理运行时状态。状态机是 Jarvis/Ollama 排他切换的唯一入口。
     #[tauri::command]
-    pub async fn get_inference_runtime(state: State<'_, AppState>) -> Result<RuntimeSnapshot, String> {
+    pub async fn get_inference_runtime(
+        state: State<'_, AppState>,
+    ) -> Result<RuntimeSnapshot, String> {
         Ok(state.inference_runtime.snapshot().await)
     }
 
@@ -1158,7 +1260,12 @@ pub mod commands {
         );
     }
 
-    fn emit_web_generation_delta(app: &AppHandle, generation_id: &str, delta: String, total_chars: usize) {
+    fn emit_web_generation_delta(
+        app: &AppHandle,
+        generation_id: &str,
+        delta: String,
+        total_chars: usize,
+    ) {
         let _ = app.emit(
             "webpage-generation:event",
             WebGenerationEvent {
@@ -1287,11 +1394,8 @@ pub mod commands {
                     (Some(html.clone()), String::new())
                 } else if let Some(target) = target_text.as_ref() {
                     // 定向修改：围绕目标元素摘片段，让"改哪里"真的有据可依。
-                    let (excerpt, located) = webgen::take_excerpt(
-                        html,
-                        target,
-                        WEBGEN_PREV_HTML_PATCH_WINDOW,
-                    );
+                    let (excerpt, located) =
+                        webgen::take_excerpt(html, target, WEBGEN_PREV_HTML_PATCH_WINDOW);
                     // 定位到了才走片段模式：没定位到就等于不知道改哪儿，
                     // 让模型"只输出一小块"没有依据，会改出别的东西。
                     patch_mode = located;
@@ -1370,14 +1474,22 @@ pub mod commands {
 
             // 文档加工的三级短路：已加工好的规格 > 用户编辑过的梳理稿 > 完整流水线。
             let normalized = if let Some(spec) = cached_spec {
-                log(&app, &generation_id_for_task, "复用上一次加工好的标准格式规格。");
+                log(
+                    &app,
+                    &generation_id_for_task,
+                    "复用上一次加工好的标准格式规格。",
+                );
                 webgen::NormalizeResult {
                     spec,
                     digest: None,
                     stage: webgen::NormalizeStage::Reused,
                 }
             } else if let Some(digest) = edited_digest {
-                log(&app, &generation_id_for_task, "使用你在界面上编辑过的梳理稿。");
+                log(
+                    &app,
+                    &generation_id_for_task,
+                    "使用你在界面上编辑过的梳理稿。",
+                );
                 webgen::specify_digest(&client, &model, &digest, |message: &str| {
                     log(&app, &generation_id_for_task, message);
                 })
@@ -1512,7 +1624,11 @@ pub mod commands {
                     &app,
                     &generation_id_for_task,
                     "log",
-                    if continuation_count == 0 { "正在连接 Ollama 并发送需求。" } else { "正在请求模型从断点继续补全网页。" },
+                    if continuation_count == 0 {
+                        "正在连接 Ollama 并发送需求。"
+                    } else {
+                        "正在请求模型从断点继续补全网页。"
+                    },
                     None,
                 );
                 let mut stream = match client
@@ -1521,13 +1637,25 @@ pub mod commands {
                 {
                     Ok(stream) => stream,
                     Err(error) => {
-                        emit_web_generation_event(&app, &generation_id_for_task, "error", format!("启动模型请求失败：{error:#}"), None);
+                        emit_web_generation_event(
+                            &app,
+                            &generation_id_for_task,
+                            "error",
+                            format!("启动模型请求失败：{error:#}"),
+                            None,
+                        );
                         return;
                     }
                 };
 
                 if continuation_count == 0 {
-                    emit_web_generation_event(&app, &generation_id_for_task, "log", "模型连接成功，开始接收生成内容。", None);
+                    emit_web_generation_event(
+                        &app,
+                        &generation_id_for_task,
+                        "log",
+                        "模型连接成功，开始接收生成内容。",
+                        None,
+                    );
                 }
                 let round_start = html.chars().count();
                 let mut done_reason = None;
@@ -1542,7 +1670,12 @@ pub mod commands {
                             if total_chars.saturating_sub(last_reported) >= 512 {
                                 let delta = html.chars().skip(last_reported).collect::<String>();
                                 last_reported = total_chars;
-                                emit_web_generation_delta(&app, &generation_id_for_task, delta, total_chars);
+                                emit_web_generation_delta(
+                                    &app,
+                                    &generation_id_for_task,
+                                    delta,
+                                    total_chars,
+                                );
                                 emit_web_generation_event(
                                     &app,
                                     &generation_id_for_task,
@@ -1571,7 +1704,13 @@ pub mod commands {
                             None,
                         ),
                         ChatChunk::Error(error) => {
-                            emit_web_generation_event(&app, &generation_id_for_task, "error", format!("模型连接失败：{error}"), None);
+                            emit_web_generation_event(
+                                &app,
+                                &generation_id_for_task,
+                                "error",
+                                format!("模型连接失败：{error}"),
+                                None,
+                            );
                             return;
                         }
                         ChatChunk::Done(reason, usage) => {
@@ -1895,10 +2034,9 @@ pub mod commands {
                         if plan.is_none() {
                             let (probe_system, probe_prompt) =
                                 webgen::script_repair_prompt(&spec, &cleaned, &issues);
-                            let cap = webgen::budget_for_prompt(&format!(
-                                "{probe_system}{probe_prompt}"
-                            ))
-                            .num_predict;
+                            let cap =
+                                webgen::budget_for_prompt(&format!("{probe_system}{probe_prompt}"))
+                                    .num_predict;
                             let need = webgen::script_token_estimate(&cleaned);
                             if need as i64 > cap {
                                 log(
@@ -1970,7 +2108,11 @@ pub mod commands {
                         if appendix_route {
                             let mut parts: Vec<String> = Vec::new();
                             if !missing.is_empty() {
-                                parts.push(format!("补写 {} 个缺失函数（{}）", missing.len(), missing.join(" / ")));
+                                parts.push(format!(
+                                    "补写 {} 个缺失函数（{}）",
+                                    missing.len(),
+                                    missing.join(" / ")
+                                ));
                             }
                             if need_bindings {
                                 parts.push("补上按钮的事件绑定".to_string());
@@ -2006,10 +2148,8 @@ pub mod commands {
                                 ),
                             );
                         }
-                        let messages = vec![
-                            OllamaMessage::system(&system),
-                            OllamaMessage::user(&prompt),
-                        ];
+                        let messages =
+                            vec![OllamaMessage::system(&system), OllamaMessage::user(&prompt)];
                         let mut stream = match client
                             .chat_stream_with_options(&model, messages, 0.2, repair_options)
                             .await
@@ -2106,9 +2246,8 @@ pub mod commands {
                                     "模型这一轮没有返回可用的函数定义，保留当前版本。",
                                 );
                                 None
-                            } else if let Some((name, problem)) = replacements
-                                .iter()
-                                .find_map(|(name, definition)| {
+                            } else if let Some((name, problem)) =
+                                replacements.iter().find_map(|(name, definition)| {
                                     webgen::delimiter_problem(definition)
                                         .map(|problem| (name.clone(), problem))
                                 })
@@ -2169,7 +2308,11 @@ pub mod commands {
                             break;
                         };
                         if spliced == cleaned {
-                            log(&app, &generation_id_for_task, "修复没有带来任何改动，停止。");
+                            log(
+                                &app,
+                                &generation_id_for_task,
+                                "修复没有带来任何改动，停止。",
+                            );
                             break;
                         }
                         cleaned = spliced;
@@ -2196,7 +2339,9 @@ pub mod commands {
 
                     // 交付前的兜底抢救：修复轮本身也可能被输出上限截断，于是又留下一份残脚本。
                     // 残缺的尾巴会带走整段脚本的执行（SyntaxError），丢掉它至少页面是活的。
-                    if let Some(problem) = webgen::delimiter_problem(&webgen::merged_script(&cleaned)) {
+                    if let Some(problem) =
+                        webgen::delimiter_problem(&webgen::merged_script(&cleaned))
+                    {
                         match webgen::restore_script(&cleaned) {
                             Some((fixed, reason)) => {
                                 log(
@@ -2373,7 +2518,9 @@ pub mod commands {
                         log(
                             &app,
                             &generation_id_for_task,
-                            &format!("已保存为第 {version} 版（含未修复问题，可在「历史版本」里回退）。"),
+                            &format!(
+                                "已保存为第 {version} 版（含未修复问题，可在「历史版本」里回退）。"
+                            ),
                         );
                         emit_web_generation_event(
                             &app,
@@ -2391,7 +2538,10 @@ pub mod commands {
                         &app,
                         &generation_id_for_task,
                         "error",
-                        format!("模型未继续输出网页内容（停止原因：{}）。可简化需求后重试。", done_reason.unwrap_or_else(|| "未知".to_string())),
+                        format!(
+                            "模型未继续输出网页内容（停止原因：{}）。可简化需求后重试。",
+                            done_reason.unwrap_or_else(|| "未知".to_string())
+                        ),
                         None,
                     );
                     return;
@@ -2450,7 +2600,9 @@ pub mod commands {
     /// 不返回正文是刻意的：列表只需要版本号、说明与自检指标，正文可达几十 KB，
     /// 传过去纯属浪费；真要回退时再按版本号取。
     #[tauri::command]
-    pub fn list_webpage_versions(chain_id: Option<String>) -> Vec<webgen::history::SnapshotSummary> {
+    pub fn list_webpage_versions(
+        chain_id: Option<String>,
+    ) -> Vec<webgen::history::SnapshotSummary> {
         webgen::history::list(chain_id.as_deref())
     }
 
@@ -2463,8 +2615,9 @@ pub mod commands {
         chain_id: Option<String>,
         version: u32,
     ) -> Result<String, String> {
-        webgen::history::get(chain_id.as_deref(), version)
-            .ok_or_else(|| format!("第 {version} 版已不在历史里（可能已被更早的版本挤出保留窗口）。"))
+        webgen::history::get(chain_id.as_deref(), version).ok_or_else(|| {
+            format!("第 {version} 版已不在历史里（可能已被更早的版本挤出保留窗口）。")
+        })
     }
 
     /// 按需求文本算版本链标识。
@@ -2659,6 +2812,277 @@ pub mod commands {
     // 窗口管理命令
     // ============================================================
 
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct MiniWindowConfig {
+        pub skin: String,
+        pub size: String,
+        pub opacity: f64,
+        pub always_on_top: bool,
+        pub show_status: bool,
+        pub default_expanded: bool,
+        pub visible: bool,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct MiniSkinAsset {
+        pub id: String,
+        pub name: String,
+        pub kind: String,
+        pub mime: String,
+        pub data_url: String,
+        pub scale: f64,
+        pub offset_y: f64,
+        pub playback_rate: f64,
+        pub created_at: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct StoredMiniSkinAsset {
+        id: String,
+        name: String,
+        kind: String,
+        mime: String,
+        file_name: String,
+        scale: f64,
+        offset_y: f64,
+        playback_rate: f64,
+        created_at: String,
+    }
+
+    fn mini_skin_dir() -> Result<std::path::PathBuf, String> {
+        let dir = dirs::data_local_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("pc-guardian")
+            .join("mini-skins");
+        std::fs::create_dir_all(&dir).map_err(|error| format!("创建皮肤目录失败：{error}"))?;
+        Ok(dir)
+    }
+
+    fn mini_skin_index_path() -> Result<std::path::PathBuf, String> {
+        Ok(mini_skin_dir()?.join("index.json"))
+    }
+
+    fn read_stored_mini_skins() -> Result<Vec<StoredMiniSkinAsset>, String> {
+        let path = mini_skin_index_path()?;
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let text = std::fs::read_to_string(path).map_err(|error| format!("读取皮肤索引失败：{error}"))?;
+        serde_json::from_str(&text).map_err(|error| format!("皮肤索引已损坏：{error}"))
+    }
+
+    fn write_stored_mini_skins(items: &[StoredMiniSkinAsset]) -> Result<(), String> {
+        let path = mini_skin_index_path()?;
+        let text = serde_json::to_string_pretty(items).map_err(|error| error.to_string())?;
+        std::fs::write(path, text).map_err(|error| format!("保存皮肤索引失败：{error}"))
+    }
+
+    fn stored_skin_to_public(item: StoredMiniSkinAsset) -> Result<MiniSkinAsset, String> {
+        use base64::Engine as _;
+        let bytes = std::fs::read(mini_skin_dir()?.join(&item.file_name))
+            .map_err(|error| format!("读取皮肤素材失败：{error}"))?;
+        Ok(MiniSkinAsset {
+            id: item.id,
+            name: item.name,
+            kind: item.kind,
+            mime: item.mime.clone(),
+            data_url: format!(
+                "data:{};base64,{}",
+                item.mime,
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            ),
+            scale: item.scale,
+            offset_y: item.offset_y,
+            playback_rate: item.playback_rate,
+            created_at: item.created_at,
+        })
+    }
+
+    #[tauri::command]
+    pub async fn list_mini_skin_assets() -> Result<Vec<MiniSkinAsset>, String> {
+        Ok(read_stored_mini_skins()?
+            .into_iter()
+            .filter_map(|item| stored_skin_to_public(item).ok())
+            .collect::<Vec<_>>())
+    }
+
+    #[tauri::command]
+    pub async fn import_mini_skin_asset(
+        path: String,
+        name: String,
+        scale: f64,
+        offset_y: f64,
+        playback_rate: f64,
+    ) -> Result<MiniSkinAsset, String> {
+        let source = std::path::PathBuf::from(&path);
+        if !source.is_file() {
+            return Err("没有找到所选素材".to_string());
+        }
+        let metadata = std::fs::metadata(&source).map_err(|error| error.to_string())?;
+        if metadata.len() > 50 * 1024 * 1024 {
+            return Err("素材不能超过 50 MB；请先裁剪短视频".to_string());
+        }
+        let extension = source
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let (kind, mime) = match extension.as_str() {
+            "png" => ("image", "image/png"),
+            "jpg" | "jpeg" => ("image", "image/jpeg"),
+            "webp" => ("image", "image/webp"),
+            "gif" => ("image", "image/gif"),
+            "mp4" => ("video", "video/mp4"),
+            "webm" => ("video", "video/webm"),
+            _ => return Err("只支持 PNG、JPG、WebP、GIF、MP4 或 WebM".to_string()),
+        };
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let file_name = format!("{id}.{extension}");
+        std::fs::copy(&source, mini_skin_dir()?.join(&file_name))
+            .map_err(|error| format!("导入皮肤素材失败：{error}"))?;
+        let fallback_name = source
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("自定义皮肤")
+            .to_string();
+        let item = StoredMiniSkinAsset {
+            id,
+            name: if name.trim().is_empty() { fallback_name } else { name.trim().chars().take(40).collect() },
+            kind: kind.to_string(),
+            mime: mime.to_string(),
+            file_name,
+            scale: scale.clamp(0.5, 2.0),
+            offset_y: offset_y.clamp(-40.0, 40.0),
+            playback_rate: playback_rate.clamp(0.25, 2.0),
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let mut items = read_stored_mini_skins()?;
+        items.insert(0, item.clone());
+        write_stored_mini_skins(&items)?;
+        stored_skin_to_public(item)
+    }
+
+    #[tauri::command]
+    pub async fn delete_mini_skin_asset(id: String) -> Result<(), String> {
+        let mut items = read_stored_mini_skins()?;
+        let Some(index) = items.iter().position(|item| item.id == id) else {
+            return Ok(());
+        };
+        let removed = items.remove(index);
+        let _ = std::fs::remove_file(mini_skin_dir()?.join(removed.file_name));
+        write_stored_mini_skins(&items)
+    }
+
+    fn mini_window_dimensions(size: &str) -> (f64, f64) {
+        match size {
+            "compact" => (210.0, 250.0),
+            "spacious" => (360.0, 500.0),
+            _ => (280.0, 380.0),
+        }
+    }
+
+    fn valid_mini_skin(value: &str) -> bool {
+        matches!(value, "guardian" | "core" | "halo")
+            || value
+                .strip_prefix("custom:")
+                .is_some_and(|id| id.len() == 32 && id.chars().all(|c| c.is_ascii_hexdigit()))
+    }
+
+    /// 读取形象设计室的当前配置以及浮窗真实可见状态。
+    #[tauri::command]
+    pub async fn get_mini_window_config(
+        state: State<'_, AppState>,
+        app_handle: tauri::AppHandle,
+    ) -> Result<MiniWindowConfig, String> {
+        let db = state.db.lock().await;
+        let read = |key: &str, fallback: &str| {
+            db.get_setting(key)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| fallback.to_string())
+        };
+        let config = MiniWindowConfig {
+            skin: read("mini.skin", "guardian"),
+            size: read("mini.size", "balanced"),
+            opacity: read("mini.opacity", "0.94")
+                .parse::<f64>()
+                .unwrap_or(0.94)
+                .clamp(0.4, 1.0),
+            always_on_top: read("mini.always_on_top", "true") == "true",
+            show_status: read("mini.show_status", "true") == "true",
+            default_expanded: read("mini.default_expanded", "false") == "true",
+            visible: app_handle
+                .get_webview_window("mini")
+                .and_then(|window| window.is_visible().ok())
+                .unwrap_or(false),
+        };
+        Ok(config)
+    }
+
+    /// 保存并立即应用浮窗设置。配置同时写入数据库，因此重启后仍然有效。
+    #[tauri::command]
+    pub async fn update_mini_window_config(
+        state: State<'_, AppState>,
+        app_handle: tauri::AppHandle,
+        mut config: MiniWindowConfig,
+    ) -> Result<MiniWindowConfig, String> {
+        if !valid_mini_skin(&config.skin) {
+            return Err("未知的浮窗皮肤".to_string());
+        }
+        if !matches!(config.size.as_str(), "compact" | "balanced" | "spacious") {
+            return Err("未知的浮窗尺寸".to_string());
+        }
+        config.opacity = config.opacity.clamp(0.4, 1.0);
+
+        {
+            let db = state.db.lock().await;
+            for (key, value) in [
+                ("mini.skin", config.skin.clone()),
+                ("mini.size", config.size.clone()),
+                ("mini.opacity", format!("{:.2}", config.opacity)),
+                ("mini.always_on_top", config.always_on_top.to_string()),
+                ("mini.show_status", config.show_status.to_string()),
+                ("mini.default_expanded", config.default_expanded.to_string()),
+            ] {
+                db.update_setting(key, &value)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+
+        if let Some(window) = app_handle.get_webview_window("mini") {
+            let (width, height) = mini_window_dimensions(&config.size);
+            window
+                .set_size(tauri::LogicalSize::new(width, height))
+                .map_err(|error| error.to_string())?;
+            window
+                .set_always_on_top(config.always_on_top)
+                .map_err(|error| error.to_string())?;
+            config.visible = window.is_visible().unwrap_or(false);
+            let _ = app_handle.emit_to("mini", "mini:config-changed", &config);
+        } else {
+            config.visible = false;
+        }
+
+        Ok(config)
+    }
+
+    /// 明确显示或隐藏浮窗；设计室不使用“盲切换”，避免界面状态与窗口状态相反。
+    #[tauri::command]
+    pub async fn set_mini_window_visible(
+        app_handle: tauri::AppHandle,
+        visible: bool,
+    ) -> Result<bool, String> {
+        if visible {
+            show_mini_window_inner(&app_handle).map_err(|error| error.to_string())?;
+        } else if let Some(window) = app_handle.get_webview_window("mini") {
+            window.hide().map_err(|error| error.to_string())?;
+        }
+        Ok(app_handle
+            .get_webview_window("mini")
+            .and_then(|window| window.is_visible().ok())
+            .unwrap_or(false))
+    }
+
     /// 显示/聚焦主窗口
     #[tauri::command]
     pub async fn show_main_window(app_handle: tauri::AppHandle) -> Result<(), String> {
@@ -2700,34 +3124,41 @@ pub mod commands {
                     let _ = window.hide();
                 }
                 _ => {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                    show_mini_window_inner(app_handle)?;
                 }
             }
         } else {
-            let window = tauri::WebviewWindowBuilder::new(
-                app_handle,
-                "mini",
-                tauri::WebviewUrl::App("index.html".into()),
-            )
-            .title("PC Guardian")
-            .decorations(false)
-            .transparent(true)
-            .shadow(false)
-            .always_on_top(true)
-            .inner_size(240.0, 280.0)
-            .center()
-            .skip_taskbar(true)
-            .build()?;
-
-            // Windows: 子类化窗口过程，WM_NCHITTEST 返回 HTCAPTION 启用整个窗口拖动
-            #[cfg(target_os = "windows")]
-            {
-                if let Ok(hwnd) = window.hwnd() {
-                    crate::subclass_mini_window(hwnd.0 as isize);
-                }
-            }
+            show_mini_window_inner(app_handle)?;
         }
+        Ok(())
+    }
+
+    pub fn show_mini_window_inner(
+        app_handle: &tauri::AppHandle,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(window) = app_handle.get_webview_window("mini") {
+            window.show()?;
+            window.set_focus()?;
+            return Ok(());
+        }
+
+        tauri::WebviewWindowBuilder::new(
+            app_handle,
+            "mini",
+            tauri::WebviewUrl::App("index.html".into()),
+        )
+        .title("PC Guardian 浮窗")
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .always_on_top(true)
+        .inner_size(280.0, 380.0)
+        .center()
+        .skip_taskbar(true)
+        .build()?;
+
+        // 拖动只交给前端标记的头像区域。旧实现把整个 HWND 都返回为 HTCAPTION，
+        // 会让关闭、展开和输入框也被 Windows 当成标题栏而无法可靠点击。
         Ok(())
     }
 
@@ -2794,14 +3225,12 @@ pub mod commands {
                         "Jarvis 已在前台运行，显存已由它占用。无需重复启动。".to_string(),
                     )
                 } else if available_mb >= JARVIS_REQUIRED_VRAM_MB {
-                    (
-                        "ready",
-                        "显存余量满足 Jarvis 的安全启动条件。".to_string(),
-                    )
+                    ("ready", "显存余量满足 Jarvis 的安全启动条件。".to_string())
                 } else {
                     (
                         "insufficient",
-                        "当前可用显存不足；请先让正在运行的本地模型释放显存，再启动 Jarvis。".to_string(),
+                        "当前可用显存不足；请先让正在运行的本地模型释放显存，再启动 Jarvis。"
+                            .to_string(),
                     )
                 };
                 Ok(JarvisVramStatus {
@@ -2848,9 +3277,7 @@ pub mod commands {
         // 校验需要读库，先取锁做完，再决定是否写入。
         {
             let db = state.db.lock().await;
-            let bounds = db
-                .get_setting_bounds(&key)
-                .map_err(|e| e.to_string())?;
+            let bounds = db.get_setting_bounds(&key).map_err(|e| e.to_string())?;
 
             if let Some((value_type, min_value, max_value, unit)) = bounds {
                 match value_type.to_uppercase().as_str() {
@@ -2860,10 +3287,9 @@ pub mod commands {
                         }
                     }
                     "NUMBER" => {
-                        let parsed: f64 = value
-                            .trim()
-                            .parse()
-                            .map_err(|_| format!("{} 需要填一个数字，当前填的是「{}」", key, value))?;
+                        let parsed: f64 = value.trim().parse().map_err(|_| {
+                            format!("{} 需要填一个数字，当前填的是「{}」", key, value)
+                        })?;
                         if !parsed.is_finite() {
                             return Err(format!("{} 不能填 NaN 或无穷大", key));
                         }
@@ -2956,8 +3382,21 @@ pub mod commands {
                 .map_err(|e| e.to_string());
         }
 
-        let db = state.db.lock().await;
-        db.update_setting(&key, &value).map_err(|e| e.to_string())
+        {
+            let db = state.db.lock().await;
+            db.update_setting(&key, &value).map_err(|e| e.to_string())?;
+        }
+
+        // 多端网关的开关、监听地址和端口必须立即作用于运行中的监听器。
+        // 只写数据库会让界面显示新值、实际进程仍沿用旧值，属于危险的假设置。
+        if matches!(
+            key.as_str(),
+            "agent.gateway_enabled" | "agent.gateway_bind" | "agent.gateway_port"
+        ) {
+            state.gateway.restart().await;
+        }
+
+        Ok(())
     }
 
     /// 查询开机自启在系统里的真实状态
@@ -3141,6 +3580,19 @@ pub mod commands {
             .map_err(|e| e.to_string())
     }
 
+    /// 获取所有会话中仍未结束的任务，供全局指挥中心展示真实状态。
+    #[tauri::command]
+    pub async fn get_active_tasks(
+        state: State<'_, AppState>,
+        limit: Option<i64>,
+    ) -> Result<Vec<Task>, String> {
+        let db = state.db.lock().await;
+        let task_mgr = TaskManager::new(db.connection());
+        task_mgr
+            .list_active_recent(limit.unwrap_or(6))
+            .map_err(|e| e.to_string())
+    }
+
     /// 取消会话的活跃任务
     #[tauri::command]
     pub async fn cancel_task(
@@ -3248,6 +3700,58 @@ pub mod commands {
         use crate::memory::MemoryEngine;
         let db = state.db.lock().await;
         MemoryEngine::forget_by_id(db.connection(), &memory_id).map_err(|e| e.to_string())
+    }
+
+    /// 原位编辑记忆，保留 ID、来源和访问历史。
+    #[tauri::command]
+    pub async fn update_memory_item(
+        state: State<'_, AppState>,
+        memory_id: String,
+        content: String,
+        memory_type: String,
+        importance: u8,
+    ) -> Result<bool, String> {
+        use crate::memory::{MemoryEngine, MemoryType};
+        let content = content.trim();
+        if content.is_empty() {
+            return Err("记忆内容不能为空".to_string());
+        }
+        let db = state.db.lock().await;
+        MemoryEngine::update_memory_details(
+            db.connection(),
+            &memory_id,
+            MemoryType::from_str(&memory_type),
+            content,
+            importance,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// 返回证据可追溯的用户适应画像；不调用模型、不推断敏感属性。
+    #[tauri::command]
+    pub async fn get_memory_profile(
+        state: State<'_, AppState>,
+    ) -> Result<crate::memory::AdaptationProfile, String> {
+        let db = state.db.lock().await;
+        crate::memory::MemoryEngine::build_adaptation_profile(db.connection(), 6)
+            .map_err(|e| e.to_string())
+    }
+
+    /// 真正执行一次记忆固化，再返回最新画像与固化统计。
+    #[tauri::command]
+    pub async fn analyze_and_consolidate_memories(
+        state: State<'_, AppState>,
+    ) -> Result<serde_json::Value, String> {
+        let db = state.db.lock().await;
+        let summary =
+            crate::memory::consolidate(db.connection(), 3, 0.3).map_err(|e| e.to_string())?;
+        let profile = crate::memory::MemoryEngine::build_adaptation_profile(db.connection(), 6)
+            .map_err(|e| e.to_string())?;
+        Ok(serde_json::json!({
+            "merged_into": summary.merged_into,
+            "consumed": summary.consumed,
+            "profile": profile,
+        }))
     }
 
     /// 搜索记忆
@@ -3479,11 +3983,7 @@ pub mod commands {
         limit: Option<i64>,
     ) -> Result<Vec<crate::scheduler::JobRun>, String> {
         let db = state.db.lock().await;
-        crate::scheduler::recent_runs(
-            db.connection(),
-            id.as_deref(),
-            limit.unwrap_or(20),
-        )
+        crate::scheduler::recent_runs(db.connection(), id.as_deref(), limit.unwrap_or(20))
     }
 
     /// 调度器运行状态
@@ -3518,8 +4018,10 @@ pub mod commands {
         let db = state.db.lock().await;
         // 顺手清掉过期码，表不会无限增长
         let _ = crate::devices::prune_pairing_codes(db.connection());
-        let (code, expires_at) =
-            crate::devices::issue_pairing_code(db.connection(), crate::devices::PAIRING_CODE_TTL_SECS)?;
+        let (code, expires_at) = crate::devices::issue_pairing_code(
+            db.connection(),
+            crate::devices::PAIRING_CODE_TTL_SECS,
+        )?;
         let status = state.gateway.status().await;
 
         Ok(serde_json::json!({
@@ -3589,7 +4091,8 @@ pub mod commands {
         match client.get(&endpoint).send().await {
             Ok(response) => {
                 let status = response.status();
-                let body: serde_json::Value = response.json().await.unwrap_or(serde_json::Value::Null);
+                let body: serde_json::Value =
+                    response.json().await.unwrap_or(serde_json::Value::Null);
                 Ok(serde_json::json!({
                     "reachable": status.is_success(),
                     "base_url": base,
@@ -3605,6 +4108,125 @@ pub mod commands {
                 "error": e.to_string(),
             })),
         }
+    }
+
+    async fn sidecar_base_url(state: &State<'_, AppState>) -> String {
+        let db = state.db.lock().await;
+        db.get_setting("sidecar.url")
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "http://127.0.0.1:4770".to_string())
+            .trim_end_matches('/')
+            .to_string()
+    }
+
+    fn sidecar_http_client() -> Result<reqwest::Client, String> {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .no_proxy()
+            .build()
+            .map_err(|error| format!("创建 sidecar 客户端失败：{}", error))
+    }
+
+    async fn sidecar_json_response(
+        response: reqwest::Response,
+    ) -> Result<serde_json::Value, String> {
+        let status = response.status();
+        let body = response
+            .json::<serde_json::Value>()
+            .await
+            .unwrap_or(serde_json::Value::Null);
+        if status.is_success() {
+            return Ok(body);
+        }
+        let message = body
+            .pointer("/error/message")
+            .and_then(|value| value.as_str())
+            .or_else(|| body.get("error").and_then(|value| value.as_str()))
+            .unwrap_or("sidecar 请求失败");
+        Err(format!("{}（HTTP {}）", message, status.as_u16()))
+    }
+
+    /// 列出已经接入的 MCP 工具源及其工具。AI 通过固定的 mcp_list_tools / mcp_call
+    /// 桥接器使用这些动态能力，不需要把第三方 schema 烘进 Rust 注册表。
+    #[tauri::command]
+    pub async fn list_mcp_capabilities(
+        state: State<'_, AppState>,
+    ) -> Result<serde_json::Value, String> {
+        let base = sidecar_base_url(&state).await;
+        let client = sidecar_http_client()?;
+        match client.get(format!("{}/mcp/tools", base)).send().await {
+            Ok(response) => sidecar_json_response(response).await,
+            Err(error) => Ok(serde_json::json!({
+                "reachable": false,
+                "servers": [],
+                "tools": [],
+                "error": format!("MCP 网关不可达：{}", error),
+            })),
+        }
+    }
+
+    /// 安装 Streamable HTTP MCP 工具源：先由 sidecar 完成握手和工具发现，成功后
+    /// 才会持久化。远端明文 HTTP 可能泄露参数，因此只允许 HTTPS 或本机地址。
+    #[tauri::command]
+    pub async fn install_mcp_server(
+        state: State<'_, AppState>,
+        id: String,
+        name: String,
+        url: String,
+    ) -> Result<serde_json::Value, String> {
+        let parsed = reqwest::Url::parse(url.trim())
+            .map_err(|error| format!("工具源地址无效：{}", error))?;
+        if parsed.scheme() != "https" && parsed.scheme() != "http" {
+            return Err("工具源只支持 http 或 https 地址".to_string());
+        }
+        let host = parsed.host_str().unwrap_or_default();
+        let local = matches!(host, "localhost" | "127.0.0.1" | "::1");
+        if parsed.scheme() == "http" && !local {
+            return Err(
+                "远程工具源必须使用 HTTPS；HTTP 仅允许 localhost / 127.0.0.1 / ::1".to_string(),
+            );
+        }
+
+        let base = sidecar_base_url(&state).await;
+        let response = sidecar_http_client()?
+            .post(format!("{}/mcp/servers", base))
+            .header("X-PC-Guardian-Local", "capability-manager-v1")
+            .json(&serde_json::json!({
+                "id": id.trim(),
+                "name": if name.trim().is_empty() { id.trim() } else { name.trim() },
+                "transport": "http",
+                "url": parsed.as_str(),
+            }))
+            .send()
+            .await
+            .map_err(|error| format!("MCP 网关不可达，无法完成安装：{}", error))?;
+        sidecar_json_response(response).await
+    }
+
+    #[tauri::command]
+    pub async fn remove_mcp_server(
+        state: State<'_, AppState>,
+        id: String,
+    ) -> Result<serde_json::Value, String> {
+        let id = id.trim();
+        if id.len() < 2
+            || id.len() > 64
+            || !id
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+        {
+            return Err("工具源 id 格式无效".to_string());
+        }
+        let base = sidecar_base_url(&state).await;
+        let response = sidecar_http_client()?
+            .delete(format!("{}/mcp/servers/{}", base, id))
+            .header("X-PC-Guardian-Local", "capability-manager-v1")
+            .send()
+            .await
+            .map_err(|error| format!("MCP 网关不可达，无法移除工具源：{}", error))?;
+        sidecar_json_response(response).await
     }
 
     // ============================================================
@@ -3930,6 +4552,20 @@ pub mod commands {
         JARVIS_WORKER_CHILD.get_or_init(|| std::sync::Mutex::new(None))
     }
 
+    /// 应用真正退出时同步收掉本进程启动的控制面和 native worker。
+    /// 不能只依赖 `Child` 的 Drop：Rust 默认不会随父进程结束子进程，遗留进程会让
+    /// 下一次启动只能看到 Jarvis、却无法安全释放显存给 Ollama。
+    pub fn shutdown_managed_jarvis_children() {
+        if let Some(mut child) = jarvis_child().lock().unwrap().take() {
+            jarvis_kill_tree(child.id());
+            let _ = child.kill();
+        }
+        if let Some(mut worker) = jarvis_worker_child().lock().unwrap().take() {
+            jarvis_kill_tree(worker.id());
+            let _ = worker.kill();
+        }
+    }
+
     /// 命名管道是否已经有 server 端在监听。
     ///
     /// `Path::exists()` 不会探测 Windows named pipe；它会把可用的
@@ -3970,7 +4606,10 @@ pub mod commands {
     }
 
     /// 读一个字符串响应并解析成 JSON；非 2xx 时把响应体带回去，方便定位。
-    async fn jarvis_read_json(resp: reqwest::Response, what: &str) -> Result<serde_json::Value, String> {
+    async fn jarvis_read_json(
+        resp: reqwest::Response,
+        what: &str,
+    ) -> Result<serde_json::Value, String> {
         let code = resp.status();
         let body = resp.text().await.unwrap_or_default();
         if !code.is_success() {
@@ -4024,18 +4663,33 @@ pub mod commands {
             // 模型/虚拟环境/构建产物仍是本机运行时资源，但不能再以另一份项目目录
             // 作为默认前提。
             let bundled_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("jarvis");
-            let py = python_path
-                .unwrap_or_else(|| bundled_root.join("python/.venv/Scripts/python.exe").display().to_string());
-            let wd = work_dir
-                .unwrap_or_else(|| bundled_root.join("python").display().to_string());
-            let worker = get("jarvis.worker_path")
-                .unwrap_or_else(|| bundled_root.join("runtime/jarvis-native-worker-cuda.exe").display().to_string());
-            let model = get("jarvis.model_path")
-                .unwrap_or_else(|| bundled_root.join("models/MiniCPM-o-4_5-gguf").display().to_string());
-            let pipe = get("jarvis.pipe_name")
-                .unwrap_or_else(|| r"\\.\pipe\JarvisSidecar.v1".to_string());
-            let config = get("jarvis.config_path")
-                .unwrap_or_else(|| bundled_root.join("python/config/local.toml").display().to_string());
+            let py = python_path.unwrap_or_else(|| {
+                bundled_root
+                    .join("python/.venv/Scripts/python.exe")
+                    .display()
+                    .to_string()
+            });
+            let wd = work_dir.unwrap_or_else(|| bundled_root.join("python").display().to_string());
+            let worker = get("jarvis.worker_path").unwrap_or_else(|| {
+                bundled_root
+                    .join("runtime/jarvis-native-worker-cuda.exe")
+                    .display()
+                    .to_string()
+            });
+            let model = get("jarvis.model_path").unwrap_or_else(|| {
+                bundled_root
+                    .join("models/MiniCPM-o-4_5-gguf")
+                    .display()
+                    .to_string()
+            });
+            let pipe =
+                get("jarvis.pipe_name").unwrap_or_else(|| r"\\.\pipe\JarvisSidecar.v1".to_string());
+            let config = get("jarvis.config_path").unwrap_or_else(|| {
+                bundled_root
+                    .join("python/config/local.toml")
+                    .display()
+                    .to_string()
+            });
             (py, wd, worker, model, pipe, config)
         };
 
@@ -4128,7 +4782,10 @@ pub mod commands {
             let worker = match worker_cmd.spawn() {
                 Ok(worker) => worker,
                 Err(e) => {
-                    state.inference_runtime.mark_error(format!("启动 native worker 失败：{e}")).await;
+                    state
+                        .inference_runtime
+                        .mark_error(format!("启动 native worker 失败：{e}"))
+                        .await;
                     return Err(format!("启动 native worker 失败：{e}"));
                 }
             };
@@ -4147,7 +4804,10 @@ pub mod commands {
                     jarvis_kill_tree(worker.id());
                     let _ = worker.kill();
                 }
-                state.inference_runtime.mark_error("native worker 未在限定时间内建立命名管道").await;
+                state
+                    .inference_runtime
+                    .mark_error("native worker 未在限定时间内建立命名管道")
+                    .await;
                 return Err(format!(
                     "native worker 在 180 秒内没有建立管道 {pipe_name}，模型大概率没加载成功。\
                      详情看 {}（常见原因：显存不够被占，或模型目录不完整）",
@@ -4165,8 +4825,12 @@ pub mod commands {
             .unwrap_or_else(std::env::temp_dir)
             .join("pc-guardian")
             .join("jarvis");
-        std::fs::create_dir_all(&control_data_dir)
-            .map_err(|e| format!("无法创建 Jarvis 数据目录 {}：{e}", control_data_dir.display()))?;
+        std::fs::create_dir_all(&control_data_dir).map_err(|e| {
+            format!(
+                "无法创建 Jarvis 数据目录 {}：{e}",
+                control_data_dir.display()
+            )
+        })?;
         let python_module_dir = std::path::Path::new(&wd).join("src");
 
         let mut cmd = std::process::Command::new(&py);
@@ -4202,7 +4866,10 @@ pub mod commands {
                     jarvis_kill_tree(worker.id());
                     let _ = worker.kill();
                 }
-                state.inference_runtime.mark_error(format!("启动 Jarvis 控制面失败：{e}")).await;
+                state
+                    .inference_runtime
+                    .mark_error(format!("启动 Jarvis 控制面失败：{e}"))
+                    .await;
                 return Err(format!("启动 Jarvis 失败：{e}"));
             }
         };
@@ -4230,8 +4897,14 @@ pub mod commands {
                 jarvis_kill_tree(worker.id());
                 let _ = worker.kill();
             }
-            state.inference_runtime.mark_error("Jarvis 控制面启动后未通过健康检查").await;
-            return Err("Jarvis 控制面未在 15 秒内通过健康检查，请检查 worker-ui.log 与后端日志".to_string());
+            state
+                .inference_runtime
+                .mark_error("Jarvis 控制面启动后未通过健康检查")
+                .await;
+            return Err(
+                "Jarvis 控制面未在 15 秒内通过健康检查，请检查 worker-ui.log 与后端日志"
+                    .to_string(),
+            );
         }
         state
             .inference_runtime
@@ -4377,7 +5050,11 @@ pub mod commands {
         let url = format!("{JARVIS_BASE_URL}/duplex");
         match action.as_str() {
             "status" => {
-                let resp = client.get(&url).send().await.map_err(|e| format!("查询感知状态失败：{e}"))?;
+                let resp = client
+                    .get(&url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("查询感知状态失败：{e}"))?;
                 jarvis_read_json(resp, "/duplex").await
             }
             "start" => {
@@ -4394,11 +5071,14 @@ pub mod commands {
                 jarvis_read_json(resp, "/duplex").await
             }
             "stop" => {
-                let resp = client.delete(&url).send().await.map_err(|e| format!("停止感知失败：{e}"))?;
+                let resp = client
+                    .delete(&url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("停止感知失败：{e}"))?;
                 jarvis_read_json(resp, "/duplex").await
             }
             other => Err(format!("未知的感知操作：{other}")),
         }
     }
 }
-

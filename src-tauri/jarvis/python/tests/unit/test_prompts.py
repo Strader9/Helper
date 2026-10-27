@@ -34,6 +34,7 @@ def test_runtime_prompts_have_single_responsibilities_and_size_budgets():
     assert "桌面、静态网页、游戏和课程由结构化感知处理" in prompts["ambient"]
     assert "而没有表达判断、态度或调侃，就必须 LISTEN" in prompts["ambient"]
     assert "本轮消息是当前请求" in prompts["pet_chat"]
+    assert "绝不能为了完整回答而编造" in prompts["pet_chat"]
     assert "不能仅凭 scene 标签、视觉风格或应用名称推断" in prompts["daily_summary"]
     assert "第一张参考图只决定" in prompts["daily_image"]
     assert "最多 6 条可独立复习的知识" in prompts["course_chunk"]

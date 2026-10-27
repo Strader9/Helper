@@ -27,6 +27,15 @@ interface Conversation {
   preview: string;
 }
 
+interface StoredConversation {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  last_message?: string | null;
+}
+
 interface ToolCall {
   id: string;
   name: string;
@@ -72,6 +81,7 @@ interface HandoffPacket {
   userGoal: string;
   conversationSummary: string;
   requiresConfirmationForWrite: boolean;
+  degradedFallback?: boolean;
 }
 
 interface HandoffRecommendation {
@@ -81,6 +91,7 @@ interface HandoffRecommendation {
   user_goal: string;
   context_summary: string;
   requires_confirmation_for_write: boolean;
+  degraded_fallback?: boolean;
 }
 
 interface HandoffPlan {
@@ -120,24 +131,21 @@ function getToolIcon(name: string): React.ReactNode {
 }
 
 function formatTime(ts: string): string {
-  try {
-    return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-  } catch {
-    return '';
-  }
+  const d = new Date(ts);
+  if (!ts || Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 }
 
 function formatDate(ts: string): string {
-  try {
-    const d = new Date(ts);
-    const now = new Date();
-    const diff = now.getTime() - d.getTime();
-    if (diff < 86400000 && d.getDate() === now.getDate()) return '今天';
-    if (diff < 172800000 && d.getDate() === now.getDate() - 1) return '昨天';
-    return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
-  } catch {
-    return '';
-  }
+  const d = new Date(ts);
+  if (!ts || Number.isNaN(d.getTime())) return '';
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const daysAgo = Math.round((today - day) / 86400000);
+  if (daysAgo === 0) return '今天';
+  if (daysAgo === 1) return '昨天';
+  return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
 }
 
 function truncate(s: string, n: number): string {
@@ -228,10 +236,10 @@ const markdownComponents: Components = {
    快捷建议
    ────────────────────────────────────────────── */
 const SUGGESTIONS = [
+  { label: '每天上午九点给我一份系统简报', prompt: '每天上午九点检查这台电脑的运行状态，并把简短的系统简报发给我。' },
+  { label: 'CPU 持续过高时提醒我', prompt: '创建一条主动规则：CPU 使用率持续 30 秒超过 90% 时通知我。' },
   { label: '帮我清理桌面文件', prompt: '帮我整理一下桌面上的文件，按类型分类到对应文件夹。' },
   { label: '总结当前系统状态', prompt: '帮我看看当前电脑的运行状态，给出优化建议。' },
-  { label: '写一段 Python 脚本', prompt: '帮我写一个 Python 脚本，批量重命名当前目录下的图片文件。' },
-  { label: '查一下网络情况', prompt: '帮我检查一下当前网络连接状态和延迟情况。' },
 ];
 
 /* ──────────────────────────────────────────────
@@ -317,8 +325,14 @@ export default function LumiChat() {
   /* ── 加载会话列表 ── */
   const loadConversations = useCallback(async () => {
     try {
-      const convs = await invoke<Conversation[]>('get_conversations');
-      setConversations(convs || []);
+      const convs = await invoke<StoredConversation[]>('get_conversations');
+      setConversations((convs || []).map((conv) => ({
+        id: conv.id,
+        title: conv.title,
+        messageCount: conv.message_count ?? 0,
+        lastActiveAt: conv.updated_at || conv.created_at,
+        preview: conv.last_message || '',
+      })));
     } catch {
       setConversations([]);
     } finally {
@@ -445,6 +459,41 @@ export default function LumiChat() {
         taskId: null,
       });
       if (plan.packet) {
+        if (!plan.recommendation.requires_confirmation_for_write) {
+          const aiMsgId = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          setMessages(prev => [
+            ...prev,
+            {
+              id: aiMsgId,
+              role: 'assistant',
+              content: '',
+              timestamp: new Date().toISOString(),
+              toolCalls: [],
+              thinking: true,
+            },
+          ]);
+          streamingMsgIdRef.current = aiMsgId;
+          streamingTextRef.current = '';
+          setHandoffState({ state: 'ollama_starting' });
+          try {
+            const runId = await invoke<string>('execute_ollama_handoff', {
+              packet: plan.packet,
+              conversationId: convId,
+              requestId: null,
+            });
+            currentRunIdRef.current = runId;
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            updateStreamingMessage(message => ({
+              ...message,
+              thinking: false,
+              content: `⚠️ 无法启动只读任务：${detail}`,
+            }));
+            finishStream();
+            setHandoffState({ state: 'jarvis_restore_failed', error: detail });
+          }
+          return;
+        }
         setPendingHandoff({
           packet: plan.packet,
           recommendation: plan.recommendation,
@@ -455,7 +504,9 @@ export default function LumiChat() {
           {
             id: `handoff-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             role: 'assistant',
-            content: `我已理解这项任务。它需要交给 Ollama 执行：**${plan.recommendation.user_goal}**。请确认后我会暂时释放 Jarvis 的显存，执行完成后自动恢复。`,
+            content: plan.recommendation.degraded_fallback
+              ? `Jarvis 当前无法完成职责判断，已由本地安全路由器准备降级到 Ollama：**${plan.recommendation.user_goal}**。请确认后执行，完成后会自动尝试恢复 Jarvis。`
+              : `我已理解这项任务。它需要交给 Ollama 执行：**${plan.recommendation.user_goal}**。请确认后我会暂时释放 Jarvis 的显存，执行完成后自动恢复。`,
             timestamp: new Date().toISOString(),
           },
         ]);
@@ -476,7 +527,7 @@ export default function LumiChat() {
       ]);
       finishStream();
     }
-  }, [finishStream, runAssistant]);
+  }, [finishStream, runAssistant, updateStreamingMessage]);
 
   const confirmHandoff = useCallback(async () => {
     const pending = pendingHandoff;

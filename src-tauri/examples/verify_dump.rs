@@ -11,7 +11,9 @@ use pc_guardian_lib::webgen;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let path = args.get(1).expect("用法: verify_dump <页面.html> [需求.md]");
+    let path = args
+        .get(1)
+        .expect("用法: verify_dump <页面.html> [需求.md]");
     let html = std::fs::read_to_string(path).expect("读取页面失败");
     let spec = args
         .get(2)

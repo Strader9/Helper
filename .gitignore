@@ -55,9 +55,13 @@ src-tauri/jarvis/python/memory/
 src-tauri/jarvis/python/courses/
 src-tauri/jarvis/python/models/
 src-tauri/jarvis/native/build/
+src-tauri/jarvis/build/
+src-tauri/jarvis/build-stub/
+src-tauri/jarvis/runtime-probe/
 src-tauri/jarvis/runtime/
 src-tauri/jarvis/models/
 src-tauri/jarvis/config/local.toml
+src-tauri/jarvis/python/config/local.toml
 __pycache__/
 *.py[cod]
 

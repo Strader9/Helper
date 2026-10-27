@@ -24,6 +24,10 @@ pub struct HandoffPacket {
     pub conversation_summary: String,
     pub resources: Vec<ResourceRef>,
     pub requires_confirmation_for_write: bool,
+    /// Jarvis 推理不可用时由 Rust 路由器签发。前端不能凭此绕过策略，因为执行前
+    /// 仍会与 pending_handoffs 中的服务端原件逐字段比对。
+    #[serde(default)]
+    pub degraded_fallback: bool,
 }
 
 impl HandoffPacket {
@@ -67,6 +71,7 @@ mod tests {
             conversation_summary: "用户要求生成摘要".into(),
             resources: vec![],
             requires_confirmation_for_write: true,
+            degraded_fallback: false,
         };
         assert!(packet.validate().is_ok());
     }

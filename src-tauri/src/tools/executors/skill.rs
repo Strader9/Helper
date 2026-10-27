@@ -110,9 +110,51 @@ impl AgentTool for SkillGetTool {
 
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
         let id = require_str(&args, "id")?;
-        let skill = manager().await.get_skill(id).await
+        let skill = manager()
+            .await
+            .get_skill(id)
+            .await
             .ok_or_else(|| AppError::ToolNotFound(format!("技能不存在: {}", id)))?;
         Ok(ToolResult::ok(json!({ "skill": skill_json(&skill) })))
+    }
+}
+
+// ============================================================
+// skill_run
+// ============================================================
+
+pub struct SkillRunTool;
+
+#[async_trait]
+impl AgentTool for SkillRunTool {
+    fn name(&self) -> &'static str {
+        "skill_run"
+    }
+
+    fn description(&self) -> &'static str {
+        "运行一个已启用技能。先用 skill_list 找到技能，再用 skill_get 查看参数，然后把技能 id 与参数对象传入。新安装的技能可立即通过此工具使用。"
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "skill_id": { "type": "string", "description": "技能 id" },
+                "arguments": { "type": "object", "description": "符合该技能 parameters 声明的参数" }
+            },
+            "required": ["skill_id", "arguments"]
+        })
+    }
+
+    // 技能权限是运行时数据，不能在注册阶段静态证明安全；稳定桥接器按最高风险处理。
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::High
+    }
+
+    async fn execute(&self, args: Value) -> AppResult<ToolResult> {
+        let id = require_str(&args, "skill_id")?;
+        let skill_args = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
+        manager().await.run_skill(id, &skill_args).await
     }
 }
 
@@ -317,11 +359,12 @@ impl AgentTool for SkillMarketplaceInstallTool {
 
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
         let skill_id = require_str(&args, "skill_id")?;
-        let (def, script) = skills::marketplace::bundled_package(skill_id)
-            .ok_or_else(|| AppError::InvalidArgument(format!(
+        let (def, script) = skills::marketplace::bundled_package(skill_id).ok_or_else(|| {
+            AppError::InvalidArgument(format!(
                 "官方市场里没有技能「{}」。先用 skill_marketplace_search 查询可安装的技能。",
                 skill_id
-            )))?;
+            ))
+        })?;
         let skill = manager().await.install_bundled_skill(def, script).await?;
         Ok(ToolResult::ok(json!({
             "ok": true,
@@ -369,5 +412,16 @@ mod tests {
     fn require_str_rejects_blank() {
         assert!(require_str(&json!({"id": "  "}), "id").is_err());
         assert_eq!(require_str(&json!({"id": "abc"}), "id").unwrap(), "abc");
+    }
+
+    #[test]
+    fn skill_run_is_a_high_risk_dynamic_bridge() {
+        let tool = SkillRunTool;
+        assert_eq!(tool.name(), "skill_run");
+        assert_eq!(tool.risk_level(), RiskLevel::High);
+        assert_eq!(
+            tool.parameters()["required"],
+            json!(["skill_id", "arguments"])
+        );
     }
 }

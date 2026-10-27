@@ -34,7 +34,10 @@ async fn main() {
         std::process::exit(2);
     };
     let html = std::fs::read_to_string(html_path).expect("读不到原 HTML");
-    let feedback = args.get(2).cloned().unwrap_or_else(|| "把主色调改成绿色".to_string());
+    let feedback = args
+        .get(2)
+        .cloned()
+        .unwrap_or_else(|| "把主色调改成绿色".to_string());
     let target = args.get(3).filter(|t| !t.trim().is_empty()).cloned();
     let out_path = args.get(4).cloned();
 
@@ -62,10 +65,16 @@ async fn main() {
         println!(
             "片段摘取：整页 {chars} 字 → 回传 {} 字（{}）",
             excerpt.chars().count(),
-            if located { "已定位到目标元素 → 片段模式" } else { "未定位到，退回开头" }
+            if located {
+                "已定位到目标元素 → 片段模式"
+            } else {
+                "未定位到，退回开头"
+            }
         );
         let note = if located {
-            format!("\n\n（注意：现有页面共约 {chars} 字，这里只回传了包含**你要修改的元素**的片段。）")
+            format!(
+                "\n\n（注意：现有页面共约 {chars} 字，这里只回传了包含**你要修改的元素**的片段。）"
+            )
         } else {
             format!("\n\n（注意：现有页面共约 {chars} 字，受上下文长度限制只回传了开头片段，且没能定位到你要修改的元素。请结合上面的元素描述与修改意见进行修改，并保持原有视觉风格与结构。）")
         };
@@ -161,9 +170,10 @@ async fn main() {
 
     // 片段模式下要把模型返回的"这一小块"贴回原页 —— 与生产链路一致。
     let cleaned = if patch_mode {
-        match target.as_ref().and_then(|target| {
-            webgen::merge_patch(&html, target, PATCH_WINDOW, &cleaned)
-        }) {
+        match target
+            .as_ref()
+            .and_then(|target| webgen::merge_patch(&html, target, PATCH_WINDOW, &cleaned))
+        {
             Some(outcome) if outcome.changed => {
                 println!("\n片段合并：改后 {} 字已贴回原页", cleaned.chars().count());
                 outcome.html
@@ -183,8 +193,15 @@ async fn main() {
 
     println!("\n=== 结果 ===");
     println!("耗时：{:.1}s", elapsed.as_secs_f64());
-    println!("原字符数：{}｜新字符数：{}", html.chars().count(), cleaned.chars().count());
-    println!("字符数变化：{:+}", cleaned.chars().count() as i64 - html.chars().count() as i64);
+    println!(
+        "原字符数：{}｜新字符数：{}",
+        html.chars().count(),
+        cleaned.chars().count()
+    );
+    println!(
+        "字符数变化：{:+}",
+        cleaned.chars().count() as i64 - html.chars().count() as i64
+    );
 
     // 关键指标：改动范围。
     //
@@ -213,7 +230,12 @@ async fn main() {
     } else {
         println!("发现 {} 项问题：", issues.len());
         for issue in &issues {
-            println!("  [{}] {}：{}", issue.severity.label(), issue.code, issue.detail);
+            println!(
+                "  [{}] {}：{}",
+                issue.severity.label(),
+                issue.code,
+                issue.detail
+            );
         }
     }
 
@@ -238,7 +260,11 @@ fn line_diff_ratio(before: &str, after: &str) -> LineDiff {
     let b: Vec<String> = after.lines().map(|l| l.trim().to_string()).collect();
     let total = a.len().max(b.len());
     if total == 0 {
-        return LineDiff { changed: 0, total: 0, ratio: 0.0 };
+        return LineDiff {
+            changed: 0,
+            total: 0,
+            ratio: 0.0,
+        };
     }
     let mut changed = 0usize;
     for index in 0..total {

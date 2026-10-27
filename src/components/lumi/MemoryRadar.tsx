@@ -1,8 +1,8 @@
 /**
- * MemoryRadar —— 记忆认知风格雷达图
+ * MemoryRadar —— 记忆证据构成雷达图
  *
  * 迁移自 LumiCore MemoryAvatarLab.MiniRadar，适配 PC Guardian：
- *  - 8 维认知/社交风格（纯 SVG，无外部依赖）
+ *  - 8 维真实记忆构成（纯 SVG，无外部依赖）
  *  - motion/react 入场动画（多边形从中心缩放展开）
  *  - 网格环 + 轴线 + 顶点 + 标签
  *  - 数值 0~1，由记忆数据映射而来
@@ -12,25 +12,25 @@ import { motion } from 'motion/react';
 export type RadarDimensions = Record<string, number>;
 
 const DIM_ORDER = [
-  'analytical',
-  'intuitive',
-  'systematic',
-  'creative',
-  'warmth',
-  'directness',
-  'playfulness',
-  'formality',
+  'preferences',
+  'habits',
+  'facts',
+  'episodes',
+  'explicit',
+  'important',
+  'recent',
+  'used',
 ] as const;
 
 const DIM_LABELS: Record<string, string> = {
-  analytical: '分析性',
-  intuitive: '直觉性',
-  systematic: '系统性',
-  creative: '创造性',
-  warmth: '温暖度',
-  directness: '直接度',
-  playfulness: '趣味性',
-  formality: '正式度',
+  preferences: '偏好',
+  habits: '习惯',
+  facts: '事实',
+  episodes: '经历',
+  explicit: '确认',
+  important: '重要',
+  recent: '近期',
+  used: '常用',
 };
 
 const CX = 100;
@@ -157,22 +157,17 @@ export function MemoryRadar({ values, size = 200, delay = 200 }: MemoryRadarProp
   );
 }
 
-/* ── 从记忆数据计算 8 维风格分布 ────────────────────────
-   映射逻辑（可解释、确定性）：
-   - analytical  : knowledge 占比
-   - intuitive   : conversation_summary 占比
-   - systematic  : task_history 占比
-   - creative    : 高重要性(>=60)且内容长度>30 的占比
-   - warmth      : user_preference 占比
-   - directness  : app_usage 占比
-   - playfulness : 短内容(<20字)占比
-   - formality   : 长内容(>50字)占比
-   各维度归一化到 0.15~0.95 区间，避免归零。
+/* ── 从真实记忆元数据计算 8 维证据分布 ───────────────────
+   这里不再把“记忆类型数量”伪装成人格、温暖度或创造力；每个维度都能由
+   列表中的类型、来源、时间、重要性与访问次数直接验证。
 ────────────────────────────────────────────────────── */
 export interface MemoryLike {
   memory_type: string;
   content: string;
   importance: number;
+  source?: string;
+  created_at?: string;
+  access_count?: number;
 }
 
 export function computeRadarValues(memories: MemoryLike[]): RadarDimensions {
@@ -181,14 +176,17 @@ export function computeRadarValues(memories: MemoryLike[]): RadarDimensions {
     memories.filter(pred).length / total;
 
   const raw: RadarDimensions = {
-    analytical: count((m) => m.memory_type === 'knowledge'),
-    intuitive: count((m) => m.memory_type === 'conversation_summary'),
-    systematic: count((m) => m.memory_type === 'task_history'),
-    creative: count((m) => m.importance >= 60 && m.content.length > 30),
-    warmth: count((m) => m.memory_type === 'user_preference'),
-    directness: count((m) => m.memory_type === 'app_usage'),
-    playfulness: count((m) => m.content.length < 20),
-    formality: count((m) => m.content.length > 50),
+    preferences: count((m) => m.memory_type === 'user_preference'),
+    habits: count((m) => m.memory_type === 'app_usage'),
+    facts: count((m) => m.memory_type === 'knowledge'),
+    episodes: count((m) => ['task_history', 'conversation_summary'].includes(m.memory_type)),
+    explicit: count((m) => m.source === 'manual'),
+    important: count((m) => m.importance >= 60),
+    recent: count((m) => {
+      const timestamp = m.created_at ? Date.parse(m.created_at.replace(' ', 'T') + (m.created_at.includes('T') ? '' : 'Z')) : NaN;
+      return Number.isFinite(timestamp) && Date.now() - timestamp <= 30 * 86400000;
+    }),
+    used: count((m) => (m.access_count ?? 0) > 0),
   };
 
   // 归一化：找到最大值，缩放到 0.95 上限，最低 0.15

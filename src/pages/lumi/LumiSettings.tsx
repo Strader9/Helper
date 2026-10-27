@@ -1,8 +1,9 @@
 // LumiCore 风格设置页 —— 对接 Tauri invoke（get_settings / update_setting / check_ollama 等）
-// 后端不存在的配置项（语言、通知、操作模式）走 localStorage 兜底，并静默尝试 update_setting。
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
 import { motion } from 'motion/react';
+import { toast } from 'sonner';
 import {
   Activity,
   BrainCircuit,
@@ -11,18 +12,13 @@ import {
   Eye,
   EyeOff,
   FolderOpen,
-  Globe,
   HardDrive,
   KeyRound,
   Loader2,
-  Moon,
-  Power,
   RefreshCw,
   Settings as SettingsIcon,
   Shield,
-  Sun,
   Volume2,
-  Wrench,
   XCircle,
 } from 'lucide-react';
 import {
@@ -36,6 +32,7 @@ import {
 } from '../../components/lumi/LumiShared';
 import { LumiPageShell } from '../../components/lumi/LumiPageShell';
 import { cn } from '../../lib/cn';
+import { applyTheme } from '../../lib/theme';
 import { getTts, loadTtsSettings, type TtsSettings, type TtsVoiceInfo } from '../../lib/tts';
 
 /* ── 后端数据类型（防御性镜像，字段全可选以兼容后端演进） ── */
@@ -82,31 +79,6 @@ const TABS: Array<{ id: TabId; label: string; icon: ReactNode }> = [
   { id: 'secrets', label: '凭据配置', icon: <KeyRound size={15} /> },
   { id: 'system', label: '系统信息', icon: <Activity size={15} /> },
 ];
-
-/** localStorage 兜底键：后端 settings 表里没有的配置项先落本地。 */
-const LOCAL_KEYS = {
-  language: 'lumi.ui.language',
-  notifications: 'lumi.ui.notifications',
-  operationMode: 'lumi.agent.operation_mode',
-} as const;
-
-function readLocalBool(key: string, fallback: boolean): boolean {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return fallback;
-    return raw === 'true';
-  } catch {
-    return fallback;
-  }
-}
-
-function readLocalString(key: string, fallback: string): string {
-  try {
-    return localStorage.getItem(key) ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
 
 /** 设置行：左文右控件。 */
 function SettingRowItem({
@@ -352,11 +324,6 @@ export default function LumiSettings() {
   const [refreshing, setRefreshing] = useState(false);
   const [sessionSeconds, setSessionSeconds] = useState(0);
 
-  // 本地兜底偏好
-  const [language, setLanguage] = useState(() => readLocalString(LOCAL_KEYS.language, 'zh'));
-  const [notifications, setNotifications] = useState(() => readLocalBool(LOCAL_KEYS.notifications, true));
-  const [operationMode, setOperationMode] = useState(() => readLocalString(LOCAL_KEYS.operationMode, 'chat'));
-
   /** 从已加载的设置表中取值，找不到给兜底。 */
   const getValue = useCallback(
     (key: string, fallback = ''): string => settings.find((s) => s.key === key)?.value ?? fallback,
@@ -389,21 +356,28 @@ export default function LumiSettings() {
 
   const zhVoiceCount = ttsVoices.filter((v) => v.lang.toLowerCase().startsWith('zh')).length;
 
-  /** 写入设置：先更新本地态，再 invoke；失败只回滚提示不打断用户。 */
+  /** 只在后端确认保存成功后更新界面，避免把失败的修改显示成已生效。 */
   const saveSetting = useCallback((key: string, value: string) => {
-    setSettings((prev) => {
-      const idx = prev.findIndex((s) => s.key === key);
-      if (idx >= 0) {
-        const next = [...prev];
-        next[idx] = { ...next[idx], value };
-        return next;
-      }
-      // 后端表没有的 key（如 ui.language）也加进本地态，界面立即生效
-      return [...prev, { key, value, value_type: 'string' }];
-    });
-    invoke('update_setting', { key, value }).catch(() => {
-      /* 后端无此配置项时静默忽略；本地态已生效 */
-    });
+    void invoke('update_setting', { key, value })
+      .then(async () => {
+        setSettings((prev) => {
+          const idx = prev.findIndex((s) => s.key === key);
+          if (idx < 0) return prev;
+          const next = [...prev];
+          next[idx] = { ...next[idx], value };
+          return next;
+        });
+        if (key === 'ui.theme') {
+          applyTheme(value);
+          await emit('theme:changed', value);
+        }
+        if (key === 'startup.auto_launch') {
+          setAutostartRegistered(value === 'true');
+        }
+      })
+      .catch((error) => {
+        toast.error(`设置保存失败：${typeof error === 'string' ? error : '未知错误'}`);
+      });
   }, []);
 
   const loadSystemInfo = useCallback(async () => {
@@ -470,8 +444,8 @@ export default function LumiSettings() {
   return (
     <LumiPageShell
       icon={<SettingsIcon size={18} />}
-      title="设置"
-      subtitle="外观、模型连接、安全策略与系统状态"
+      title="系统"
+      subtitle="外观、模型连接、安全策略与运行状态"
       actions={
         <button
           onClick={() => void handleRefresh()}
@@ -529,52 +503,6 @@ export default function LumiSettings() {
                         <option value="dark">深色</option>
                         <option value="light">浅色</option>
                       </select>
-                    }
-                  />
-                  <SettingRowItem
-                    label="界面语言"
-                    description="重启后全局生效（当前版本默认中文）"
-                    control={
-                      <div className="flex gap-1.5">
-                        {(['zh', 'en'] as const).map((lang) => (
-                          <button
-                            key={lang}
-                            onClick={() => {
-                              setLanguage(lang);
-                              try {
-                                localStorage.setItem(LOCAL_KEYS.language, lang);
-                              } catch { /* 忽略 */ }
-                              saveSetting('ui.language', lang);
-                            }}
-                            className={cn(
-                              'flex h-8 w-12 items-center justify-center gap-1 rounded-lg border text-xs font-bold transition-all',
-                              language === lang
-                                ? 'border-celestial-saturn/40 bg-celestial-saturn/10 text-celestial-saturn'
-                                : 'border-white/10 bg-white/5 text-white/40 hover:text-white/70',
-                            )}
-                          >
-                            {lang === 'zh' ? <Moon size={12} /> : <Sun size={12} />}
-                            {lang === 'zh' ? '中文' : 'EN'}
-                          </button>
-                        ))}
-                      </div>
-                    }
-                  />
-                  <SettingRowItem
-                    label="系统通知"
-                    description="事件提醒与任务完成提示"
-                    control={
-                      <ToggleSwitch
-                        enabled={notifications}
-                        onChange={() => {
-                          const next = !notifications;
-                          setNotifications(next);
-                          try {
-                            localStorage.setItem(LOCAL_KEYS.notifications, String(next));
-                          } catch { /* 忽略 */ }
-                          saveSetting('ui.notifications', String(next));
-                        }}
-                      />
                     }
                   />
                 </GlassCard>
@@ -887,43 +815,6 @@ export default function LumiSettings() {
                       />
                     }
                   />
-                </GlassCard>
-
-                <SectionTitle label="操作模式" color="bg-amber-400" />
-                <GlassCard hoverEffect={false}>
-                  <div className="grid gap-3 md:grid-cols-3">
-                    {[
-                      { id: 'chat', label: '聊天', desc: '仅回答问题，不执行操作', icon: <Globe size={16} /> },
-                      { id: 'assistant', label: '助手', desc: '执行操作前必须确认', icon: <Power size={16} /> },
-                      { id: 'autonomous', label: '自主', desc: '低风险操作自动执行', icon: <Wrench size={16} /> },
-                    ].map((mode) => {
-                      const active = operationMode === mode.id;
-                      return (
-                        <button
-                          key={mode.id}
-                          onClick={() => {
-                            setOperationMode(mode.id);
-                            try {
-                              localStorage.setItem(LOCAL_KEYS.operationMode, mode.id);
-                            } catch { /* 忽略 */ }
-                            saveSetting('agent.operation_mode', mode.id);
-                          }}
-                          className={cn(
-                            'rounded-2xl border p-4 text-left transition-all',
-                            active
-                              ? 'border-celestial-saturn/40 bg-celestial-saturn/10'
-                              : 'border-white/5 bg-white/[0.03] hover:border-white/10',
-                          )}
-                        >
-                          <div className={cn('mb-2 flex h-8 w-8 items-center justify-center rounded-lg', active ? 'bg-celestial-saturn/15 text-celestial-saturn' : 'bg-white/5 text-white/40')}>
-                            {mode.icon}
-                          </div>
-                          <p className={cn('text-xs font-black', active ? 'text-white' : 'text-white/60')}>{mode.label}</p>
-                          <p className="mt-1 text-[11px] leading-relaxed text-white/35">{mode.desc}</p>
-                        </button>
-                      );
-                    })}
-                  </div>
                 </GlassCard>
 
                 <SectionTitle label="可信目录与工具" color="bg-emerald-400" />

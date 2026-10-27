@@ -148,14 +148,38 @@ pub struct MemoryItem {
     pub consolidated_into: Option<String>,
 }
 
+/// 用户适应画像中的一条可追溯证据。画像只整理已保存的记忆，不凭空推断人格。
+#[derive(Debug, Clone, Serialize)]
+pub struct ProfileEvidence {
+    pub id: String,
+    pub content: String,
+    pub importance: u8,
+    pub confidence: u8,
+    pub source: String,
+    pub updated_at: String,
+    pub access_count: u32,
+}
+
+/// 面向前端与提示词诊断的用户适应画像。
+#[derive(Debug, Clone, Serialize)]
+pub struct AdaptationProfile {
+    pub generated_at: String,
+    pub total_memories: usize,
+    pub active_memories: usize,
+    pub durable_memories: usize,
+    pub episodic_memories: usize,
+    pub consolidated_memories: usize,
+    /// 画像覆盖度，不代表对用户人格判断的“准确率”。
+    pub coverage_score: u8,
+    pub preferences: Vec<ProfileEvidence>,
+    pub habits: Vec<ProfileEvidence>,
+    pub facts: Vec<ProfileEvidence>,
+    pub recent_experiences: Vec<ProfileEvidence>,
+}
+
 impl MemoryItem {
     /// 创建新记忆（自动生成 ID、时间戳、关键词）
-    pub fn new(
-        memory_type: MemoryType,
-        content: &str,
-        importance: u8,
-        source: &str,
-    ) -> Self {
+    pub fn new(memory_type: MemoryType, content: &str, importance: u8, source: &str) -> Self {
         let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let keywords = extract_keywords(content);
         Self {
@@ -182,42 +206,304 @@ impl MemoryItem {
 /// 中文停用词集合
 fn stop_words() -> HashSet<&'static str> {
     let words = [
-        "的", "了", "是", "在", "我", "有", "和", "就", "不", "人", "都", "一", "一个",
-        "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好",
-        "自己", "这", "那", "他", "她", "它", "们", "这个", "那个", "什么", "怎么",
-        "为什么", "可以", "能", "应该", "需要", "想", "知道", "觉得", "认为",
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "must", "shall", "can", "need", "dare",
-        "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
-        "into", "through", "during", "before", "after", "above", "below",
-        "between", "out", "off", "over", "under", "again", "further",
-        "then", "once", "here", "there", "when", "where", "why", "how",
-        "all", "both", "each", "few", "more", "most", "other", "some",
-        "such", "no", "nor", "not", "only", "own", "same", "so", "than",
-        "too", "very", "just", "because", "but", "and", "or", "if", "while",
-        "about", "up", "it", "its", "i", "me", "my", "we", "our", "you",
-        "your", "he", "him", "his", "she", "her", "they", "them", "their",
-        "what", "which", "who", "whom", "this", "that", "these", "those",
-        "am", "also", "get", "got", "make", "made", "take", "took", "go",
-        "went", "come", "came", "see", "saw", "know", "knew", "think",
-        "thought", "say", "said", "tell", "told", "use", "used", "find",
-        "found", "give", "gave", "work", "worked", "like", "liked", "want",
-        "wanted", "try", "tried", "ask", "asked", "need", "needed", "feel",
-        "felt", "become", "became", "leave", "left", "put", "set", "let",
-        "begin", "began", "seem", "seemed", "help", "helped", "show",
-        "showed", "call", "called", "keep", "kept", "let", "mean", "meant",
-        "hold", "held", "move", "moved", "live", "lived", "believe",
-        "bring", "brought", "happen", "write", "wrote", "provide", "sit",
-        "stand", "lose", "pay", "meet", "include", "continue", "learn",
-        "change", "lead", "understand", "watch", "follow", "stop", "create",
-        "speak", "read", "allow", "add", "spend", "grow", "open", "walk",
-        "win", "offer", "remember", "love", "consider", "appear", "buy",
-        "wait", "serve", "die", "send", "expect", "build", "stay", "fall",
-        "cut", "reach", "kill", "remain", "suggest", "raise", "pass",
-        "sell", "require", "report", "decide", "pull", "develop", "carry",
-        "break", "receive", "agree", "hit", "produce", "eat", "cover",
-        "catch", "draw", "choose", "could",
+        "的",
+        "了",
+        "是",
+        "在",
+        "我",
+        "有",
+        "和",
+        "就",
+        "不",
+        "人",
+        "都",
+        "一",
+        "一个",
+        "上",
+        "也",
+        "很",
+        "到",
+        "说",
+        "要",
+        "去",
+        "你",
+        "会",
+        "着",
+        "没有",
+        "看",
+        "好",
+        "自己",
+        "这",
+        "那",
+        "他",
+        "她",
+        "它",
+        "们",
+        "这个",
+        "那个",
+        "什么",
+        "怎么",
+        "为什么",
+        "可以",
+        "能",
+        "应该",
+        "需要",
+        "想",
+        "知道",
+        "觉得",
+        "认为",
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "shall",
+        "can",
+        "need",
+        "dare",
+        "to",
+        "of",
+        "in",
+        "for",
+        "on",
+        "with",
+        "at",
+        "by",
+        "from",
+        "as",
+        "into",
+        "through",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "out",
+        "off",
+        "over",
+        "under",
+        "again",
+        "further",
+        "then",
+        "once",
+        "here",
+        "there",
+        "when",
+        "where",
+        "why",
+        "how",
+        "all",
+        "both",
+        "each",
+        "few",
+        "more",
+        "most",
+        "other",
+        "some",
+        "such",
+        "no",
+        "nor",
+        "not",
+        "only",
+        "own",
+        "same",
+        "so",
+        "than",
+        "too",
+        "very",
+        "just",
+        "because",
+        "but",
+        "and",
+        "or",
+        "if",
+        "while",
+        "about",
+        "up",
+        "it",
+        "its",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "he",
+        "him",
+        "his",
+        "she",
+        "her",
+        "they",
+        "them",
+        "their",
+        "what",
+        "which",
+        "who",
+        "whom",
+        "this",
+        "that",
+        "these",
+        "those",
+        "am",
+        "also",
+        "get",
+        "got",
+        "make",
+        "made",
+        "take",
+        "took",
+        "go",
+        "went",
+        "come",
+        "came",
+        "see",
+        "saw",
+        "know",
+        "knew",
+        "think",
+        "thought",
+        "say",
+        "said",
+        "tell",
+        "told",
+        "use",
+        "used",
+        "find",
+        "found",
+        "give",
+        "gave",
+        "work",
+        "worked",
+        "like",
+        "liked",
+        "want",
+        "wanted",
+        "try",
+        "tried",
+        "ask",
+        "asked",
+        "need",
+        "needed",
+        "feel",
+        "felt",
+        "become",
+        "became",
+        "leave",
+        "left",
+        "put",
+        "set",
+        "let",
+        "begin",
+        "began",
+        "seem",
+        "seemed",
+        "help",
+        "helped",
+        "show",
+        "showed",
+        "call",
+        "called",
+        "keep",
+        "kept",
+        "let",
+        "mean",
+        "meant",
+        "hold",
+        "held",
+        "move",
+        "moved",
+        "live",
+        "lived",
+        "believe",
+        "bring",
+        "brought",
+        "happen",
+        "write",
+        "wrote",
+        "provide",
+        "sit",
+        "stand",
+        "lose",
+        "pay",
+        "meet",
+        "include",
+        "continue",
+        "learn",
+        "change",
+        "lead",
+        "understand",
+        "watch",
+        "follow",
+        "stop",
+        "create",
+        "speak",
+        "read",
+        "allow",
+        "add",
+        "spend",
+        "grow",
+        "open",
+        "walk",
+        "win",
+        "offer",
+        "remember",
+        "love",
+        "consider",
+        "appear",
+        "buy",
+        "wait",
+        "serve",
+        "die",
+        "send",
+        "expect",
+        "build",
+        "stay",
+        "fall",
+        "cut",
+        "reach",
+        "kill",
+        "remain",
+        "suggest",
+        "raise",
+        "pass",
+        "sell",
+        "require",
+        "report",
+        "decide",
+        "pull",
+        "develop",
+        "carry",
+        "break",
+        "receive",
+        "agree",
+        "hit",
+        "produce",
+        "eat",
+        "cover",
+        "catch",
+        "draw",
+        "choose",
+        "could",
     ];
     words.iter().copied().collect()
 }
@@ -374,7 +660,8 @@ impl MemoryEngine {
         }
 
         let item = MemoryItem::new(memory_type, content, importance, source);
-        let keywords_json = serde_json::to_string(&item.keywords).unwrap_or_else(|_| "[]".to_string());
+        let keywords_json =
+            serde_json::to_string(&item.keywords).unwrap_or_else(|_| "[]".to_string());
 
         conn.execute(
             "INSERT INTO memory_items (id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source, tier, consolidated_into)
@@ -401,11 +688,9 @@ impl MemoryEngine {
     ///
     /// 与 `add_memory` 的区别：不走去重、不过防火墙，原样写入完整条目。
     /// 调用方须保证内容已经过防火墙或来自可信的内部生成。
-    pub fn insert_item(
-        conn: &rusqlite::Connection,
-        item: &MemoryItem,
-    ) -> rusqlite::Result<()> {
-        let keywords_json = serde_json::to_string(&item.keywords).unwrap_or_else(|_| "[]".to_string());
+    pub fn insert_item(conn: &rusqlite::Connection, item: &MemoryItem) -> rusqlite::Result<()> {
+        let keywords_json =
+            serde_json::to_string(&item.keywords).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
             "INSERT INTO memory_items (id, memory_type, content, keywords, importance, access_count, created_at, last_accessed_at, expires_at, source, tier, consolidated_into)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
@@ -468,7 +753,14 @@ impl MemoryEngine {
 
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        let results: Vec<MemoryItem> = scored.into_iter().take(limit).map(|(_, item)| item).collect();
+        // 非空查询只返回真正命中的条目。保留 0 分条目会让高重要性但无关的记忆
+        // 混进每次对话，造成“助手总拿旧偏好答非所问”。
+        let results: Vec<MemoryItem> = scored
+            .into_iter()
+            .filter(|(score, _)| query_keywords.is_empty() || *score > 0.0)
+            .take(limit)
+            .map(|(_, item)| item)
+            .collect();
 
         // 更新访问计数
         for item in &results {
@@ -524,7 +816,10 @@ impl MemoryEngine {
 
         let mut stmt = conn.prepare(sql)?;
         let items = if let Some(t) = memory_type {
-            stmt.query_map(rusqlite::params![t.as_str(), limit as i64], row_to_memory_item)?
+            stmt.query_map(
+                rusqlite::params![t.as_str(), limit as i64],
+                row_to_memory_item,
+            )?
         } else {
             stmt.query_map(rusqlite::params![limit as i64], row_to_memory_item)?
         };
@@ -553,6 +848,153 @@ impl MemoryEngine {
         let _ = Self::cleanup_expired(conn);
         // 检索相关记忆
         Self::recall(conn, context, None, limit)
+    }
+
+    /// 生成可解释的用户适应画像。所有画像条目都保留原记忆 ID、来源和更新时间。
+    pub fn build_adaptation_profile(
+        conn: &rusqlite::Connection,
+        per_section_limit: usize,
+    ) -> rusqlite::Result<AdaptationProfile> {
+        let all = Self::list_by_type(conn, None, 500)?;
+        let total_memories = all.len();
+        let active: Vec<&MemoryItem> = all
+            .iter()
+            .filter(|item| item.consolidated_into.is_none())
+            .collect();
+        let durable_memories = active
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item.tier,
+                    MemoryTier::Internalized | MemoryTier::CoreIdentity
+                )
+            })
+            .count();
+        let episodic_memories = active
+            .iter()
+            .filter(|item| item.tier == MemoryTier::Episodic)
+            .count();
+        let consolidated_memories = all
+            .iter()
+            .filter(|item| item.consolidated_into.is_some())
+            .count();
+
+        let evidence = |item: &&MemoryItem| ProfileEvidence {
+            id: item.id.clone(),
+            content: item.content.clone(),
+            importance: item.importance,
+            // 手动确认的内容置信度最高；自动来源适当降权，并用访问次数小幅增益。
+            confidence: ((item.importance as u16
+                + if matches!(item.source.as_str(), "manual" | "user_explicit") {
+                    15
+                } else {
+                    0
+                }
+                + item.access_count.min(5) as u16 * 2)
+                .min(100)) as u8,
+            source: item.source.clone(),
+            updated_at: item.last_accessed_at.clone(),
+            access_count: item.access_count,
+        };
+
+        let collect_type = |kind: MemoryType| -> Vec<ProfileEvidence> {
+            active
+                .iter()
+                .filter(|item| item.memory_type == kind)
+                .take(per_section_limit)
+                .map(evidence)
+                .collect()
+        };
+        let recent_experiences = active
+            .iter()
+            .filter(|item| {
+                matches!(
+                    item.memory_type,
+                    MemoryType::TaskHistory | MemoryType::ConversationSummary
+                )
+            })
+            .take(per_section_limit)
+            .map(evidence)
+            .collect();
+
+        let explicit_count = active
+            .iter()
+            .filter(|item| {
+                matches!(item.source.as_str(), "manual" | "user_explicit")
+                    && matches!(
+                        item.memory_type,
+                        MemoryType::UserPreference | MemoryType::AppUsage
+                    )
+            })
+            .count();
+        let coverage_score =
+            (durable_memories * 10 + explicit_count * 8 + active.len().min(20) * 2).min(100) as u8;
+
+        Ok(AdaptationProfile {
+            generated_at: chrono::Utc::now().to_rfc3339(),
+            total_memories,
+            active_memories: active.len(),
+            durable_memories,
+            episodic_memories,
+            consolidated_memories,
+            coverage_score,
+            preferences: collect_type(MemoryType::UserPreference),
+            habits: collect_type(MemoryType::AppUsage),
+            facts: collect_type(MemoryType::Knowledge),
+            recent_experiences,
+        })
+    }
+
+    /// 构造“稳定画像 + 当前相关经历”的双层上下文。
+    /// 稳定偏好无需关键词碰巧命中；历史事实仍按当前问题检索，避免污染每轮提示词。
+    pub fn build_adaptive_context(
+        conn: &rusqlite::Connection,
+        query: &str,
+        stable_limit: usize,
+        relevant_limit: usize,
+    ) -> rusqlite::Result<String> {
+        let all = Self::list_by_type(conn, None, 300)?;
+        let mut stable: Vec<&MemoryItem> = all
+            .iter()
+            .filter(|item| {
+                item.consolidated_into.is_none()
+                    && matches!(
+                        item.memory_type,
+                        MemoryType::UserPreference | MemoryType::AppUsage
+                    )
+                    && item.importance >= 40
+            })
+            .collect();
+        stable.sort_by(|a, b| {
+            b.importance
+                .cmp(&a.importance)
+                .then(b.last_accessed_at.cmp(&a.last_accessed_at))
+        });
+        stable.truncate(stable_limit);
+
+        let stable_ids: HashSet<&str> = stable.iter().map(|item| item.id.as_str()).collect();
+        let relevant = Self::recall(conn, query, None, relevant_limit)?;
+        let mut sections = Vec::new();
+        if !stable.is_empty() {
+            let lines = stable
+                .iter()
+                .map(|item| format!("- {}", item.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+            sections.push(format!("### 稳定偏好与习惯（默认遵守）\n{}", lines));
+        }
+        let contextual = relevant
+            .iter()
+            .filter(|item| !stable_ids.contains(item.id.as_str()))
+            .map(|item| format!("- {}", item.content))
+            .collect::<Vec<_>>();
+        if !contextual.is_empty() {
+            sections.push(format!(
+                "### 与当前请求相关的经历或事实\n{}",
+                contextual.join("\n")
+            ));
+        }
+        Ok(sections.join("\n\n"))
     }
 
     /// 修改一条记忆的内容或重要性。
@@ -600,10 +1042,35 @@ impl MemoryEngine {
         Ok(changed > 0)
     }
 
-    /// 各类型的记忆条数
-    pub fn counts_by_type(
+    /// 前端完整编辑：保留原 ID、来源、访问次数和时间线，只更新用户实际修改的字段。
+    pub fn update_memory_details(
         conn: &rusqlite::Connection,
-    ) -> rusqlite::Result<Vec<(String, usize)>> {
+        memory_id: &str,
+        memory_type: MemoryType,
+        content: &str,
+        importance: u8,
+    ) -> rusqlite::Result<bool> {
+        let keywords =
+            serde_json::to_string(&extract_keywords(content)).unwrap_or_else(|_| "[]".to_string());
+        let affected = conn.execute(
+            "UPDATE memory_items
+             SET memory_type = ?1, content = ?2, keywords = ?3, importance = ?4,
+                 tier = ?5, last_accessed_at = datetime('now')
+             WHERE id = ?6",
+            rusqlite::params![
+                memory_type.as_str(),
+                content,
+                keywords,
+                importance.min(100) as i64,
+                tier_for_type(memory_type).as_str(),
+                memory_id,
+            ],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// 各类型的记忆条数
+    pub fn counts_by_type(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<(String, usize)>> {
         let mut stmt = conn.prepare(
             "SELECT memory_type, COUNT(*) FROM memory_items GROUP BY memory_type ORDER BY COUNT(*) DESC",
         )?;
@@ -688,7 +1155,8 @@ fn compute_relevance_score(item: &MemoryItem, query_keywords: &[String]) -> f64 
             }
             let in_keywords = item.keywords.iter().any(|k| {
                 let k_lower = k.to_lowercase();
-                !k_lower.is_empty() && (k_lower.contains(q.as_str()) || q.contains(k_lower.as_str()))
+                !k_lower.is_empty()
+                    && (k_lower.contains(q.as_str()) || q.contains(k_lower.as_str()))
             });
             let in_content = content_lower.contains(q.as_str());
             if in_keywords || in_content {
@@ -724,6 +1192,28 @@ fn days_since(date_str: &str) -> i64 {
 mod tests {
     use super::*;
 
+    fn memory_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("内存库");
+        conn.execute_batch(
+            "CREATE TABLE memory_items (
+                id TEXT PRIMARY KEY,
+                memory_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                keywords TEXT,
+                importance INTEGER NOT NULL DEFAULT 50,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_accessed_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT,
+                source TEXT NOT NULL DEFAULT 'auto',
+                tier TEXT NOT NULL DEFAULT 'episodic',
+                consolidated_into TEXT
+            );",
+        )
+        .expect("建表");
+        conn
+    }
+
     fn item(content: &str, keywords: &[&str], importance: u8) -> MemoryItem {
         MemoryItem {
             id: "test".to_string(),
@@ -746,14 +1236,26 @@ mod tests {
         // 为什么要切：中文没有空格，整句标点切分后是一个 token，
         // 与记忆里存的关键词（"提交""文件"）一个都对不上，检索必然落空。
         let kws = extract_keywords("把刚才改的那几个文件提交一下");
-        assert!(kws.iter().any(|k| k == "文件"), "应切出「文件」，实际: {:?}", kws);
-        assert!(kws.iter().any(|k| k == "提交"), "应切出「提交」，实际: {:?}", kws);
+        assert!(
+            kws.iter().any(|k| k == "文件"),
+            "应切出「文件」，实际: {:?}",
+            kws
+        );
+        assert!(
+            kws.iter().any(|k| k == "提交"),
+            "应切出「提交」，实际: {:?}",
+            kws
+        );
     }
 
     #[test]
     fn keeps_short_tokens_and_english_words_intact() {
         let kws = extract_keywords("pip install");
-        assert!(kws.iter().any(|k| k == "pip"), "应保留 pip，实际: {:?}", kws);
+        assert!(
+            kws.iter().any(|k| k == "pip"),
+            "应保留 pip，实际: {:?}",
+            kws
+        );
         assert!(
             kws.iter().any(|k| k == "install"),
             "应保留 install，实际: {:?}",
@@ -777,7 +1279,117 @@ mod tests {
         let mem = item("禁止 git add .", &["git", "提交", "暂存"], 90);
         let query = extract_keywords("下载一个二十GB的模型到D盘");
         let score = compute_relevance_score(&mem, &query);
-        assert_eq!(score, 0.0, "无关问法不应命中高优先级条目，实际得分 {}", score);
+        assert_eq!(
+            score, 0.0,
+            "无关问法不应命中高优先级条目，实际得分 {}",
+            score
+        );
+    }
+
+    #[test]
+    fn recall_excludes_zero_score_memories() {
+        let conn = memory_db();
+        MemoryEngine::add_memory(
+            &conn,
+            MemoryType::Knowledge,
+            "Rust 项目使用 cargo test",
+            60,
+            "manual",
+        )
+        .expect("写入相关记忆");
+        MemoryEngine::add_memory(&conn, MemoryType::Knowledge, "早餐喜欢喝牛奶", 95, "manual")
+            .expect("写入无关记忆");
+
+        let results = MemoryEngine::recall(&conn, "Rust 怎么测试", None, 5).expect("召回");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].content.contains("Rust"));
+    }
+
+    #[test]
+    fn adaptive_context_keeps_stable_preferences_and_retrieves_relevant_facts() {
+        let conn = memory_db();
+        MemoryEngine::add_memory(
+            &conn,
+            MemoryType::UserPreference,
+            "回答保持简洁，先给结论",
+            80,
+            "manual",
+        )
+        .expect("写偏好");
+        MemoryEngine::add_memory(
+            &conn,
+            MemoryType::Knowledge,
+            "Rust 项目统一使用 cargo test",
+            60,
+            "manual",
+        )
+        .expect("写事实");
+
+        let context = MemoryEngine::build_adaptive_context(&conn, "运行 Rust 测试", 4, 5)
+            .expect("构建上下文");
+        assert!(context.contains("稳定偏好与习惯"));
+        assert!(context.contains("回答保持简洁"));
+        assert!(context.contains("与当前请求相关"));
+        assert!(context.contains("cargo test"));
+    }
+
+    #[test]
+    fn adaptation_profile_keeps_evidence_provenance() {
+        let conn = memory_db();
+        let id = MemoryEngine::add_memory(
+            &conn,
+            MemoryType::UserPreference,
+            "偏好深色界面",
+            70,
+            "manual",
+        )
+        .expect("写偏好");
+
+        let profile = MemoryEngine::build_adaptation_profile(&conn, 6).expect("画像");
+        assert_eq!(profile.preferences.len(), 1);
+        assert_eq!(profile.preferences[0].id, id);
+        assert_eq!(profile.preferences[0].source, "manual");
+        assert!(profile.preferences[0].confidence >= 70);
+        assert!(profile.coverage_score > 0);
+    }
+
+    #[test]
+    fn editing_memory_preserves_identity_source_and_usage_history() {
+        let conn = memory_db();
+        let id = MemoryEngine::add_memory(
+            &conn,
+            MemoryType::Knowledge,
+            "回答尽量简洁",
+            55,
+            "user_explicit",
+        )
+        .expect("写入记忆");
+        conn.execute(
+            "UPDATE memory_items SET access_count = 7 WHERE id = ?1",
+            rusqlite::params![id],
+        )
+        .expect("设置访问历史");
+
+        assert!(MemoryEngine::update_memory_details(
+            &conn,
+            &id,
+            MemoryType::UserPreference,
+            "回答先给结论，再补充必要细节",
+            85,
+        )
+        .expect("编辑记忆"));
+
+        let edited: (String, String, String, i64) = conn
+            .query_row(
+                "SELECT id, memory_type, source, access_count FROM memory_items WHERE id = ?1",
+                rusqlite::params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("读取编辑后的记忆");
+        assert_eq!(edited.0, id);
+        assert_eq!(edited.1, "user_preference");
+        assert_eq!(edited.2, "user_explicit");
+        assert_eq!(edited.3, 7);
     }
 
     #[test]

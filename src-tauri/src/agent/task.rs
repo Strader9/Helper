@@ -50,7 +50,10 @@ impl TaskStatus {
 
     /// 是否为终态
     pub fn is_terminal(&self) -> bool {
-        matches!(self, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled)
+        matches!(
+            self,
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled
+        )
     }
 
     /// 是否可执行
@@ -315,12 +318,16 @@ impl Task {
 
     /// 是否所有步骤都已完成
     pub fn all_steps_completed(&self) -> bool {
-        self.plan.iter().all(|s| matches!(s.status, StepStatus::Completed | StepStatus::Skipped))
+        self.plan
+            .iter()
+            .all(|s| matches!(s.status, StepStatus::Completed | StepStatus::Skipped))
     }
 
     /// 获取下一步（未完成的第一个步骤）
     pub fn next_pending_step(&self) -> Option<&TaskStep> {
-        self.plan.iter().find(|s| matches!(s.status, StepStatus::Pending))
+        self.plan
+            .iter()
+            .find(|s| matches!(s.status, StepStatus::Pending))
     }
 }
 
@@ -416,7 +423,7 @@ impl<'a> TaskManager<'a> {
             "SELECT id, session_id, goal, status, plan_json, current_step,
                     observations_json, errors_json, completed_steps_json,
                     is_simple, summary, created_at, updated_at
-             FROM agent_tasks WHERE id = ?1"
+             FROM agent_tasks WHERE id = ?1",
         )?;
 
         let mut rows = stmt.query(params![id])?;
@@ -436,7 +443,7 @@ impl<'a> TaskManager<'a> {
                     is_simple, summary, created_at, updated_at
              FROM agent_tasks
              WHERE session_id = ?1 AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
-             ORDER BY created_at DESC LIMIT 1"
+             ORDER BY created_at DESC LIMIT 1",
         )?;
 
         let mut rows = stmt.query(params![session_id])?;
@@ -491,6 +498,29 @@ impl<'a> TaskManager<'a> {
         }
     }
 
+    /// 跨会话列出当前仍在执行链路中的任务，供全局指挥中心展示。
+    pub fn list_active_recent(&self, limit: i64) -> AppResult<Vec<Task>> {
+        let limit = limit.clamp(1, 50);
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, goal, status, plan_json, current_step,
+                    observations_json, errors_json, completed_steps_json,
+                    is_simple, summary, created_at, updated_at
+             FROM agent_tasks
+             WHERE status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')
+             ORDER BY updated_at DESC LIMIT ?1",
+        )?;
+        let tasks = stmt.query_map(params![limit], |row| {
+            self.row_to_task(row).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })?;
+        Ok(tasks.collect::<Result<Vec<_>, _>>()?)
+    }
+
     /// 获取会话的所有任务
     pub fn list_by_session(&self, session_id: &str, limit: i64) -> AppResult<Vec<Task>> {
         let mut stmt = self.conn.prepare(
@@ -499,15 +529,17 @@ impl<'a> TaskManager<'a> {
                     is_simple, summary, created_at, updated_at
              FROM agent_tasks
              WHERE session_id = ?1
-             ORDER BY created_at DESC LIMIT ?2"
+             ORDER BY created_at DESC LIMIT ?2",
         )?;
 
         let tasks = stmt.query_map(params![session_id, limit], |row| {
-            self.row_to_task(row).map_err(|e| rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                Box::new(e),
-            ))
+            self.row_to_task(row).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })
         })?;
 
         Ok(tasks.collect::<Result<Vec<_>, _>>()?)
@@ -551,7 +583,8 @@ impl<'a> TaskManager<'a> {
         let plan: Vec<TaskStep> = serde_json::from_str(&plan_json).unwrap_or_default();
 
         let observations_json: String = row.get(6)?;
-        let observations: Vec<Observation> = serde_json::from_str(&observations_json).unwrap_or_default();
+        let observations: Vec<Observation> =
+            serde_json::from_str(&observations_json).unwrap_or_default();
 
         let errors_json: String = row.get(7)?;
         let errors: Vec<TaskError> = serde_json::from_str(&errors_json).unwrap_or_default();

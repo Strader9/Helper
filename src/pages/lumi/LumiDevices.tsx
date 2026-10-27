@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'motion/react';
+import { toast } from 'sonner';
 import {
   Smartphone,
   Wifi,
@@ -30,20 +31,25 @@ import { cn } from '../../lib/cn';
 interface PairedDevice {
   id: string;
   name: string;
-  type: string;
-  last_seen: string;
-  status: string;
+  platform: string | null;
+  token_hint: string | null;
+  paired_at: string;
+  last_seen_at: string | null;
+  revoked: boolean;
 }
 
 interface GatewayStatus {
-  connected: boolean;
-  device_count: number;
-  uptime?: string | null;
+  running: boolean;
+  bound: string | null;
+  last_error: string | null;
+  requests: number;
 }
 
 interface PairingCode {
   code: string;
   expires_at: string;
+  gateway_running: boolean;
+  endpoint: string | null;
 }
 
 /* ── 工具 ── */
@@ -63,16 +69,21 @@ function fmtTime(v?: string | null): string {
   }
 }
 
-function deviceIcon(type: string) {
-  const v = (type || '').toLowerCase();
+function deviceIcon(platform?: string | null) {
+  const v = (platform || '').toLowerCase();
   if (v.includes('tablet') || v.includes('pad')) return <Tablet size={17} />;
   if (v.includes('watch') || v.includes('wear')) return <Watch size={17} />;
   if (v.includes('desktop') || v.includes('laptop') || v.includes('pc')) return <Monitor size={17} />;
   return <Smartphone size={17} />;
 }
 
-function isOnline(s?: string) {
-  return ['online', 'connected', 'active', 'paired'].includes((s || '').toLowerCase());
+function isOnline(device: PairedDevice) {
+  if (device.revoked || !device.last_seen_at) return false;
+  const raw = device.last_seen_at.includes('T')
+    ? device.last_seen_at
+    : `${device.last_seen_at.replace(' ', 'T')}Z`;
+  const timestamp = Date.parse(raw);
+  return Number.isFinite(timestamp) && Date.now() - timestamp <= 5 * 60 * 1000;
 }
 
 /* ── 组件 ── */
@@ -83,15 +94,21 @@ export default function LumiDevices() {
   const [loading, setLoading] = useState(true);
   const [pairingBusy, setPairingBusy] = useState(false);
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [devRows, gw] = await Promise.all([
-      invoke<PairedDevice[]>('list_paired_devices').catch(() => [] as PairedDevice[]),
-      invoke<GatewayStatus>('get_gateway_status').catch(() => null),
-    ]);
-    setDevices(devRows || []);
-    setGateway(gw);
+    try {
+      const [devRows, gw] = await Promise.all([
+        invoke<PairedDevice[]>('list_paired_devices'),
+        invoke<GatewayStatus>('get_gateway_status'),
+      ]);
+      setDevices(devRows || []);
+      setGateway(gw);
+      setLoadError(null);
+    } catch (error) {
+      setLoadError(typeof error === 'string' ? error : '无法读取多端状态');
+    }
     setLoading(false);
   }, []);
 
@@ -104,8 +121,9 @@ export default function LumiDevices() {
     try {
       const code = await invoke<PairingCode>('create_pairing_code');
       setPairing(code);
-    } catch {
+    } catch (error) {
       setPairing(null);
+      toast.error(typeof error === 'string' ? error : '生成配对码失败');
     }
     setPairingBusy(false);
   };
@@ -113,9 +131,11 @@ export default function LumiDevices() {
   const revoke = async (id: string) => {
     setRevoking(id);
     try {
-      await invoke('revoke_paired_device', { deviceId: id });
-      setDevices((prev) => prev.filter((d) => d.id !== id));
-    } catch {
+      await invoke('revoke_paired_device', { id });
+      setDevices((prev) => prev.map((d) => (d.id === id ? { ...d, revoked: true } : d)));
+      toast.success('设备授权已撤销');
+    } catch (error) {
+      toast.error(typeof error === 'string' ? error : '撤销失败');
       void load();
     }
     setRevoking(null);
@@ -136,14 +156,20 @@ export default function LumiDevices() {
       <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4">
         <StatCard
           label="网关连接"
-          value={gateway?.connected ? '已连接' : '离线'}
+          value={gateway?.running ? '运行中' : '未启动'}
           icon={<Wifi size={16} />}
-          color={gateway?.connected ? 'text-emerald-400' : 'text-red-400'}
+          color={gateway?.running ? 'text-emerald-400' : 'text-red-400'}
         />
-        <StatCard label="已配对设备" value={gateway?.device_count ?? devices.length} icon={<Smartphone size={16} />} />
-        <StatCard label="在线设备" value={devices.filter((d) => isOnline(d.status)).length} icon={<Activity size={16} />} color="text-cyan-400" />
-        <StatCard label="网关运行" value={gateway?.uptime || '—'} icon={<Globe size={16} />} color="text-celestial-saturn" />
+        <StatCard label="有效授权" value={devices.filter((d) => !d.revoked).length} icon={<Smartphone size={16} />} />
+        <StatCard label="最近在线" value={devices.filter(isOnline).length} icon={<Activity size={16} />} color="text-cyan-400" />
+        <StatCard label="累计请求" value={gateway?.requests ?? 0} icon={<Globe size={16} />} color="text-celestial-saturn" />
       </div>
+
+      {(loadError || gateway?.last_error) && (
+        <GlassCard hoverEffect={false} className="mb-5 border-red-500/25 text-xs text-red-300">
+          {loadError || `网关错误：${gateway?.last_error}`}
+        </GlassCard>
+      )}
 
       {/* 配对码 */}
       <SectionTitle label="快速配对" />
@@ -161,7 +187,9 @@ export default function LumiDevices() {
             ) : (
               <>
                 <p className="text-sm font-bold text-white/85">生成新配对码</p>
-                <p className="mt-1 text-[11px] text-white/40">在手机或平板上输入配对码，即可接入同一网关。</p>
+                <p className="mt-1 text-[11px] text-white/40">
+                  在手机或平板客户端输入配对码，即可接入同一网关。
+                </p>
               </>
             )}
           </div>
@@ -199,35 +227,51 @@ export default function LumiDevices() {
                   <div
                     className={cn(
                       'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border',
-                      isOnline(d.status)
+                      isOnline(d)
                         ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-400'
                         : 'border-white/10 bg-white/5 text-white/35'
                     )}
                   >
-                    {deviceIcon(d.type)}
+                    {deviceIcon(d.platform)}
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-bold text-white/90">{d.name}</p>
                     <p className="mt-0.5 text-[11px] text-white/40">
-                      {d.type} · 最后在线 {fmtTime(d.last_seen || null)}
+                      {d.platform || '未知平台'} · 最后在线 {fmtTime(d.last_seen_at)}
                     </p>
                   </div>
-                  <Badge variant={isOnline(d.status) ? 'safe' : 'neutral'}>
-                    {isOnline(d.status) ? '在线' : '离线'}
+                  <Badge variant={d.revoked ? 'danger' : isOnline(d) ? 'safe' : 'neutral'}>
+                    {d.revoked ? '已撤销' : isOnline(d) ? '最近在线' : '已授权'}
                   </Badge>
-                  <button
-                    onClick={() => void revoke(d.id)}
-                    disabled={revoking === d.id}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-red-500/30 bg-red-500/10 px-3 text-xs font-bold text-red-400 transition-colors hover:bg-red-500/20 disabled:opacity-40"
-                  >
-                    <Unplug size={13} />
-                    {revoking === d.id ? '移除中…' : '撤销'}
-                  </button>
+                  {!d.revoked && (
+                    <button
+                      onClick={() => void revoke(d.id)}
+                      disabled={revoking === d.id}
+                      className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-red-500/30 bg-red-500/10 px-3 text-xs font-bold text-red-400 transition-colors hover:bg-red-500/20 disabled:opacity-40"
+                    >
+                      <Unplug size={13} />
+                      {revoking === d.id ? '撤销中…' : '撤销'}
+                    </button>
+                  )}
                 </div>
               </GlassCard>
             </motion.div>
           ))}
         </div>
+      )}
+
+      {pairing && (
+        <GlassCard hoverEffect={false} glowColor="rgba(110,231,183,0.08)" className="mt-5">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p className="text-[11px] text-white/40">网关地址</p>
+              <p className="mt-1 font-mono text-xs text-white/75">{pairing.endpoint || '未监听'}</p>
+            </div>
+            <Badge variant={pairing.gateway_running ? 'safe' : 'danger'}>
+              {pairing.gateway_running ? '可以配对' : '网关未启动，当前无法配对'}
+            </Badge>
+          </div>
+        </GlassCard>
       )}
     </LumiPageShell>
   );

@@ -97,3 +97,28 @@ test('显式指定 server 可消歧同名工具', async () => {
 
   await Promise.all(mcp.servers.map((s) => s.disconnect()));
 });
+
+test('installServer 握手成功后立即进入工具池并持久化', async () => {
+  let saved = null;
+  const mcp = new McpManager([], { onChange: (configs) => { saved = configs; } });
+
+  const installed = await mcp.installServer(stdioServerConfig());
+  assert.equal(installed.server.id, 'echo');
+  assert.deepEqual(installed.tools.map((tool) => tool.name).sort(), ['add', 'echo']);
+  assert.equal(saved.length, 1);
+
+  const listed = await mcp.listAllTools();
+  assert.ok(listed.tools.some((tool) => tool.server === 'echo' && tool.name === 'add'));
+  await mcp.closeAll();
+});
+
+test('removeServer 从运行池和持久化清单中同时移除', async () => {
+  const saves = [];
+  const mcp = new McpManager([stdioServerConfig()], {
+    onChange: (configs) => { saves.push(configs); },
+  });
+
+  assert.equal(await mcp.removeServer('echo'), true);
+  assert.equal(mcp.count, 0);
+  assert.deepEqual(saves.at(-1), []);
+});

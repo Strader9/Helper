@@ -1,105 +1,51 @@
 // PC Guardian 常驻侧车入口。
 //
-// 职责（第一阶段）：加载模型 provider 配置，起 Socket.IO 服务，
-// 暴露流式对话通道与健康查询。后续阶段在此之上叠加 agent 编排、
-// 定时/自主调度、MCP 客户端与本地工具桥调用。
+// 职责：
+// 1. 加载模型 provider 配置，起多 provider 模型网关（OpenAI 兼容 + Ollama）；
+// 2. 暴露流式对话通道（HTTP SSE + Socket.IO）与健康查询；
+// 3. 承载 MCP 客户端，把用户配置的 MCP server 统一成工具池；
+// 4. 监听 SIGINT/SIGTERM 优雅退出（含 MCP stdio 子进程清理）。
+//
+// 组装逻辑在 app.js，本文件只负责「读配置 → 监听 → 信号处理」。
 
-import { createServer } from 'node:http';
-import { readFileSync, existsSync } from 'node:fs';
-import { Server } from 'socket.io';
-import { ModelRouter } from './llm/router.js';
-import { attachHttpApi } from './httpApi.js';
-import { McpManager, loadMcpServers } from './mcp/index.js';
+import { createSidecarServer } from './app.js';
+import { listenConfig } from './config.js';
 
-const PORT = Number(process.env.SIDECAR_PORT ?? 4770);
-const HOST = process.env.SIDECAR_HOST ?? '127.0.0.1';
+const { httpServer, router, mcp, logger, close } = createSidecarServer();
+const { port, host } = listenConfig();
 
-/**
- * 加载 provider 配置。优先级：
- *   1. SIDECAR_PROVIDERS 环境变量（JSON 数组）
- *   2. ./providers.json（与 package.json 同级）
- *   3. 默认本地 Ollama
- *
- * 每项的 { apiKey } 只从环境变量/文件读，绝不写进日志。
- */
-export function loadProviders() {
-  if (process.env.SIDECAR_PROVIDERS) {
-    try {
-      return JSON.parse(process.env.SIDECAR_PROVIDERS);
-    } catch (err) {
-      console.error('[sidecar] 解析 SIDECAR_PROVIDERS 失败，回退默认配置:', err.message);
-    }
-  }
-  return [
-    {
-      id: 'ollama-local',
-      name: 'Ollama 本地',
-      protocol: 'ollama',
-      baseUrl: process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434',
-      model: process.env.SIDECAR_DEFAULT_MODEL ?? 'qwen3:8b',
-    },
-  ];
-}
-
-function buildServer() {
-  const router = new ModelRouter(loadProviders());
-
-  // MCP 配置：SIDECAR_MCP_SERVERS 优先，否则读 ./mcp-servers.json（存在才读）。
-  let mcpServers = loadMcpServers();
-  if (mcpServers.length === 0 && existsSync('./mcp-servers.json')) {
-    try {
-      mcpServers = JSON.parse(readFileSync('./mcp-servers.json', 'utf8'));
-    } catch (err) {
-      console.error('[sidecar] 解析 mcp-servers.json 失败，忽略:', err.message);
-    }
-  }
-  const mcp = new McpManager(mcpServers);
-
-  const httpServer = createServer();
-  attachHttpApi(httpServer, router, mcp);
-  const io = new Server(httpServer, {
-    cors: { origin: '*', methods: ['GET', 'POST'] },
-    maxHttpBufferSize: 1e7,
-  });
-
-  io.on('connection', (socket) => {
-    socket.emit('sidecar:hello', { version: '0.1.0', providers: router.count });
-
-    socket.on('providers:health', (ack) => {
-      if (typeof ack === 'function') ack({ providers: router.health() });
-    });
-
-    socket.on('chat:start', async (payload, ack) => {
-      const { messages, tools, temperature, model, extraOptions } = payload ?? {};
-      if (!Array.isArray(messages) || messages.length === 0) {
-        if (typeof ack === 'function') ack({ ok: false, error: 'messages 不能为空' });
-        return;
-      }
-      if (typeof ack === 'function') ack({ ok: true });
-
-      try {
-        for await (const chunk of router.chatStream({
-          messages,
-          tools,
-          temperature,
-          model,
-          extraOptions,
-        })) {
-          socket.emit('chat:chunk', chunk);
-        }
-      } catch (err) {
-        socket.emit('chat:chunk', { type: 'error', message: err.message });
-      }
-      socket.emit('chat:chunk', { type: 'end' });
-    });
-  });
-
-  return { httpServer, io, router, mcp };
-}
-
-const { httpServer, router, mcp } = buildServer();
-httpServer.listen(PORT, HOST, () => {
-  console.log(
-    `[sidecar] listening on http://${HOST}:${PORT} (providers=${router.count}, default=${router.defaultModel}, mcp_servers=${mcp.count})`,
+httpServer.listen(port, host, () => {
+  logger.info(
+    `listening on http://${host}:${port} (providers=${router.count}, default=${router.defaultModel}, mcp_servers=${mcp.count})`,
   );
+});
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info(`收到 ${signal}，开始关闭…`);
+  // 兜底：2 秒内没关干净就强制退出，避免 MCP 子进程挂住整个进程。
+  const forceTimer = setTimeout(() => process.exit(0), 2000);
+  forceTimer.unref();
+  try {
+    await close();
+  } catch (err) {
+    logger.error('关闭过程异常:', err);
+  }
+  process.exit(0);
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('uncaughtException', (err) => logger.error('uncaughtException:', err));
+process.on('unhandledRejection', (err) => logger.error('unhandledRejection:', err));
+
+httpServer.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    logger.error(`端口 ${port} 已被占用，sidecar 启动失败（可设置 SIDECAR_PORT 换端口）`);
+  } else {
+    logger.error('HTTP 服务异常:', err);
+  }
+  process.exitCode = 1;
 });

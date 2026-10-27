@@ -115,7 +115,13 @@ ollama pull qwen3:8b
 
 你也可以使用其他 Ollama 模型，并在应用设置中修改模型名。
 
-### 2. 启动开发版
+### 2. 日常启动与一键部署
+
+日常使用请直接点击桌面、开始菜单或任务栏中的 **PC Guardian**。这些入口指向包含前端资源的 release 应用，不依赖浏览器或 `localhost:1420`。
+
+代码更新后，双击仓库根目录的 `一键部署并启动.cmd`。它会自动完成依赖检查、前端构建、Rust release 构建、NSIS 安装包生成、快捷方式修复和应用启动，详细日志位于 `%LOCALAPPDATA%\PC Guardian\deploy.log`。
+
+开发调试时才使用：
 
 ```bash
 git clone https://github.com/Strader9/Helper.git
@@ -124,7 +130,7 @@ npm install
 npm run tauri dev
 ```
 
-### 3. 构建 Windows 安装包
+### 3. 手动构建 Windows 安装包
 
 ```bash
 npm run tauri build
@@ -262,7 +268,7 @@ Helper/
 
 | 现象 | 常见原因 | 处理方式 |
 | --- | --- | --- |
-| 界面白屏 | 开发版前端未启动 | 使用 `npm run tauri dev`，或先启动 Vite |
+| 点击后白屏或浏览器提示 localhost 拒绝连接 | 快捷方式误指向 debug 可执行文件或本地网址 | 双击 `一键部署并启动.cmd`，脚本会重建 release 并修复快捷方式 |
 | 媒体生成返回 `ModelNotOpen` | 服务商账号未开通模型 | 在服务商控制台开通对应模型 |
 | 返回 `InvalidEndpointOrModel.NotFound` | 模型 ID 不完整 | 使用控制台显示的完整模型 ID |
 | 感知服务一直未运行 | 原生 worker 或命名管道未就绪 | 先确认 worker 已启动并成功加载模型 |

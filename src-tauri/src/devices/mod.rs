@@ -15,16 +15,16 @@
 //! 才能直接拿到 `AppState`，不必再绕一层进程间协议。
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 /// 配对码有效期（秒）
 pub const PAIRING_CODE_TTL_SECS: i64 = 600;
@@ -88,8 +88,7 @@ fn row_to_device(row: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
     })
 }
 
-const DEVICE_COLUMNS: &str =
-    "id, name, platform, token_hint, paired_at, last_seen_at, revoked";
+const DEVICE_COLUMNS: &str = "id, name, platform, token_hint, paired_at, last_seen_at, revoked";
 
 // ============================================================
 // 数据库操作
@@ -104,7 +103,8 @@ pub fn list_devices(conn: &rusqlite::Connection) -> Result<Vec<Device>, String> 
     let rows = stmt
         .query_map([], row_to_device)
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 fn find_device_by_hash(
@@ -131,8 +131,8 @@ pub fn authenticate(conn: &rusqlite::Connection, token: &str) -> Result<Device, 
     }
 
     let hash = hash_token(trimmed);
-    let device = find_device_by_hash(conn, &hash)?
-        .ok_or_else(|| "令牌无效或设备已撤销".to_string())?;
+    let device =
+        find_device_by_hash(conn, &hash)?.ok_or_else(|| "令牌无效或设备已撤销".to_string())?;
 
     let _ = conn.execute(
         "UPDATE devices SET last_seen_at = datetime('now') WHERE id = ?1",
@@ -220,7 +220,11 @@ pub fn pair_device(
     platform: Option<&str>,
 ) -> Result<(Device, String), String> {
     let name = name.trim();
-    let name = if name.is_empty() { "未命名设备" } else { name };
+    let name = if name.is_empty() {
+        "未命名设备"
+    } else {
+        name
+    };
 
     let token = generate_token();
     let id = uuid::Uuid::new_v4().to_string();
@@ -260,7 +264,9 @@ pub fn revoke_device(conn: &rusqlite::Connection, id: &str) -> Result<bool, Stri
 pub fn prune_pairing_codes(conn: &rusqlite::Connection) -> Result<(), String> {
     conn.execute(
         "DELETE FROM device_pairing_codes WHERE used = 1 OR expires_at < ?1",
-        [chrono::Local::now().format(crate::scheduler::TIME_FMT).to_string()],
+        [chrono::Local::now()
+            .format(crate::scheduler::TIME_FMT)
+            .to_string()],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -287,9 +293,15 @@ impl HttpRequest {
     /// 从 `Authorization: Bearer xxx` 里取令牌
     pub fn bearer_token(&self) -> Option<&str> {
         let value = self.header("authorization")?;
-        let rest = value.strip_prefix("Bearer ").or_else(|| value.strip_prefix("bearer "))?;
+        let rest = value
+            .strip_prefix("Bearer ")
+            .or_else(|| value.strip_prefix("bearer "))?;
         let token = rest.trim();
-        if token.is_empty() { None } else { Some(token) }
+        if token.is_empty() {
+            None
+        } else {
+            Some(token)
+        }
     }
 
     pub fn query_param(&self, name: &str) -> Option<&str> {
@@ -314,10 +326,7 @@ fn parse_query(raw: &str) -> HashMap<String, String> {
             Some((k, v)) => (k, v),
             None => (pair, ""),
         };
-        out.insert(
-            percent_decode(key),
-            percent_decode(value),
-        );
+        out.insert(percent_decode(key), percent_decode(value));
     }
     out
 }
@@ -425,10 +434,11 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     let mut chunk = [0u8; 4096];
 
     loop {
-        let read = tokio::time::timeout(std::time::Duration::from_secs(15), stream.read(&mut chunk))
-            .await
-            .map_err(|_| "读取请求超时".to_string())?
-            .map_err(|e| format!("读取失败：{}", e))?;
+        let read =
+            tokio::time::timeout(std::time::Duration::from_secs(15), stream.read(&mut chunk))
+                .await
+                .map_err(|_| "读取请求超时".to_string())?
+                .map_err(|e| format!("读取失败：{}", e))?;
 
         if read == 0 {
             break;
@@ -465,9 +475,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
 }
 
 fn find_head_end(buffer: &[u8]) -> Option<usize> {
-    buffer
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
 }
 
 // ============================================================
@@ -503,9 +511,7 @@ async fn handle_connection(app_handle: AppHandle, mut stream: TcpStream) {
         Ok(req) => req,
         Err(error) => {
             let body = json!({ "error": error });
-            let _ = stream
-                .write_all(http_response(400, &body).as_bytes())
-                .await;
+            let _ = stream.write_all(http_response(400, &body).as_bytes()).await;
             let _ = stream.shutdown().await;
             return;
         }
@@ -610,7 +616,11 @@ async fn dispatch(app_handle: &AppHandle, request: &HttpRequest) -> (u16, Value)
             };
 
             // 2. 决定落在哪个会话
-            let session_id = match body["session_id"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            let session_id = match body["session_id"]
+                .as_str()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 Some(id) => {
                     let db = state.db.lock().await;
                     crate::scheduler::ensure_session(
@@ -750,6 +760,8 @@ pub struct DeviceGateway {
     bound: Arc<Mutex<Option<String>>>,
     last_error: Arc<Mutex<Option<String>>>,
     requests: Arc<std::sync::atomic::AtomicU64>,
+    generation: Arc<AtomicU64>,
+    wake: Arc<Notify>,
 }
 
 impl DeviceGateway {
@@ -760,6 +772,8 @@ impl DeviceGateway {
             bound: Arc::new(Mutex::new(None)),
             last_error: Arc::new(Mutex::new(None)),
             requests: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            generation: Arc::new(AtomicU64::new(0)),
+            wake: Arc::new(Notify::new()),
         }
     }
 
@@ -768,13 +782,19 @@ impl DeviceGateway {
             return;
         }
 
+        let generation_id = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+
         let app_handle = self.app_handle.clone();
         let running = self.running.clone();
         let bound = self.bound.clone();
         let last_error = self.last_error.clone();
         let requests = self.requests.clone();
+        let generation = self.generation.clone();
+        let wake = self.wake.clone();
 
         tauri::async_runtime::spawn(async move {
+            *last_error.lock().await = None;
+            *bound.lock().await = None;
             let (enabled, bind, port) = {
                 let state = app_handle.state::<crate::AppState>();
                 let db = state.db.lock().await;
@@ -801,7 +821,9 @@ impl DeviceGateway {
 
             if !enabled {
                 eprintln!("[Gateway] 已禁用（agent.gateway_enabled=false）");
-                running.store(false, Ordering::SeqCst);
+                if generation.load(Ordering::SeqCst) == generation_id {
+                    running.store(false, Ordering::SeqCst);
+                }
                 return;
             }
 
@@ -811,36 +833,65 @@ impl DeviceGateway {
                 Err(error) => {
                     eprintln!("[Gateway] 绑定 {} 失败: {}", address, error);
                     *last_error.lock().await = Some(format!("绑定 {} 失败：{}", address, error));
-                    running.store(false, Ordering::SeqCst);
+                    if generation.load(Ordering::SeqCst) == generation_id {
+                        running.store(false, Ordering::SeqCst);
+                    }
                     return;
                 }
             };
 
+            if generation.load(Ordering::SeqCst) != generation_id {
+                return;
+            }
             *bound.lock().await = Some(address.clone());
             eprintln!("[Gateway] listening on http://{}", address);
 
-            while running.load(Ordering::SeqCst) {
-                match listener.accept().await {
-                    Ok((stream, _peer)) => {
-                        requests.fetch_add(1, Ordering::Relaxed);
-                        let app = app_handle.clone();
-                        tauri::async_runtime::spawn(async move {
-                            handle_connection(app, stream).await;
-                        });
-                    }
-                    Err(error) => {
-                        eprintln!("[Gateway] accept 失败: {}", error);
-                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            while running.load(Ordering::SeqCst)
+                && generation.load(Ordering::SeqCst) == generation_id
+            {
+                tokio::select! {
+                    accepted = listener.accept() => match accepted {
+                        Ok((stream, _peer)) => {
+                            requests.fetch_add(1, Ordering::Relaxed);
+                            let app = app_handle.clone();
+                            tauri::async_runtime::spawn(async move {
+                                handle_connection(app, stream).await;
+                            });
+                        }
+                        Err(error) => {
+                            eprintln!("[Gateway] accept 失败: {}", error);
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
+                    },
+                    _ = wake.notified() => {
+                        if !running.load(Ordering::SeqCst)
+                            || generation.load(Ordering::SeqCst) != generation_id
+                        {
+                            break;
+                        }
                     }
                 }
             }
 
+            if generation.load(Ordering::SeqCst) == generation_id {
+                running.store(false, Ordering::SeqCst);
+                *bound.lock().await = None;
+            }
             eprintln!("[Gateway] stopped");
         });
     }
 
     pub fn stop(&self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
         self.running.store(false, Ordering::SeqCst);
+        self.wake.notify_waiters();
+    }
+
+    /// 重新读取数据库配置并重启监听器。generation 可防止旧监听任务在重启竞态中复活。
+    pub async fn restart(&self) {
+        self.stop();
+        tokio::task::yield_now().await;
+        self.start();
     }
 
     pub async fn status(&self) -> GatewayStatus {
@@ -862,11 +913,8 @@ mod tests {
     use super::*;
 
     fn fresh_db(tag: &str) -> (crate::db::Database, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "pcg-gateway-test-{}-{}",
-            tag,
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pcg-gateway-test-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("创建临时目录");
         let db = crate::db::Database::new(&dir.join("t.db")).expect("打开数据库");
@@ -890,7 +938,12 @@ mod tests {
 
         let (code, expires) = issue_pairing_code(conn, 600).expect("生成配对码");
         assert_eq!(code.len(), 6);
-        assert!(expires > chrono::Local::now().format(crate::scheduler::TIME_FMT).to_string());
+        assert!(
+            expires
+                > chrono::Local::now()
+                    .format(crate::scheduler::TIME_FMT)
+                    .to_string()
+        );
 
         consume_pairing_code(conn, &code).expect("首次消费应当成功");
         // 一次性：第二次必须失败，否则码被截获就能反复配对
@@ -927,7 +980,10 @@ mod tests {
 
         let (device, token) = pair_device(conn, "我的手机", Some("android")).expect("配对");
         assert_eq!(device.name, "我的手机");
-        assert_eq!(device.token_hint.as_deref(), Some(token_hint(&token).as_str()));
+        assert_eq!(
+            device.token_hint.as_deref(),
+            Some(token_hint(&token).as_str())
+        );
 
         let authed = authenticate(conn, &token).expect("有效令牌应通过");
         assert_eq!(authed.id, device.id);
@@ -1062,10 +1118,7 @@ mod tests {
             .expect("写第二段");
 
         let mut response = String::new();
-        client
-            .read_to_string(&mut response)
-            .await
-            .expect("读响应");
+        client.read_to_string(&mut response).await.expect("读响应");
 
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{}", response);
         assert!(response.contains("\"ok\":true"));

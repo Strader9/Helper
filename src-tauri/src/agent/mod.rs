@@ -417,6 +417,7 @@ fn all_tool_categories() -> Vec<intent::ToolCategory> {
         intent::ToolCategory::System,
         intent::ToolCategory::Memory,
         intent::ToolCategory::Skill,
+        intent::ToolCategory::Automation,
     ]
 }
 
@@ -710,7 +711,10 @@ async fn run_chat_fast(context: ChatFastContext<'_>) -> AppResult<bool> {
                     let marker = "[NEED_TOOL]";
                     if !marker.starts_with(candidate) && !candidate.starts_with(marker) {
                         response_forwarded = true;
-                        let _ = context.tx.send(ChatEvent::Text(full_response.clone())).await;
+                        let _ = context
+                            .tx
+                            .send(ChatEvent::Text(full_response.clone()))
+                            .await;
                     }
                 }
             }
@@ -736,20 +740,17 @@ async fn run_chat_fast(context: ChatFastContext<'_>) -> AppResult<bool> {
     }
 
     if !response_forwarded && !full_response.is_empty() {
-        let _ = context.tx.send(ChatEvent::Text(full_response.clone())).await;
+        let _ = context
+            .tx
+            .send(ChatEvent::Text(full_response.clone()))
+            .await;
     }
 
     // 保存 assistant 消息到数据库
     {
         let db_guard = context.db.lock().await;
         let mgr = ConversationManager::new(db_guard.connection());
-        mgr.append_message(
-            context.session_id,
-            "assistant",
-            &full_response,
-            None,
-            None,
-        )?;
+        mgr.append_message(context.session_id, "assistant", &full_response, None, None)?;
     }
 
     Ok(false)
@@ -764,26 +765,10 @@ fn build_memory_context(user_content: &str) -> String {
         None => return String::new(),
     };
 
-    let memories = match MemoryEngine::get_relevant_memories(&conn, user_content, 5) {
-        Ok(m) => m,
+    let context = match MemoryEngine::build_adaptive_context(&conn, user_content, 4, 5) {
+        Ok(value) => value,
         Err(_) => return String::new(),
     };
-
-    if memories.is_empty() {
-        return String::new();
-    }
-
-    let mut context = String::new();
-    for (i, mem) in memories.iter().enumerate() {
-        let type_label = match mem.memory_type {
-            crate::memory::MemoryType::UserPreference => "用户偏好",
-            crate::memory::MemoryType::TaskHistory => "任务历史",
-            crate::memory::MemoryType::Knowledge => "知识",
-            crate::memory::MemoryType::ConversationSummary => "对话摘要",
-            crate::memory::MemoryType::AppUsage => "应用习惯",
-        };
-        context.push_str(&format!("{}. [{}] {}\n", i + 1, type_label, mem.content));
-    }
     context
 }
 
@@ -909,11 +894,7 @@ mod run_param_tests {
     use std::path::PathBuf;
 
     fn fresh_db(tag: &str) -> (Database, PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "pcg-runparam-{}-{}",
-            tag,
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("pcg-runparam-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("创建临时目录");
         let db = Database::new(&dir.join("t.db")).expect("打开数据库");
@@ -930,15 +911,18 @@ mod run_param_tests {
         let (db, dir) = fresh_db("hot");
 
         // 先确认默认值与构造时的回落值不同，避免测试因为"新旧值恰好一样"而假通过
-        db.update_setting("agent.temperature", "1.8").expect("写温度");
-        db.update_setting("agent.max_iterations", "33").expect("写轮次");
+        db.update_setting("agent.temperature", "1.8")
+            .expect("写温度");
+        db.update_setting("agent.max_iterations", "33")
+            .expect("写轮次");
 
         let (temperature, max_iterations) = resolve_run_params(&db, 0.7, 10);
         assert_eq!(temperature, 1.8, "温度应读到刚写入的新值");
         assert_eq!(max_iterations, 33, "轮次上限应读到刚写入的新值");
 
         // 再改一次，验证不是"只在首次生效"
-        db.update_setting("agent.temperature", "0.2").expect("再写温度");
+        db.update_setting("agent.temperature", "0.2")
+            .expect("再写温度");
         let (temperature, _) = resolve_run_params(&db, 0.7, 10);
         assert_eq!(temperature, 0.2, "第二次修改同样要立即生效");
 

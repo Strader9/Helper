@@ -15,29 +15,13 @@ import WebStudio from "./pages/WebStudio";
 import Tasks from "./pages/Tasks";
 import Media from "./pages/Media";
 import Mail from "./pages/Mail";
-import Automation from "./pages/Automation";
 import Tools from "./pages/Tools";
 import Memory from "./pages/Memory";
 import Skills from "./pages/Skills";
 import Devices from "./pages/Devices";
 import { CommandCenter } from "./pages/CommandCenter";
 import { useLocation } from "react-router-dom";
-
-/**
- * 把主题写到 <html data-theme>。
- *
- * 默认深色不设属性——这样 CSS 里的深色定义不需要维护两份。
- * 三个 CSS 层共用这一个开关：system.css 的 --color-* 与旧 index.css
- * 的 --bg-* 都在 [data-theme="light"] 下各覆盖各的，互不干扰。
- */
-function applyTheme(theme: string) {
-  const root = document.documentElement;
-  if (theme === "light") {
-    root.setAttribute("data-theme", "light");
-  } else {
-    root.removeAttribute("data-theme");
-  }
-}
+import { applyTheme } from "./lib/theme";
 
 const COLLAPSE_KEY = "pcg.sidebar.collapsed";
 
@@ -154,7 +138,7 @@ function App() {
             <Route path="/tasks" element={<Tasks />} />
             <Route path="/media" element={<Media />} />
             <Route path="/mail" element={<Mail />} />
-            <Route path="/automation" element={<Automation />} />
+            <Route path="/automation" element={<Navigate to="/chat" replace />} />
             <Route path="/tools" element={<Tools />} />
             <Route path="/memory" element={<Memory />} />
             <Route path="/skills" element={<Skills />} />

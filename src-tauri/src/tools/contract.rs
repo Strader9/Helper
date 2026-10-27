@@ -700,7 +700,12 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         reversible: true,
         verification: VerificationStrategy::Artifact,
         // 判据是重新打开输出文件读尺寸，不是内存里那个 Bitmap 对象
-        required_fields: &["output.path", "output.width", "output.height", "output.dimensions_match"],
+        required_fields: &[
+            "output.path",
+            "output.width",
+            "output.height",
+            "output.dimensions_match",
+        ],
     },
     CapabilityContract {
         tool: "image_crop",
@@ -708,7 +713,12 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         scope: "输出目录",
         reversible: true,
         verification: VerificationStrategy::Artifact,
-        required_fields: &["output.path", "output.width", "output.height", "output.dimensions_match"],
+        required_fields: &[
+            "output.path",
+            "output.width",
+            "output.height",
+            "output.dimensions_match",
+        ],
     },
     CapabilityContract {
         tool: "image_convert",
@@ -863,7 +873,16 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         scope: "本地 industry_snapshots 表（经营快照）",
         reversible: true,
         verification: VerificationStrategy::TerminalReceipt,
-        required_fields: &["ok", "status", "persisted", "taskId", "sourceBound", "externalMutation", "snapshot.gmv", "snapshot.averageOrderValue"],
+        required_fields: &[
+            "ok",
+            "status",
+            "persisted",
+            "taskId",
+            "sourceBound",
+            "externalMutation",
+            "snapshot.gmv",
+            "snapshot.averageOrderValue",
+        ],
     },
     CapabilityContract {
         // 仅审核动作队列，不上架/调价/采购/改库存
@@ -872,7 +891,15 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         scope: "本地 industry_snapshots 表（动作队列）",
         reversible: true,
         verification: VerificationStrategy::TerminalReceipt,
-        required_fields: &["ok", "status", "persisted", "taskId", "sourceBound", "externalMutation", "actionQueueOnly"],
+        required_fields: &[
+            "ok",
+            "status",
+            "persisted",
+            "taskId",
+            "sourceBound",
+            "externalMutation",
+            "actionQueueOnly",
+        ],
     },
     CapabilityContract {
         // 脱敏草稿，不发送/发布/退款/补偿
@@ -881,7 +908,16 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         scope: "本地 industry_snapshots 表（客服草稿）",
         reversible: true,
         verification: VerificationStrategy::TerminalReceipt,
-        required_fields: &["ok", "status", "persisted", "taskId", "sourceBound", "externalMutation", "draftOnly", "privacyVerified"],
+        required_fields: &[
+            "ok",
+            "status",
+            "persisted",
+            "taskId",
+            "sourceBound",
+            "externalMutation",
+            "draftOnly",
+            "privacyVerified",
+        ],
     },
     CapabilityContract {
         tool: "industry_workflow_start",
@@ -997,6 +1033,39 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["count", "runs"],
     },
+    // ============ Automation（条件触发的主动规则）============
+    CapabilityContract {
+        tool: "create_proactive_rule",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本机 proactive_rules 表",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["created", "id", "enabled"],
+    },
+    CapabilityContract {
+        tool: "list_proactive_rules",
+        side_effect: SideEffect::LocalRead,
+        scope: "本机 proactive_rules 表",
+        reversible: true,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["count", "rules"],
+    },
+    CapabilityContract {
+        tool: "set_proactive_rule_enabled",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本机 proactive_rules.enabled",
+        reversible: true,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["id", "enabled"],
+    },
+    CapabilityContract {
+        tool: "delete_proactive_rule",
+        side_effect: SideEffect::LocalWrite,
+        scope: "本机 proactive_rules 表",
+        reversible: false,
+        verification: VerificationStrategy::StateDiff,
+        required_fields: &["deleted", "id"],
+    },
     // ============ Client ============
     CapabilityContract {
         tool: "client_state",
@@ -1062,7 +1131,14 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         scope: "一个选中的桌面 AI 目标窗口 + 系统剪贴板",
         reversible: false,
         verification: VerificationStrategy::ProviderAck,
-        required_fields: &["ok", "status", "question", "send", "preparedCount", "submittedCount"],
+        required_fields: &[
+            "ok",
+            "status",
+            "question",
+            "send",
+            "preparedCount",
+            "submittedCount",
+        ],
     },
     CapabilityContract {
         // 截图落临时目录 + 可选聚焦目标窗口，屏幕内容属隐私（对齐 ocr_screen 的 Medium）
@@ -1413,6 +1489,14 @@ pub const CONTRACTS: &[CapabilityContract] = &[
         reversible: true,
         verification: VerificationStrategy::TerminalReceipt,
         required_fields: &["skill"],
+    },
+    CapabilityContract {
+        tool: "skill_run",
+        side_effect: SideEffect::ProcessExecution,
+        scope: "已安装技能声明的入口脚本与权限范围",
+        reversible: false,
+        verification: VerificationStrategy::TerminalReceipt,
+        required_fields: &["skill_id", "output", "duration_ms"],
     },
     CapabilityContract {
         tool: "skill_toggle",
@@ -2048,10 +2132,7 @@ pub const VERIFICATION_DEBT: &[(&str, &str)] = &[
         "browser_open",
         "浏览器进程启动后由 CDP 异步就绪，工具返回时不保证页面已可操作",
     ),
-    (
-        "browser_wait",
-        "等待是时间语义，没有可核对的产物",
-    ),
+    ("browser_wait", "等待是时间语义，没有可核对的产物"),
     (
         "browser_execute_js",
         "脚本返回值结构由页面决定，无法预先声明必填字段",

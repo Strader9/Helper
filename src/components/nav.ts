@@ -3,12 +3,10 @@ import {
   LayoutDashboard,
   Sparkles,
   Mail,
-  Workflow,
   Boxes,
   ListChecks,
   Brain,
   Package,
-  Smartphone,
   Globe,
   Code2,
   Settings2,
@@ -48,7 +46,6 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/media", label: "媒体工坊", icon: Sparkles, hint: "生成图像与视频", keywords: "image video 图像 视频 生成" },
       { to: "/mail", label: "邮件", icon: Mail, hint: "收件箱与发信", keywords: "mail email 邮箱 imap smtp" },
-      { to: "/automation", label: "自动化", icon: Workflow, hint: "主动规则与定时任务", keywords: "automation 定时 计划 规则" },
       { to: "/tools", label: "能力中心", icon: Boxes, hint: "全部工具与契约覆盖", keywords: "tools 工具 能力 契约" },
     ],
   },
@@ -57,7 +54,6 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/memory", label: "记忆", icon: Brain, hint: "长期记忆条目", keywords: "memory 记忆" },
       { to: "/skills", label: "技能", icon: Package, hint: "已安装技能与市场", keywords: "skill 技能 插件" },
-      { to: "/devices", label: "设备", icon: Smartphone, hint: "配对设备与网关", keywords: "device 设备 配对 网关" },
     ],
   },
   {

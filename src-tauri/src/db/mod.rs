@@ -6,12 +6,12 @@
 pub mod conversation;
 pub mod schema;
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use std::path::Path;
 
-use crate::error::AppResult;
-use crate::commands::SettingItem;
 use crate::agent::observation::Observation as AgentObservation;
+use crate::commands::SettingItem;
+use crate::error::AppResult;
 
 /// 凭据类配置键：这些键的值不允许离开后端进程。
 ///
@@ -19,12 +19,10 @@ use crate::agent::observation::Observation as AgentObservation;
 /// 像 `publish.github_repo` 这种只是名字，不属于此列；`ollama.base_url`
 /// 是内网地址，也不算凭据。
 pub fn is_secret_setting(key: &str) -> bool {
-    matches!(
-        key,
-        "publish.github_token" | "publish.netlify_token"
-    ) || ["token", "secret", "password", "api_key"]
-        .iter()
-        .any(|suffix| key.ends_with(suffix))
+    matches!(key, "publish.github_token" | "publish.netlify_token")
+        || ["token", "secret", "password", "api_key"]
+            .iter()
+            .any(|suffix| key.ends_with(suffix))
 }
 
 /// 把凭据值替换成掩码，只保留头尾极少量字符用于人工辨认。
@@ -142,8 +140,10 @@ impl Database {
             ("unit", "TEXT"),
         ] {
             if !existing.iter().any(|c| c == column) {
-                self.conn
-                    .execute_batch(&format!("ALTER TABLE settings ADD COLUMN {} {}", column, decl))?;
+                self.conn.execute_batch(&format!(
+                    "ALTER TABLE settings ADD COLUMN {} {}",
+                    column, decl
+                ))?;
             }
         }
         Ok(())
@@ -158,24 +158,120 @@ impl Database {
         let updates: [(&str, &str, Option<f64>, Option<f64>, Option<&str>); 20] = [
             ("ollama.base_url", "Ollama 服务地址", None, None, None),
             ("ollama.model", "默认模型名称", None, None, None),
-            ("ollama.timeout_ms", "请求超时（毫秒）", Some(5000.0), Some(300000.0), Some("ms")),
-            ("agent.max_iterations", "Agent Loop 最大轮次", Some(1.0), Some(50.0), Some("轮")),
-            ("agent.temperature", "模型温度（越高越发散）", Some(0.0), Some(2.0), None),
-            ("agent.num_ctx", "上下文窗口（token）", Some(2048.0), Some(32768.0), Some("token")),
-            ("agent.num_predict", "单次回复上限（token）", Some(128.0), Some(8192.0), Some("token")),
-            ("agent.proactive_interval_sec", "主动引擎检查间隔", Some(5.0), Some(300.0), Some("s")),
-            ("agent.proactive_cooldown_sec", "同一规则触发冷却期", Some(30.0), Some(3600.0), Some("s")),
+            (
+                "ollama.timeout_ms",
+                "请求超时（毫秒）",
+                Some(5000.0),
+                Some(300000.0),
+                Some("ms"),
+            ),
+            (
+                "agent.max_iterations",
+                "Agent Loop 最大轮次",
+                Some(1.0),
+                Some(50.0),
+                Some("轮"),
+            ),
+            (
+                "agent.temperature",
+                "模型温度（越高越发散）",
+                Some(0.0),
+                Some(2.0),
+                None,
+            ),
+            (
+                "agent.num_ctx",
+                "上下文窗口（token）",
+                Some(2048.0),
+                Some(32768.0),
+                Some("token"),
+            ),
+            (
+                "agent.num_predict",
+                "单次回复上限（token）",
+                Some(128.0),
+                Some(8192.0),
+                Some("token"),
+            ),
+            (
+                "agent.proactive_interval_sec",
+                "主动引擎检查间隔",
+                Some(5.0),
+                Some(300.0),
+                Some("s"),
+            ),
+            (
+                "agent.proactive_cooldown_sec",
+                "同一规则触发冷却期",
+                Some(30.0),
+                Some(3600.0),
+                Some("s"),
+            ),
             ("ui.theme", "主题（dark/light）", None, None, None),
-            ("security.confirm_medium_risk", "MEDIUM 风险是否弹窗确认", None, None, None),
-            ("tray.minimize_on_close", "关闭窗口时最小化到托盘", None, None, None),
+            (
+                "security.confirm_medium_risk",
+                "MEDIUM 风险是否弹窗确认",
+                None,
+                None,
+                None,
+            ),
+            (
+                "tray.minimize_on_close",
+                "关闭窗口时最小化到托盘",
+                None,
+                None,
+                None,
+            ),
             ("startup.auto_launch", "开机自启", None, None, None),
-            ("global_shortcut", "全局快捷键（如 Ctrl+Shift+Space）", None, None, None),
-            ("browser.default", "优先使用的浏览器（auto/chrome/edge/...）", None, None, None),
-            ("browser.cdp_port", "浏览器远程调试端口", Some(1024.0), Some(65535.0), None),
-            ("publish.github_token", "GitHub Personal Access Token", None, None, None),
-            ("publish.github_repo", "GitHub Pages 仓库名", None, None, None),
-            ("publish.netlify_token", "Netlify 备用发布通道令牌", None, None, None),
-            ("publish.proxy", "发布用代理地址（留空自动）", None, None, None),
+            (
+                "global_shortcut",
+                "全局快捷键（如 Ctrl+Shift+Space）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "browser.default",
+                "优先使用的浏览器（auto/chrome/edge/...）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "browser.cdp_port",
+                "浏览器远程调试端口",
+                Some(1024.0),
+                Some(65535.0),
+                None,
+            ),
+            (
+                "publish.github_token",
+                "GitHub Personal Access Token",
+                None,
+                None,
+                None,
+            ),
+            (
+                "publish.github_repo",
+                "GitHub Pages 仓库名",
+                None,
+                None,
+                None,
+            ),
+            (
+                "publish.netlify_token",
+                "Netlify 备用发布通道令牌",
+                None,
+                None,
+                None,
+            ),
+            (
+                "publish.proxy",
+                "发布用代理地址（留空自动）",
+                None,
+                None,
+                None,
+            ),
         ];
 
         let mut stmt = self.conn.prepare(
@@ -194,9 +290,7 @@ impl Database {
     /// 保证本方法可以反复调用。
     fn ensure_session_summary_columns(&self) -> AppResult<()> {
         let existing: Vec<String> = {
-            let mut stmt = self
-                .conn
-                .prepare("PRAGMA table_info(chat_sessions)")?;
+            let mut stmt = self.conn.prepare("PRAGMA table_info(chat_sessions)")?;
             let names: Vec<String> = stmt
                 .query_map([], |row| row.get::<_, String>(1))?
                 .filter_map(|r| r.ok())
@@ -247,7 +341,8 @@ impl Database {
 
     /// 建工作接管的两张表（任务台账 / 证据工作流）。
     fn run_work_takeover_migration(&self) -> AppResult<()> {
-        self.conn.execute_batch(schema::MIGRATION_WORK_TAKEOVER_SQL)?;
+        self.conn
+            .execute_batch(schema::MIGRATION_WORK_TAKEOVER_SQL)?;
         Ok(())
     }
 
@@ -271,7 +366,8 @@ impl Database {
 
     /// 建媒体生成台账表（image / video 生成任务）。
     fn run_media_generation_migration(&self) -> AppResult<()> {
-        self.conn.execute_batch(schema::MIGRATION_MEDIA_GENERATION_SQL)?;
+        self.conn
+            .execute_batch(schema::MIGRATION_MEDIA_GENERATION_SQL)?;
         Ok(())
     }
 
@@ -295,8 +391,9 @@ impl Database {
         }
 
         if !existing.iter().any(|c| c == "tier") {
-            self.conn
-                .execute_batch("ALTER TABLE memory_items ADD COLUMN tier TEXT NOT NULL DEFAULT 'episodic'")?;
+            self.conn.execute_batch(
+                "ALTER TABLE memory_items ADD COLUMN tier TEXT NOT NULL DEFAULT 'episodic'",
+            )?;
         }
         if !existing.iter().any(|c| c == "consolidated_into") {
             self.conn
@@ -314,87 +411,559 @@ impl Database {
     ///
     /// 元组含义：(key, 默认值, 类型, 说明, 最小值, 最大值, 单位)
     fn seed_default_settings(&self) -> AppResult<()> {
-        let defaults: [(&str, &str, &str, &str, Option<f64>, Option<f64>, Option<&str>); 51] = [
+        let defaults: [(
+            &str,
+            &str,
+            &str,
+            &str,
+            Option<f64>,
+            Option<f64>,
+            Option<&str>,
+        ); 57] = [
             // ---- 模型连接 ----
-            ("ollama.base_url", "http://localhost:11434", "string", "Ollama 服务地址", None, None, None),
-            ("ollama.model", "qwen3:8b", "string", "默认模型名称", None, None, None),
-            ("ollama.timeout_ms", "60000", "number", "请求超时（毫秒）", Some(5000.0), Some(300000.0), Some("ms")),
+            (
+                "ollama.base_url",
+                "http://localhost:11434",
+                "string",
+                "Ollama 服务地址",
+                None,
+                None,
+                None,
+            ),
+            (
+                "ollama.model",
+                "qwen3:8b",
+                "string",
+                "默认模型名称",
+                None,
+                None,
+                None,
+            ),
+            (
+                "ollama.timeout_ms",
+                "60000",
+                "number",
+                "请求超时（毫秒）",
+                Some(5000.0),
+                Some(300000.0),
+                Some("ms"),
+            ),
             // sidecar 多 provider 网关（模型层扩容）的地址；MCP 转发也走这里
-            ("sidecar.url", "http://127.0.0.1:4770", "string", "模型网关（sidecar）地址", None, None, None),
+            (
+                "sidecar.url",
+                "http://127.0.0.1:4770",
+                "string",
+                "模型网关（sidecar）地址",
+                None,
+                None,
+                None,
+            ),
             // ---- Agent 行为 ----
-            ("agent.max_iterations", "10", "number", "Agent Loop 最大轮次", Some(1.0), Some(50.0), Some("轮")),
-            ("agent.temperature", "0.7", "number", "模型温度（越高越发散）", Some(0.0), Some(2.0), None),
+            (
+                "agent.max_iterations",
+                "10",
+                "number",
+                "Agent Loop 最大轮次",
+                Some(1.0),
+                Some(50.0),
+                Some("轮"),
+            ),
+            (
+                "agent.temperature",
+                "0.7",
+                "number",
+                "模型温度（越高越发散）",
+                Some(0.0),
+                Some(2.0),
+                None,
+            ),
             // ---- 上下文窗口 ----
             // 8GB 显存下 8192 可全程跑 GPU，再大就会溢出到 CPU 让响应变慢。
-            ("agent.num_ctx", "8192", "number", "上下文窗口（token）", Some(2048.0), Some(32768.0), Some("token")),
-            ("agent.num_predict", "1024", "number", "单次回复上限（token）", Some(128.0), Some(8192.0), Some("token")),
+            (
+                "agent.num_ctx",
+                "8192",
+                "number",
+                "上下文窗口（token）",
+                Some(2048.0),
+                Some(32768.0),
+                Some("token"),
+            ),
+            (
+                "agent.num_predict",
+                "1024",
+                "number",
+                "单次回复上限（token）",
+                Some(128.0),
+                Some(8192.0),
+                Some("token"),
+            ),
             // ---- 主动助手 ----
-            ("agent.proactive_interval_sec", "15", "number", "主动引擎检查间隔", Some(5.0), Some(300.0), Some("s")),
-            ("agent.proactive_cooldown_sec", "300", "number", "同一规则触发冷却期", Some(30.0), Some(3600.0), Some("s")),
+            (
+                "agent.proactive_interval_sec",
+                "15",
+                "number",
+                "主动引擎检查间隔",
+                Some(5.0),
+                Some(300.0),
+                Some("s"),
+            ),
+            (
+                "agent.proactive_cooldown_sec",
+                "300",
+                "number",
+                "同一规则触发冷却期",
+                Some(30.0),
+                Some(3600.0),
+                Some("s"),
+            ),
             // ---- 常驻调度 ----
-            ("agent.scheduler_enabled", "true", "boolean", "启用常驻定时任务调度", None, None, None),
-            ("agent.scheduler_tick_sec", "30", "number", "调度器检查间隔", Some(5.0), Some(300.0), Some("s")),
-            ("agent.scheduler_job_timeout_sec", "600", "number", "单个定时任务执行超时", Some(60.0), Some(1800.0), Some("s")),
+            (
+                "agent.scheduler_enabled",
+                "true",
+                "boolean",
+                "启用常驻定时任务调度",
+                None,
+                None,
+                None,
+            ),
+            (
+                "agent.scheduler_tick_sec",
+                "30",
+                "number",
+                "调度器检查间隔",
+                Some(5.0),
+                Some(300.0),
+                Some("s"),
+            ),
+            (
+                "agent.scheduler_job_timeout_sec",
+                "600",
+                "number",
+                "单个定时任务执行超时",
+                Some(60.0),
+                Some(1800.0),
+                Some("s"),
+            ),
             // ---- 多端网关 ----
             // 默认只绑 127.0.0.1：手机要连必须由用户主动改成 0.0.0.0，
             // 默认就把助手暴露到局域网是危险设计。
-            ("agent.gateway_enabled", "true", "boolean", "启用多端设备网关", None, None, None),
-            ("agent.gateway_bind", "127.0.0.1", "string", "网关绑定地址（0.0.0.0 才允许局域网/手机访问）", None, None, None),
-            ("agent.gateway_port", "4769", "number", "网关端口", Some(1024.0), Some(65535.0), None),
-            ("agent.gateway_reply_timeout_sec", "180", "number", "远端消息等待回复超时", Some(30.0), Some(600.0), Some("s")),
+            (
+                "agent.gateway_enabled",
+                "true",
+                "boolean",
+                "启用多端设备网关",
+                None,
+                None,
+                None,
+            ),
+            (
+                "agent.gateway_bind",
+                "127.0.0.1",
+                "string",
+                "网关绑定地址（0.0.0.0 才允许局域网/手机访问）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "agent.gateway_port",
+                "4769",
+                "number",
+                "网关端口",
+                Some(1024.0),
+                Some(65535.0),
+                None,
+            ),
+            (
+                "agent.gateway_reply_timeout_sec",
+                "180",
+                "number",
+                "远端消息等待回复超时",
+                Some(30.0),
+                Some(600.0),
+                Some("s"),
+            ),
             // ---- 界面 ----
-            ("ui.theme", "dark", "string", "主题（dark/light）", None, None, None),
+            (
+                "ui.theme",
+                "dark",
+                "string",
+                "主题（dark/light）",
+                None,
+                None,
+                None,
+            ),
+            // ---- 桌面浮窗 ----
+            // 这些值由形象设计室写入，MiniChat 和原生窗口层都会实时消费。
+            (
+                "mini.skin",
+                "guardian",
+                "string",
+                "浮窗形象皮肤",
+                None,
+                None,
+                None,
+            ),
+            (
+                "mini.size",
+                "balanced",
+                "string",
+                "浮窗尺寸（compact/balanced/spacious）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "mini.opacity",
+                "0.94",
+                "number",
+                "浮窗主体透明度",
+                Some(0.4),
+                Some(1.0),
+                None,
+            ),
+            (
+                "mini.always_on_top",
+                "true",
+                "boolean",
+                "浮窗始终置顶",
+                None,
+                None,
+                None,
+            ),
+            (
+                "mini.show_status",
+                "true",
+                "boolean",
+                "浮窗显示工作状态",
+                None,
+                None,
+                None,
+            ),
+            (
+                "mini.default_expanded",
+                "false",
+                "boolean",
+                "浮窗启动时展开对话",
+                None,
+                None,
+                None,
+            ),
             // ---- 安全 ----
-            ("security.confirm_medium_risk", "true", "boolean", "MEDIUM 风险是否弹窗确认", None, None, None),
+            (
+                "security.confirm_medium_risk",
+                "true",
+                "boolean",
+                "MEDIUM 风险是否弹窗确认",
+                None,
+                None,
+                None,
+            ),
             // ---- 托盘与启动 ----
-            ("tray.minimize_on_close", "true", "boolean", "关闭窗口时最小化到托盘", None, None, None),
-            ("startup.auto_launch", "false", "boolean", "开机自启", None, None, None),
-            ("global_shortcut", "Ctrl+Shift+Space", "string", "全局快捷键（如 Ctrl+Shift+Space）", None, None, None),
+            (
+                "tray.minimize_on_close",
+                "true",
+                "boolean",
+                "关闭窗口时最小化到托盘",
+                None,
+                None,
+                None,
+            ),
+            (
+                "startup.auto_launch",
+                "false",
+                "boolean",
+                "开机自启",
+                None,
+                None,
+                None,
+            ),
+            (
+                "global_shortcut",
+                "Ctrl+Shift+Space",
+                "string",
+                "全局快捷键（如 Ctrl+Shift+Space）",
+                None,
+                None,
+                None,
+            ),
             // ---- 浏览器自动化 ----
-            ("browser.default", "auto", "string", "优先使用的浏览器（auto/chrome/edge/...）", None, None, None),
-            ("browser.cdp_port", "9222", "number", "浏览器远程调试端口", Some(1024.0), Some(65535.0), None),
+            (
+                "browser.default",
+                "auto",
+                "string",
+                "优先使用的浏览器（auto/chrome/edge/...）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "browser.cdp_port",
+                "9222",
+                "number",
+                "浏览器远程调试端口",
+                Some(1024.0),
+                Some(65535.0),
+                None,
+            ),
             // ---- 网页发布 ----
-            ("publish.github_token", "", "string", "GitHub Personal Access Token", None, None, None),
-            ("publish.github_repo", "", "string", "GitHub Pages 仓库名", None, None, None),
-            ("publish.netlify_token", "", "string", "Netlify 备用发布通道令牌", None, None, None),
-            ("publish.proxy", "", "string", "发布用代理地址（留空自动）", None, None, None),
+            (
+                "publish.github_token",
+                "",
+                "string",
+                "GitHub Personal Access Token",
+                None,
+                None,
+                None,
+            ),
+            (
+                "publish.github_repo",
+                "",
+                "string",
+                "GitHub Pages 仓库名",
+                None,
+                None,
+                None,
+            ),
+            (
+                "publish.netlify_token",
+                "",
+                "string",
+                "Netlify 备用发布通道令牌",
+                None,
+                None,
+                None,
+            ),
+            (
+                "publish.proxy",
+                "",
+                "string",
+                "发布用代理地址（留空自动）",
+                None,
+                None,
+                None,
+            ),
             // ---- 图像生成 ----
             // 走 OpenAI 兼容的 POST {base_url}/images/generations，所以 base_url
             // 换成任意兼容服务（官方 / 中转 / 硅基流动 / 智谱 / 火山方舟兼容端点）
             // 都成立。api_key 留空即"未配置"，工具会明确报缺哪个键，不会静默降级。
-            ("image.base_url", "https://api.openai.com/v1", "string", "图像生成服务地址（OpenAI 兼容，含 /v1）", None, None, None),
-            ("image.api_key", "", "string", "图像生成服务 API Key（留空则未启用）", None, None, None),
-            ("image.model", "gpt-image-1", "string", "图像生成模型名", None, None, None),
-            ("image.size", "1024x1024", "string", "默认出图尺寸（如 1024x1024 / 1792x1024）", None, None, None),
-            ("image.timeout_ms", "180000", "number", "出图请求超时（毫秒）", Some(10000.0), Some(600000.0), Some("ms")),
+            (
+                "image.base_url",
+                "https://api.openai.com/v1",
+                "string",
+                "图像生成服务地址（OpenAI 兼容，含 /v1）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "image.api_key",
+                "",
+                "string",
+                "图像生成服务 API Key（留空则未启用）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "image.model",
+                "gpt-image-1",
+                "string",
+                "图像生成模型名",
+                None,
+                None,
+                None,
+            ),
+            (
+                "image.size",
+                "1024x1024",
+                "string",
+                "默认出图尺寸（如 1024x1024 / 1792x1024）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "image.timeout_ms",
+                "180000",
+                "number",
+                "出图请求超时（毫秒）",
+                Some(10000.0),
+                Some(600000.0),
+                Some("ms"),
+            ),
             // ---- 视频生成 ----
             // 同样是 OpenAI 兼容的异步任务协议：POST {base_url}/videos 提交、
             // GET {base_url}/videos/{id} 查状态、GET .../content 取文件。
-            ("video.base_url", "https://api.openai.com/v1", "string", "视频生成服务地址（OpenAI 兼容，含 /v1）", None, None, None),
-            ("video.api_key", "", "string", "视频生成服务 API Key（留空则未启用）", None, None, None),
-            ("video.model", "sora-2", "string", "视频生成模型名", None, None, None),
-            ("video.size", "1280x720", "string", "默认视频分辨率", None, None, None),
-            ("video.duration_sec", "4", "number", "默认视频时长（秒）", Some(1.0), Some(60.0), Some("s")),
-            ("video.poll_timeout_ms", "600000", "number", "等待视频完成的最长时间（毫秒）", Some(30000.0), Some(3600000.0), Some("ms")),
+            (
+                "video.base_url",
+                "https://api.openai.com/v1",
+                "string",
+                "视频生成服务地址（OpenAI 兼容，含 /v1）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "video.api_key",
+                "",
+                "string",
+                "视频生成服务 API Key（留空则未启用）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "video.model",
+                "sora-2",
+                "string",
+                "视频生成模型名",
+                None,
+                None,
+                None,
+            ),
+            (
+                "video.size",
+                "1280x720",
+                "string",
+                "默认视频分辨率",
+                None,
+                None,
+                None,
+            ),
+            (
+                "video.duration_sec",
+                "4",
+                "number",
+                "默认视频时长（秒）",
+                Some(1.0),
+                Some(60.0),
+                Some("s"),
+            ),
+            (
+                "video.poll_timeout_ms",
+                "600000",
+                "number",
+                "等待视频完成的最长时间（毫秒）",
+                Some(30000.0),
+                Some(3600000.0),
+                Some("ms"),
+            ),
             // ---- 邮件发信（SMTP）----
             // 这几项此前只在 messaging.rs 里被读取，却从未写进默认配置表，
             // 结果是设置页根本看不到它们——用户没有任何地方能填发信账号。
             // 补齐后"发信 / 收信"两条链路的凭据都落在同一张表里，可统一切换。
-            ("mail.smtp_host", "", "string", "发件服务器地址（如 smtp.qq.com）", None, None, None),
-            ("mail.smtp_port", "587", "number", "发件服务器端口", Some(1.0), Some(65535.0), None),
-            ("mail.smtp_security", "starttls", "string", "发件加密方式（tls / starttls / none）", None, None, None),
-            ("mail.smtp_user", "", "string", "发件账号（通常是完整邮箱地址）", None, None, None),
-            ("mail.smtp_password", "", "string", "发件密码/授权码", None, None, None),
-            ("mail.from", "", "string", "发件人地址（多数服务商要求与账号一致）", None, None, None),
-            ("mail.from_name", "", "string", "发件人显示名（可留空）", None, None, None),
+            (
+                "mail.smtp_host",
+                "",
+                "string",
+                "发件服务器地址（如 smtp.qq.com）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "mail.smtp_port",
+                "587",
+                "number",
+                "发件服务器端口",
+                Some(1.0),
+                Some(65535.0),
+                None,
+            ),
+            (
+                "mail.smtp_security",
+                "starttls",
+                "string",
+                "发件加密方式（tls / starttls / none）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "mail.smtp_user",
+                "",
+                "string",
+                "发件账号（通常是完整邮箱地址）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "mail.smtp_password",
+                "",
+                "string",
+                "发件密码/授权码",
+                None,
+                None,
+                None,
+            ),
+            (
+                "mail.from",
+                "",
+                "string",
+                "发件人地址（多数服务商要求与账号一致）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "mail.from_name",
+                "",
+                "string",
+                "发件人显示名（可留空）",
+                None,
+                None,
+                None,
+            ),
             // ---- 邮件收件（IMAP）----
             // 发信走 mail.smtp_*，收信必须另配 IMAP。user / password 留空时
             // 自动复用 SMTP 那组（同一邮箱的授权码通常通用），减少一处重复填写。
-            ("mail.imap_host", "", "string", "收件服务器地址（如 imap.qq.com）", None, None, None),
-            ("mail.imap_port", "993", "number", "收件服务器端口", Some(1.0), Some(65535.0), None),
-            ("mail.imap_security", "tls", "string", "收件加密方式（tls / starttls / none）", None, None, None),
-            ("mail.imap_user", "", "string", "收件账号（留空复用 mail.smtp_user）", None, None, None),
-            ("mail.imap_password", "", "string", "收件密码/授权码（留空复用 mail.smtp_password）", None, None, None),
+            (
+                "mail.imap_host",
+                "",
+                "string",
+                "收件服务器地址（如 imap.qq.com）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "mail.imap_port",
+                "993",
+                "number",
+                "收件服务器端口",
+                Some(1.0),
+                Some(65535.0),
+                None,
+            ),
+            (
+                "mail.imap_security",
+                "tls",
+                "string",
+                "收件加密方式（tls / starttls / none）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "mail.imap_user",
+                "",
+                "string",
+                "收件账号（留空复用 mail.smtp_user）",
+                None,
+                None,
+                None,
+            ),
+            (
+                "mail.imap_password",
+                "",
+                "string",
+                "收件密码/授权码（留空复用 mail.smtp_password）",
+                None,
+                None,
+                None,
+            ),
         ];
 
         let mut stmt = self.conn.prepare(
@@ -403,7 +972,15 @@ impl Database {
         )?;
 
         for (key, value, value_type, description, min_value, max_value, unit) in defaults {
-            stmt.execute(params![key, value, value_type, description, min_value, max_value, unit])?;
+            stmt.execute(params![
+                key,
+                value,
+                value_type,
+                description,
+                min_value,
+                max_value,
+                unit
+            ])?;
         }
 
         Ok(())
@@ -535,7 +1112,7 @@ impl Database {
         }
 
         let mut stmt = self.conn.prepare(
-            "SELECT value_type, min_value, max_value, unit FROM settings WHERE key = ?1"
+            "SELECT value_type, min_value, max_value, unit FROM settings WHERE key = ?1",
         )?;
         let mut rows = stmt.query(params![key])?;
         if let Some(row) = rows.next()? {
@@ -547,9 +1124,9 @@ impl Database {
 
     /// 获取单个配置项
     pub fn get_setting(&self, key: &str) -> AppResult<Option<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT value FROM settings WHERE key = ?1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM settings WHERE key = ?1")?;
         let mut rows = stmt.query(params![key])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
@@ -577,7 +1154,12 @@ impl Database {
     // ============================================================
 
     /// 添加可信目录
-    pub fn add_allowed_directory(&self, path: &str, label: &str, access_level: &str) -> AppResult<i64> {
+    pub fn add_allowed_directory(
+        &self,
+        path: &str,
+        label: &str,
+        access_level: &str,
+    ) -> AppResult<i64> {
         self.conn.execute(
             "INSERT OR REPLACE INTO allowed_directories (path, label, access_level, is_default) VALUES (?1, ?2, ?3, 0)",
             params![path, label, access_level],
@@ -615,7 +1197,12 @@ impl Database {
     }
 
     /// 添加信任工具
-    pub fn add_trusted_tool(&self, tool_name: &str, path_pattern: Option<&str>, risk_level: &str) -> AppResult<()> {
+    pub fn add_trusted_tool(
+        &self,
+        tool_name: &str,
+        path_pattern: Option<&str>,
+        risk_level: &str,
+    ) -> AppResult<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO trusted_tools (tool_name, path_pattern, risk_level) VALUES (?1, ?2, ?3)",
             params![tool_name, path_pattern, risk_level],
@@ -624,7 +1211,11 @@ impl Database {
     }
 
     /// 删除信任工具
-    pub fn remove_trusted_tool(&self, tool_name: &str, path_pattern: Option<&str>) -> AppResult<()> {
+    pub fn remove_trusted_tool(
+        &self,
+        tool_name: &str,
+        path_pattern: Option<&str>,
+    ) -> AppResult<()> {
         self.conn.execute(
             "DELETE FROM trusted_tools WHERE tool_name = ?1 AND path_pattern IS ?2",
             params![tool_name, path_pattern],
@@ -692,7 +1283,10 @@ impl Database {
     ///
     /// 失败不应影响工具本身的执行结果——回执是记账，不是业务。
     /// 但调用方必须把失败打到日志里，别让"记账失败"静默消失。
-    pub fn insert_tool_receipt(&self, receipt: &crate::tools::receipt::ToolReceipt) -> AppResult<()> {
+    pub fn insert_tool_receipt(
+        &self,
+        receipt: &crate::tools::receipt::ToolReceipt,
+    ) -> AppResult<()> {
         self.conn.execute(
             "INSERT INTO tool_receipts (
                 receipt_id, session_id, run_id, tool_name, capability_id,
@@ -888,7 +1482,7 @@ impl Database {
     pub fn get_observations_by_task(&self, task_id: &str) -> AppResult<Vec<AgentObservation>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, task_id, step_id, source, tool_name, success, data, summary, timestamp
-             FROM agent_observations WHERE task_id = ?1 ORDER BY timestamp ASC"
+             FROM agent_observations WHERE task_id = ?1 ORDER BY timestamp ASC",
         )?;
 
         let rows = stmt.query_map(params![task_id], |row| {
@@ -904,7 +1498,8 @@ impl Database {
             };
 
             let data_str: String = row.get(6)?;
-            let data: serde_json::Value = serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null);
+            let data: serde_json::Value =
+                serde_json::from_str(&data_str).unwrap_or(serde_json::Value::Null);
 
             Ok(AgentObservation {
                 id: row.get(0)?,
@@ -961,7 +1556,9 @@ fn row_to_receipt(row: &rusqlite::Row<'_>) -> rusqlite::Result<crate::tools::rec
         risk_level: row.get(8)?,
         verification_strategy: row.get(9)?,
         verification_status: row.get(10)?,
-        missing_fields: row.get::<_, Option<String>>(11)?.unwrap_or_else(|| "[]".to_string()),
+        missing_fields: row
+            .get::<_, Option<String>>(11)?
+            .unwrap_or_else(|| "[]".to_string()),
         idempotency_key: row.get(12)?,
         request_digest: row.get(13)?,
         result_digest: row.get(14)?,
@@ -974,7 +1571,6 @@ fn row_to_receipt(row: &rusqlite::Row<'_>) -> rusqlite::Result<crate::tools::rec
     })
 }
 
-
 #[cfg(test)]
 mod settings_tests {
     use super::*;
@@ -982,11 +1578,8 @@ mod settings_tests {
 
     /// 建一个临时库并跑完整初始化，返回 (Database, 临时目录)
     fn fresh_db(tag: &str) -> (Database, PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "pcg-settings-test-{}-{}",
-            tag,
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pcg-settings-test-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("创建临时目录");
         let db = Database::new(&dir.join("t.db")).expect("打开数据库");
@@ -1032,6 +1625,12 @@ mod settings_tests {
             "browser.cdp_port",
             "startup.auto_launch",
             "ui.theme",
+            "mini.skin",
+            "mini.size",
+            "mini.opacity",
+            "mini.always_on_top",
+            "mini.show_status",
+            "mini.default_expanded",
         ] {
             assert!(
                 items.iter().any(|s| s.key == expected),
@@ -1150,10 +1749,7 @@ mod settings_tests {
             )
             .expect("塞入幽灵项");
 
-        assert!(db
-            .get_setting("ui.language")
-            .expect("读取")
-            .is_some());
+        assert!(db.get_setting("ui.language").expect("读取").is_some());
 
         db.init_schema().expect("再次初始化应清理幽灵项");
 
@@ -1248,11 +1844,8 @@ mod receipt_tests {
     use std::path::PathBuf;
 
     fn fresh_db(tag: &str) -> (Database, PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "pcg-receipt-test-{}-{}",
-            tag,
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pcg-receipt-test-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("创建临时目录");
         let db = Database::new(&dir.join("t.db")).expect("打开数据库");
@@ -1264,7 +1857,13 @@ mod receipt_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    fn receipt(id: &str, run: Option<&str>, tool: &str, status: &str, evidence: Option<&str>) -> ToolReceipt {
+    fn receipt(
+        id: &str,
+        run: Option<&str>,
+        tool: &str,
+        status: &str,
+        evidence: Option<&str>,
+    ) -> ToolReceipt {
         ToolReceipt {
             receipt_id: id.to_string(),
             session_id: "sess-1".to_string(),
@@ -1298,14 +1897,28 @@ mod receipt_tests {
     #[test]
     fn receipts_are_scoped_by_run_and_read_back_intact() {
         let (db, dir) = fresh_db("by-run");
-        db.insert_tool_receipt(&receipt("r1", Some("run-a"), "write_file", "VERIFIED", Some("回读一致")))
-            .expect("写入 r1");
+        db.insert_tool_receipt(&receipt(
+            "r1",
+            Some("run-a"),
+            "write_file",
+            "VERIFIED",
+            Some("回读一致"),
+        ))
+        .expect("写入 r1");
         db.insert_tool_receipt(&receipt("r2", Some("run-b"), "write_file", "FAILED", None))
             .expect("写入 r2");
-        db.insert_tool_receipt(&receipt("r3", Some("run-a"), "start_process", "CONTRADICTED", Some("进程未在运行")))
-            .expect("写入 r3");
+        db.insert_tool_receipt(&receipt(
+            "r3",
+            Some("run-a"),
+            "start_process",
+            "CONTRADICTED",
+            Some("进程未在运行"),
+        ))
+        .expect("写入 r3");
 
-        let rows = db.list_tool_receipts_by_run("run-a", 100).expect("按 run 查询");
+        let rows = db
+            .list_tool_receipts_by_run("run-a", 100)
+            .expect("按 run 查询");
         assert_eq!(rows.len(), 2, "只应取回 run-a 的两条回执");
         assert_eq!(rows[0].receipt_id, "r1");
         assert_eq!(rows[1].receipt_id, "r3", "必须按插入顺序，而不是倒序");
@@ -1320,9 +1933,18 @@ mod receipt_tests {
     #[test]
     fn unknown_run_returns_nothing() {
         let (db, dir) = fresh_db("missing-run");
-        db.insert_tool_receipt(&receipt("r1", Some("run-a"), "write_file", "VERIFIED", None))
-            .expect("写入 r1");
-        assert!(db.list_tool_receipts_by_run("run-zzz", 100).expect("查询").is_empty());
+        db.insert_tool_receipt(&receipt(
+            "r1",
+            Some("run-a"),
+            "write_file",
+            "VERIFIED",
+            None,
+        ))
+        .expect("写入 r1");
+        assert!(db
+            .list_tool_receipts_by_run("run-zzz", 100)
+            .expect("查询")
+            .is_empty());
         cleanup(&dir);
     }
 }

@@ -4,96 +4,44 @@
 //   { type: 'text', text }
 //   { type: 'tool_call', call }
 //   { type: 'done', reason, usage }
-//   { type: 'error', message }
+//   { type: 'error', message }（由 router 兜底，后端正常情况下不产出，只抛异常）
 //
 // 每个后端暴露 `stream(model, payload) -> AsyncGenerator<Chunk>`，
 // payload 为 OpenAI 兼容消息体，Ollama 后端在内部做字段转换。
-// 协议差异被隔离在这里，上层（router / agent）只见统一接口。
+// 协议差异被隔离在本文件，上层（router / http / socket）只见统一接口。
 
-export const DEFAULT_TIMEOUT_MS = 60_000;
+export { TokenUsage, normalizeUsage } from './usage.js';
+export { SseDecoder } from './sse.js';
+export { DEFAULT_TIMEOUT_MS } from '../config.js';
 
-/**
- * 统一用量。token 计量只用于观测，不该影响生成——拿不到就按 0。
- */
-export class TokenUsage {
-  constructor({ promptTokens = 0, completionTokens = 0, promptNanos = 0, evalNanos = 0 }) {
-    this.promptTokens = promptTokens;
-    this.completionTokens = completionTokens;
-    this.promptNanos = promptNanos;
-    this.evalNanos = evalNanos;
+import { TokenUsage, normalizeUsage } from './usage.js';
+import { SseDecoder } from './sse.js';
+import { DEFAULT_TIMEOUT_MS } from '../config.js';
+
+/** 把外部取消信号与超时信号合并成一个 fetch 可用的 signal。 */
+function combineSignals(...signals) {
+  const list = signals.filter(Boolean);
+  if (list.length === 0) return undefined;
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any(list);
+
+  // Node 18 兜底：AbortSignal.any 不可用时手动桥接。
+  const controller = new AbortController();
+  if (list.some((s) => s.aborted)) {
+    controller.abort();
+    return controller.signal;
   }
-
-  static zero() {
-    return new TokenUsage({});
+  const onAbort = (event) => controller.abort(event.target.reason);
+  for (const signal of list) {
+    signal.addEventListener('abort', onAbort, { once: true });
   }
-
-  get isMeasured() {
-    return this.promptTokens > 0 || this.completionTokens > 0;
-  }
-
-  merge(other) {
-    this.promptTokens += other.promptTokens;
-    this.completionTokens += other.completionTokens;
-    this.promptNanos += other.promptNanos;
-    this.evalNanos += other.evalNanos;
-    return this;
-  }
-
-  logLine() {
-    const promptSecs = this.promptNanos / 1e9;
-    const evalSecs = this.evalNanos / 1e9;
-    const rate = evalSecs > 0.01 ? (this.completionTokens / evalSecs).toFixed(1) : '—';
-    return `提示词 ${this.promptTokens} token（${promptSecs.toFixed(1)}s）｜输出 ${this.completionTokens} token（${evalSecs.toFixed(1)}s，${rate} tok/s）`;
-  }
+  return controller.signal;
 }
 
-/**
- * 从 OpenAI 兼容 usage 对象归一化。
- * 兼容 Ollama 的 prompt_eval_count/eval_count 与 OpenAI 的 prompt_tokens/completion_tokens。
- */
-export function normalizeUsage(raw) {
-  if (!raw || typeof raw !== 'object') return TokenUsage.zero();
-  return new TokenUsage({
-    promptTokens: Number(raw.prompt_tokens ?? raw.promptTokens ?? raw.prompt_eval_count ?? 0),
-    completionTokens: Number(raw.completion_tokens ?? raw.completionTokens ?? raw.eval_count ?? 0),
-    promptNanos: Number(raw.prompt_tokens_details?.duration_ns ?? raw.prompt_eval_duration ?? 0),
-    evalNanos: Number(raw.completion_tokens_details?.duration_ns ?? raw.eval_duration ?? 0),
-  });
-}
-
-/**
- * 解析 SSE 字节流为 JSON 行。
- * 处理跨 chunk 的不完整行与 `data: [DONE]` 终止标记。
- */
-export class SseDecoder {
-  #pending = '';
-
-  /**
-   * @param {string} text 增量文本
-   * @returns {Array<{json: object} | {done: true}>}
-   */
-  push(text) {
-    this.#pending += text;
-    const out = [];
-    while (true) {
-      const nl = this.#pending.indexOf('\n');
-      if (nl < 0) break;
-      const line = this.#pending.slice(0, nl).trim();
-      this.#pending = this.#pending.slice(nl + 1);
-      if (!line) continue;
-      if (line === 'data: [DONE]') {
-        out.push({ done: true });
-        continue;
-      }
-      const json = line.startsWith('data: ') ? line.slice(6) : line;
-      try {
-        out.push({ json: JSON.parse(json) });
-      } catch {
-        // 心跳包 / 不完整行，跳过。
-      }
-    }
-    return out;
-  }
+/** 把取消原因翻译成可读错误（区分超时与主动取消）。 */
+function abortError(timeoutSignal, cancelSignal, fallback) {
+  if (cancelSignal?.aborted) return new Error('请求已取消');
+  if (timeoutSignal?.aborted) return new Error(fallback.timeoutMessage);
+  return fallback.error;
 }
 
 /**
@@ -112,7 +60,7 @@ export class OpenAiCompatBackend {
 
   /**
    * @param {string} model
-   * @param {object} payload { messages, tools?, temperature, extraOptions? }
+   * @param {object} payload { messages, tools?, temperature?, extraOptions?, signal? }
    */
   async *stream(model, payload) {
     const body = {
@@ -128,12 +76,23 @@ export class OpenAiCompatBackend {
     const headers = { 'Content-Type': 'application/json' };
     if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`;
 
-    const resp = await fetch(this.endpoint(), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
+    const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
+    const signal = combineSignals(payload.signal, timeoutSignal);
+
+    let resp;
+    try {
+      resp = await fetch(this.endpoint(), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (err) {
+      throw abortError(timeoutSignal, payload.signal, {
+        error: err,
+        timeoutMessage: `provider ${this.baseUrl} 连接超时（${this.timeoutMs}ms）`,
+      });
+    }
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
@@ -144,67 +103,123 @@ export class OpenAiCompatBackend {
     const reader = resp.body.getReader();
     const textDecoder = new TextDecoder();
     let usage = TokenUsage.zero();
-    const pendingCalls = new Map(); // index -> { id, name, args }
+    let finalReason = null;
+    let serverDone = false;
+    // index -> { id, name, args }，finish_reason 时聚合输出。
+    const pendingCalls = new Map();
 
-    const flushCalls = async function* () {
-      for (const [, c] of pendingCalls) {
-        if (c.name) {
-          yield { type: 'tool_call', call: { id: c.id, function: { name: c.name, arguments: c.args } } };
+    const drainCalls = () => {
+      const calls = [];
+      for (const index of [...pendingCalls.keys()].sort((a, b) => a - b)) {
+        const call = pendingCalls.get(index);
+        if (call.name) {
+          calls.push({
+            type: 'tool_call',
+            call: {
+              id: call.id ?? `call_${index}`,
+              type: 'function',
+              function: { name: call.name, arguments: call.args },
+            },
+          });
         }
       }
       pendingCalls.clear();
+      return calls;
     };
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      for (const ev of decoder.push(textDecoder.decode(value, { stream: true }))) {
-        if (ev.done) continue;
-        const chunk = ev.json;
-        if (chunk.usage) usage = normalizeUsage(chunk.usage);
-        const choice = chunk.choices?.[0];
-        if (!choice) continue;
-        const delta = choice.delta ?? {};
-        if (delta.tool_calls?.length) {
-          for (const tc of delta.tool_calls) {
-            const idx = tc.index ?? 0;
-            if (!pendingCalls.has(idx)) pendingCalls.set(idx, { id: tc.id, name: '', args: '' });
-            const cur = pendingCalls.get(idx);
-            if (tc.id) cur.id = tc.id;
-            if (tc.function?.name) cur.name = tc.function.name;
-            if (tc.function?.arguments) cur.args += tc.function.arguments;
+    try {
+      while (!serverDone) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        if (payload.signal?.aborted) break;
+
+        for (const event of decoder.push(textDecoder.decode(chunk.value, { stream: true }))) {
+          if (event.done) {
+            serverDone = true;
+            break;
+          }
+          const data = event.json;
+          if (data.usage) usage = normalizeUsage(data.usage);
+          // 部分服务在出错时仍以 200 + SSE 返回错误体。
+          if (data.error) {
+            throw new Error(data.error.message ?? JSON.stringify(data.error));
+          }
+
+          const choice = data.choices?.[0];
+          if (!choice) continue;
+          const delta = choice.delta ?? {};
+
+          if (delta.tool_calls?.length) {
+            for (const tc of delta.tool_calls) {
+              const index = tc.index ?? 0;
+              if (!pendingCalls.has(index)) {
+                pendingCalls.set(index, { id: tc.id ?? null, name: '', args: '' });
+              }
+              const current = pendingCalls.get(index);
+              if (tc.id) current.id = tc.id;
+              if (tc.function?.name) current.name += tc.function.name;
+              if (tc.function?.arguments) current.args += tc.function.arguments;
+            }
+          }
+
+          if (delta.content) yield { type: 'text', text: delta.content };
+
+          if (choice.finish_reason) {
+            finalReason = choice.finish_reason;
+            // 工具调用在 finish_reason 即确定，立刻聚合输出；
+            // 之后可能还有一个只带 usage 的空 choices chunk。
+            for (const call of drainCalls()) yield call;
           }
         }
-        if (delta.content) yield { type: 'text', text: delta.content };
-        if (choice.finish_reason) {
-          yield* flushCalls();
-          yield { type: 'done', reason: choice.finish_reason, usage };
-        }
+      }
+
+      for (const event of decoder.flush()) {
+        if (event.done) continue;
+        if (event.json.usage) usage = normalizeUsage(event.json.usage);
+      }
+
+      // 兜底：服务端没发 finish_reason 也没发 [DONE]，把残片吐出来。
+      for (const call of drainCalls()) yield call;
+      yield { type: 'done', reason: finalReason ?? 'stop', usage };
+    } catch (err) {
+      throw abortError(timeoutSignal, payload.signal, {
+        error: err,
+        timeoutMessage: `provider ${this.baseUrl} 生成超时（${this.timeoutMs}ms）`,
+      });
+    } finally {
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
       }
     }
-    yield* flushCalls();
-    yield { type: 'done', reason: 'stop', usage };
   }
 
   /** 健康探针：列模型接口，任何 2xx 即视为可达。 */
-  async healthCheck() {
-    const headers = this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {};
+  async healthCheck({ signal } = {}) {
     const resp = await fetch(`${this.baseUrl}/models`, {
-      headers,
-      signal: AbortSignal.timeout(5000),
-    });
-    return { ok: resp.ok, status: resp.status };
+      headers: this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {},
+      signal: combineSignals(signal, AbortSignal.timeout(5000)),
+    }).catch((err) => ({ ok: false, status: 0, err }));
+    return { ok: Boolean(resp.ok), status: resp.status ?? 0 };
   }
 }
 
 /**
  * Ollama 后端。baseUrl 形如 `http://localhost:11434`，走原生 `/api/chat`。
- * 消息体已是 OpenAI 兼容格式，Ollama 原生接口也接受该格式。
+ * 消息体是 OpenAI 兼容格式，Ollama 原生接口也接受该格式。
  */
 export class OllamaBackend {
-  constructor({ baseUrl, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+  constructor({
+    baseUrl,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    keepAlive = '30m',
+    think = false,
+  } = {}) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.timeoutMs = timeoutMs;
+    this.keepAlive = keepAlive;
+    this.think = think;
   }
 
   endpoint() {
@@ -216,18 +231,32 @@ export class OllamaBackend {
       model,
       messages: payload.messages,
       stream: true,
-      keep_alive: '30m',
-      think: false,
-      options: { temperature: payload.temperature ?? 0.7, ...(payload.extraOptions ?? {}) },
+      keep_alive: payload.keepAlive ?? this.keepAlive,
+      think: payload.think ?? this.think ?? false,
+      options: {
+        temperature: payload.temperature ?? 0.7,
+        ...(payload.extraOptions ?? {}),
+      },
       ...(payload.tools?.length ? { tools: payload.tools } : {}),
     };
 
-    const resp = await fetch(this.endpoint(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
+    const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
+    const signal = combineSignals(payload.signal, timeoutSignal);
+
+    let resp;
+    try {
+      resp = await fetch(this.endpoint(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (err) {
+      throw abortError(timeoutSignal, payload.signal, {
+        error: err,
+        timeoutMessage: `ollama ${this.baseUrl} 连接超时（${this.timeoutMs}ms）`,
+      });
+    }
 
     if (!resp.ok) {
       const text = await resp.text().catch(() => '');
@@ -237,60 +266,95 @@ export class OllamaBackend {
     const decoder = new SseDecoder();
     const reader = resp.body.getReader();
     const textDecoder = new TextDecoder();
-    let lastUsage = TokenUsage.zero();
-    let lastReason = 'stop';
+    let usage = TokenUsage.zero();
+    let reason = 'stop';
+    let doneEmitted = false;
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      for (const ev of decoder.push(textDecoder.decode(value, { stream: true }))) {
-        if (ev.done) continue;
-        const chunk = ev.json;
-        if (chunk.done_reason) lastReason = chunk.done_reason;
-        if (chunk.done) {
-          lastUsage = normalizeUsage({
-            prompt_eval_count: chunk.prompt_eval_count,
-            eval_count: chunk.eval_count,
-            prompt_eval_duration: chunk.prompt_eval_duration,
-            eval_duration: chunk.eval_duration,
-          });
-          continue;
-        }
-        const msg = chunk.message;
-        if (!msg) continue;
-        if (msg.tool_calls?.length) {
-          for (const tc of msg.tool_calls) {
-            const fn = tc.function ?? {};
-            // Ollama 原生返回对象型 arguments，OpenAI 兼容语义要求字符串，统一 stringify。
-            let args = fn.arguments ?? '';
-            if (typeof args !== 'string') args = JSON.stringify(args);
-            yield {
-              type: 'tool_call',
-              call: { id: tc.id, function: { name: fn.name ?? '', arguments: args } },
-            };
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        if (payload.signal?.aborted) break;
+
+        for (const event of decoder.push(textDecoder.decode(chunk.value, { stream: true }))) {
+          if (event.done) continue;
+          const data = event.json;
+          if (data.error) {
+            throw new Error(
+              typeof data.error === 'string' ? data.error : JSON.stringify(data.error),
+            );
           }
+          if (data.done_reason) reason = data.done_reason;
+          if (data.done) {
+            usage = normalizeUsage({
+              prompt_eval_count: data.prompt_eval_count,
+              eval_count: data.eval_count,
+              prompt_eval_duration: data.prompt_eval_duration,
+              eval_duration: data.eval_duration,
+            });
+            doneEmitted = true;
+            yield { type: 'done', reason, usage };
+            break;
+          }
+
+          const message = data.message;
+          if (!message) continue;
+
+          if (message.tool_calls?.length) {
+            for (const tc of message.tool_calls) {
+              const fn = tc.function ?? {};
+              // Ollama 原生返回对象型 arguments，OpenAI 语义要求字符串，统一 stringify。
+              let args = fn.arguments ?? '';
+              if (typeof args !== 'string') args = JSON.stringify(args);
+              yield {
+                type: 'tool_call',
+                call: {
+                  id: tc.id ?? null,
+                  type: 'function',
+                  function: { name: fn.name ?? '', arguments: args },
+                },
+              };
+            }
+          }
+
+          if (message.content) yield { type: 'text', text: message.content };
         }
-        if (msg.content) yield { type: 'text', text: msg.content };
+      }
+
+      // 兜底：连接结束但没收到 done 标记。
+      if (!doneEmitted) yield { type: 'done', reason, usage };
+    } catch (err) {
+      throw abortError(timeoutSignal, payload.signal, {
+        error: err,
+        timeoutMessage: `ollama ${this.baseUrl} 生成超时（${this.timeoutMs}ms）`,
+      });
+    } finally {
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
       }
     }
-    yield { type: 'done', reason: lastReason, usage: lastUsage };
   }
 
-  async healthCheck() {
+  async healthCheck({ signal } = {}) {
     const resp = await fetch(`${this.baseUrl}/api/tags`, {
-      signal: AbortSignal.timeout(5000),
-    });
-    return { ok: resp.ok, status: resp.status };
+      signal: combineSignals(signal, AbortSignal.timeout(5000)),
+    }).catch((err) => ({ ok: false, status: 0, err }));
+    return { ok: Boolean(resp.ok), status: resp.status ?? 0 };
   }
 }
 
-/**
- * 按 provider 配置构造对应后端。
- */
+/** 按 provider 配置构造对应后端。 */
 export function backendFor(config) {
   const protocol = config.protocol ?? 'openai';
   if (protocol === 'ollama') {
-    return new OllamaBackend({ baseUrl: config.baseUrl, timeoutMs: config.timeoutMs });
+    return new OllamaBackend({
+      baseUrl: config.baseUrl,
+      timeoutMs: config.timeoutMs,
+      keepAlive: config.keepAlive,
+      think: config.think,
+    });
   }
   return new OpenAiCompatBackend({
     baseUrl: config.baseUrl,

@@ -11,11 +11,11 @@
 //! - 3 个内置示例技能：天气查询、翻译、文件整理
 
 use std::collections::HashMap;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, OnceLock};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 
 pub mod marketplace;
 
@@ -102,9 +102,15 @@ pub struct SkillDefinition {
     pub skill_dir: PathBuf,
 }
 
-fn default_version() -> String { "1.0.0".to_string() }
-fn default_skill_type() -> SkillType { SkillType::Local }
-fn default_true() -> bool { true }
+fn default_version() -> String {
+    "1.0.0".to_string()
+}
+fn default_skill_type() -> SkillType {
+    SkillType::Local
+}
+fn default_true() -> bool {
+    true
+}
 
 // ============================================================
 // 技能加载器
@@ -163,7 +169,8 @@ impl SkillLoader {
         let skill_json = dir.join("skill.json");
         if !skill_json.exists() {
             return Err(AppError::InvalidArgument(format!(
-                "技能目录缺少 skill.json: {:?}", dir
+                "技能目录缺少 skill.json: {:?}",
+                dir
             )));
         }
 
@@ -179,6 +186,46 @@ impl SkillLoader {
         }
         if skill.name.is_empty() {
             return Err(AppError::InvalidArgument("技能 name 不能为空".to_string()));
+        }
+        if skill.id.len() > 64
+            || !skill
+                .id
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+        {
+            return Err(AppError::InvalidArgument(
+                "技能 id 只能包含字母、数字、点、下划线和短横线，且不能超过 64 个字符".to_string(),
+            ));
+        }
+        if skill.entry_point.trim().is_empty() {
+            return Err(AppError::InvalidArgument(
+                "本地技能必须声明 entry_point".to_string(),
+            ));
+        }
+        let entry = dir.join(&skill.entry_point);
+        let canonical_dir = dir
+            .canonicalize()
+            .map_err(|e| AppError::Internal(format!("读取技能目录失败: {}", e)))?;
+        let canonical_entry = entry.canonicalize().map_err(|_| {
+            AppError::InvalidArgument(format!("技能入口不存在: {}", skill.entry_point))
+        })?;
+        if !canonical_entry.starts_with(&canonical_dir) || !canonical_entry.is_file() {
+            return Err(AppError::InvalidArgument(
+                "技能入口必须是技能目录内的普通文件".to_string(),
+            ));
+        }
+        let extension = canonical_entry
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        if !matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "ps1" | "py" | "js" | "mjs" | "bat" | "cmd"
+        ) {
+            return Err(AppError::InvalidArgument(format!(
+                "不支持的技能入口类型 .{}；当前支持 ps1 / py / js / mjs / bat / cmd",
+                extension
+            )));
         }
 
         skill.skill_dir = dir.to_path_buf();
@@ -198,16 +245,34 @@ impl SkillLoader {
 
         if target.exists() {
             return Err(AppError::InvalidArgument(format!(
-                "技能 {} 已存在", skill.id
+                "技能 {} 已存在",
+                skill.id
             )));
         }
 
         // 复制目录
         copy_dir_all(source, &target)?;
 
-        let mut installed = Self::load_from_dir(&target)?;
+        let mut installed = match Self::load_from_dir(&target) {
+            Ok(skill) => skill,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&target);
+                return Err(error);
+            }
+        };
         installed.installed_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        Self::persist_manifest(&installed)?;
         Ok(installed)
+    }
+
+    fn persist_manifest(skill: &SkillDefinition) -> AppResult<()> {
+        if skill.skill_dir.as_os_str().is_empty() {
+            return Ok(());
+        }
+        let manifest = serde_json::to_string_pretty(skill)
+            .map_err(|e| AppError::Internal(format!("序列化技能清单失败: {}", e)))?;
+        std::fs::write(skill.skill_dir.join("skill.json"), manifest)
+            .map_err(|e| AppError::Internal(format!("保存技能清单失败: {}", e)))
     }
 
     /// 卸载技能
@@ -237,6 +302,7 @@ impl SkillLoader {
 
         let mut installed = Self::load_from_dir(&target)?;
         installed.installed_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        Self::persist_manifest(&installed)?;
         Ok(installed)
     }
 }
@@ -317,16 +383,29 @@ impl SkillExecutor {
 
         // 根据扩展名选择执行方式
         let result = timeout(Duration::from_secs(30), async move {
-            let ext = script_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let ext = script_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
             let output = match ext {
                 "ps1" => Command::new("powershell")
-                    .arg("-NoProfile").arg("-NonInteractive").arg("-WindowStyle").arg("Hidden")
-                    .arg("-ExecutionPolicy").arg("Bypass")
-                    .arg("-File").arg(&script_path)
+                    .arg("-NoProfile")
+                    .arg("-NonInteractive")
+                    .arg("-WindowStyle")
+                    .arg("Hidden")
+                    .arg("-ExecutionPolicy")
+                    .arg("Bypass")
+                    .arg("-File")
+                    .arg(&script_path)
                     .args(&args_vec)
                     .creation_flags(CREATE_NO_WINDOW)
                     .output(),
                 "py" => Command::new("python")
+                    .arg(&script_path)
+                    .args(&args_vec)
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output(),
+                "js" | "mjs" => Command::new("node")
                     .arg(&script_path)
                     .args(&args_vec)
                     .creation_flags(CREATE_NO_WINDOW)
@@ -348,12 +427,16 @@ impl SkillExecutor {
                     if o.status.success() {
                         Ok(stdout)
                     } else {
-                        Err(format!("脚本执行失败: {}", if stderr.is_empty() { stdout } else { stderr }))
+                        Err(format!(
+                            "脚本执行失败: {}",
+                            if stderr.is_empty() { stdout } else { stderr }
+                        ))
                     }
                 }
                 Err(e) => Err(format!("启动脚本失败: {}", e)),
             }
-        }).await;
+        })
+        .await;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -412,7 +495,11 @@ fn build_script_args(args: &serde_json::Value) -> Vec<String> {
 // ============================================================
 
 /// 内置技能执行函数类型
-type BuiltInFn = fn(&serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<serde_json::Value>> + Send>>;
+type BuiltInFn = fn(
+    &serde_json::Value,
+) -> std::pin::Pin<
+    Box<dyn std::future::Future<Output = AppResult<serde_json::Value>> + Send>,
+>;
 
 /// 内置技能注册表
 struct BuiltInSkill {
@@ -512,8 +599,14 @@ fn builtin_skills() -> Vec<BuiltInSkill> {
 }
 
 // --- 天气查询 ---
-fn weather_handler(args: &serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<serde_json::Value>> + Send>> {
-    let city = args.get("city").and_then(|v| v.as_str()).unwrap_or("").to_string();
+fn weather_handler(
+    args: &serde_json::Value,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<serde_json::Value>> + Send>> {
+    let city = args
+        .get("city")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     Box::pin(async move {
         if city.is_empty() {
             return Err(AppError::InvalidArgument("city 参数必填".to_string()));
@@ -525,9 +618,14 @@ fn weather_handler(args: &serde_json::Value) -> std::pin::Pin<Box<dyn std::futur
             urlencoding::encode(&city)
         );
         let client = reqwest::Client::new();
-        let geo_resp = client.get(&geo_url).send().await
+        let geo_resp = client
+            .get(&geo_url)
+            .send()
+            .await
             .map_err(|e| AppError::Network(e))?;
-        let geo_json: serde_json::Value = geo_resp.json().await
+        let geo_json: serde_json::Value = geo_resp
+            .json()
+            .await
             .map_err(|e| AppError::Internal(format!("地理编码解析失败: {}", e)))?;
 
         let results = geo_json.get("results").and_then(|v| v.as_array());
@@ -535,7 +633,10 @@ fn weather_handler(args: &serde_json::Value) -> std::pin::Pin<Box<dyn std::futur
             Some(r) => (
                 r.get("latitude").and_then(|v| v.as_f64()).unwrap_or(39.9),
                 r.get("longitude").and_then(|v| v.as_f64()).unwrap_or(116.4),
-                r.get("name").and_then(|v| v.as_str()).unwrap_or(&city).to_string(),
+                r.get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&city)
+                    .to_string(),
             ),
             None => (39.9, 116.4, city.clone()),
         };
@@ -545,16 +646,35 @@ fn weather_handler(args: &serde_json::Value) -> std::pin::Pin<Box<dyn std::futur
             "https://api.open-meteo.com/v1/forecast?latitude={}&longitude={}&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&timezone=auto",
             lat, lon
         );
-        let weather_resp = client.get(&weather_url).send().await
+        let weather_resp = client
+            .get(&weather_url)
+            .send()
+            .await
             .map_err(|e| AppError::Network(e))?;
-        let weather_json: serde_json::Value = weather_resp.json().await
+        let weather_json: serde_json::Value = weather_resp
+            .json()
+            .await
             .map_err(|e| AppError::Internal(format!("天气数据解析失败: {}", e)))?;
 
-        let current = weather_json.get("current").ok_or_else(|| AppError::Internal("天气数据为空".to_string()))?;
-        let temp = current.get("temperature_2m").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let humidity = current.get("relative_humidity_2m").and_then(|v| v.as_i64()).unwrap_or(0);
-        let wind = current.get("wind_speed_10m").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let code = current.get("weather_code").and_then(|v| v.as_i64()).unwrap_or(0);
+        let current = weather_json
+            .get("current")
+            .ok_or_else(|| AppError::Internal("天气数据为空".to_string()))?;
+        let temp = current
+            .get("temperature_2m")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let humidity = current
+            .get("relative_humidity_2m")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let wind = current
+            .get("wind_speed_10m")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
+        let code = current
+            .get("weather_code")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
 
         let weather_desc = weather_code_to_text(code);
 
@@ -586,9 +706,19 @@ fn weather_code_to_text(code: i64) -> &'static str {
 }
 
 // --- 翻译 ---
-fn translate_handler(args: &serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<serde_json::Value>> + Send>> {
-    let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let target = args.get("target_lang").and_then(|v| v.as_str()).unwrap_or("en").to_string();
+fn translate_handler(
+    args: &serde_json::Value,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<serde_json::Value>> + Send>> {
+    let text = args
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let target = args
+        .get("target_lang")
+        .and_then(|v| v.as_str())
+        .unwrap_or("en")
+        .to_string();
     Box::pin(async move {
         if text.is_empty() {
             return Err(AppError::InvalidArgument("text 参数必填".to_string()));
@@ -604,9 +734,14 @@ fn translate_handler(args: &serde_json::Value) -> std::pin::Pin<Box<dyn std::fut
         );
 
         let client = reqwest::Client::new();
-        let resp = client.get(&url).send().await
+        let resp = client
+            .get(&url)
+            .send()
+            .await
             .map_err(|e| AppError::Network(e))?;
-        let json: serde_json::Value = resp.json().await
+        let json: serde_json::Value = resp
+            .json()
+            .await
             .map_err(|e| AppError::Internal(format!("翻译响应解析失败: {}", e)))?;
 
         let translated = json
@@ -629,8 +764,14 @@ fn translate_handler(args: &serde_json::Value) -> std::pin::Pin<Box<dyn std::fut
 }
 
 // --- 文件整理 ---
-fn file_organizer_handler(args: &serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<serde_json::Value>> + Send>> {
-    let directory = args.get("directory").and_then(|v| v.as_str()).unwrap_or("").to_string();
+fn file_organizer_handler(
+    args: &serde_json::Value,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<serde_json::Value>> + Send>> {
+    let directory = args
+        .get("directory")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     Box::pin(async move {
         if directory.is_empty() {
             return Err(AppError::InvalidArgument("directory 参数必填".to_string()));
@@ -638,19 +779,53 @@ fn file_organizer_handler(args: &serde_json::Value) -> std::pin::Pin<Box<dyn std
 
         let dir = Path::new(&directory);
         if !dir.exists() || !dir.is_dir() {
-            return Err(AppError::InvalidArgument(format!("目录不存在: {}", directory)));
+            return Err(AppError::InvalidArgument(format!(
+                "目录不存在: {}",
+                directory
+            )));
         }
 
         // 分类映射
         let categories: HashMap<&str, &[&str]> = [
-            ("图片", &["jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico", "tiff"] as &[&str]),
-            ("文档", &["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "rtf", "odt", "csv"] as &[&str]),
-            ("视频", &["mp4", "avi", "mkv", "mov", "wmv", "flv", "webm", "m4v"] as &[&str]),
-            ("音频", &["mp3", "wav", "flac", "aac", "ogg", "wma", "m4a"] as &[&str]),
-            ("压缩包", &["zip", "rar", "7z", "tar", "gz", "bz2", "xz"] as &[&str]),
-            ("代码", &["rs", "py", "js", "ts", "java", "c", "cpp", "h", "go", "rb", "php", "html", "css", "json", "xml", "yaml", "yml", "sh", "bat", "ps1"] as &[&str]),
-            ("可执行", &["exe", "msi", "app", "dmg", "deb", "rpm"] as &[&str]),
-        ].into_iter().collect();
+            (
+                "图片",
+                &[
+                    "jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico", "tiff",
+                ] as &[&str],
+            ),
+            (
+                "文档",
+                &[
+                    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "rtf", "odt",
+                    "csv",
+                ] as &[&str],
+            ),
+            (
+                "视频",
+                &["mp4", "avi", "mkv", "mov", "wmv", "flv", "webm", "m4v"] as &[&str],
+            ),
+            (
+                "音频",
+                &["mp3", "wav", "flac", "aac", "ogg", "wma", "m4a"] as &[&str],
+            ),
+            (
+                "压缩包",
+                &["zip", "rar", "7z", "tar", "gz", "bz2", "xz"] as &[&str],
+            ),
+            (
+                "代码",
+                &[
+                    "rs", "py", "js", "ts", "java", "c", "cpp", "h", "go", "rb", "php", "html",
+                    "css", "json", "xml", "yaml", "yml", "sh", "bat", "ps1",
+                ] as &[&str],
+            ),
+            (
+                "可执行",
+                &["exe", "msi", "app", "dmg", "deb", "rpm"] as &[&str],
+            ),
+        ]
+        .into_iter()
+        .collect();
 
         let mut moved: HashMap<String, Vec<String>> = HashMap::new();
         let mut count = 0u32;
@@ -659,13 +834,15 @@ fn file_organizer_handler(args: &serde_json::Value) -> std::pin::Pin<Box<dyn std
             let entry = entry?;
             let path = entry.path();
             if path.is_file() {
-                let ext = path.extension()
+                let ext = path
+                    .extension()
                     .and_then(|e| e.to_str())
                     .unwrap_or("")
                     .to_lowercase();
 
                 // 找到分类
-                let category = categories.iter()
+                let category = categories
+                    .iter()
                     .find(|(_, exts)| exts.contains(&ext.as_str()))
                     .map(|(cat, _)| *cat)
                     .unwrap_or("其他");
@@ -687,7 +864,8 @@ fn file_organizer_handler(args: &serde_json::Value) -> std::pin::Pin<Box<dyn std
 
                 match std::fs::rename(&path, &final_target) {
                     Ok(_) => {
-                        moved.entry(category.to_string())
+                        moved
+                            .entry(category.to_string())
                             .or_default()
                             .push(file_name.to_string_lossy().to_string());
                         count += 1;
@@ -722,12 +900,18 @@ pub struct SkillTool {
 impl SkillTool {
     /// 从技能定义创建工具（本地技能）
     pub fn from_definition(def: SkillDefinition) -> Self {
-        Self { definition: def, handler: None }
+        Self {
+            definition: def,
+            handler: None,
+        }
     }
 
     /// 从内置技能创建工具
     fn from_builtin(skill: BuiltInSkill) -> Self {
-        Self { definition: skill.definition, handler: Some(skill.handler) }
+        Self {
+            definition: skill.definition,
+            handler: Some(skill.handler),
+        }
     }
 
     pub fn definition(&self) -> &SkillDefinition {
@@ -773,9 +957,15 @@ impl AgentTool for SkillTool {
     fn risk_level(&self) -> RiskLevel {
         // 根据权限判断风险等级
         let perms = &self.definition.permissions;
-        if perms.iter().any(|p| p.contains("write") || p.contains("execute") || p.contains("system")) {
+        if perms
+            .iter()
+            .any(|p| p.contains("write") || p.contains("execute") || p.contains("system"))
+        {
             RiskLevel::Medium
-        } else if perms.iter().any(|p| p.contains("network") || p.contains("read")) {
+        } else if perms
+            .iter()
+            .any(|p| p.contains("network") || p.contains("read"))
+        {
             RiskLevel::Low
         } else {
             RiskLevel::Safe
@@ -798,7 +988,10 @@ impl AgentTool for SkillTool {
                     "duration_ms": result.duration_ms
                 })))
             } else {
-                Ok(ToolResult::err("SKILL_EXECUTION_FAILED", &result.error.unwrap_or_else(|| "未知错误".to_string())))
+                Ok(ToolResult::err(
+                    "SKILL_EXECUTION_FAILED",
+                    &result.error.unwrap_or_else(|| "未知错误".to_string()),
+                ))
             }
         }
     }
@@ -841,17 +1034,73 @@ impl SkillManager {
 
     /// 获取技能详情
     pub async fn get_skill(&self, id: &str) -> Option<SkillDefinition> {
-        self.skills.lock().await.iter().find(|s| s.id == id).cloned()
+        self.skills
+            .lock()
+            .await
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
     }
 
     /// 启用/禁用技能
     pub async fn toggle_skill(&self, id: &str, enabled: bool) -> AppResult<()> {
         let mut skills = self.skills.lock().await;
         if let Some(skill) = skills.iter_mut().find(|s| s.id == id) {
+            let previous = skill.enabled;
             skill.enabled = enabled;
+            if skill.skill_type == SkillType::Local {
+                if let Err(error) = SkillLoader::persist_manifest(skill) {
+                    skill.enabled = previous;
+                    return Err(error);
+                }
+            }
             Ok(())
         } else {
             Err(AppError::ToolNotFound(format!("技能不存在: {}", id)))
+        }
+    }
+
+    /// 通过稳定桥接器运行技能。新安装技能无需重建 ToolRegistry，当前会话里的 AI
+    /// 先 skill_list / skill_get，再 skill_run 即可立即使用。
+    pub async fn run_skill(&self, id: &str, args: &serde_json::Value) -> AppResult<ToolResult> {
+        let skill = self
+            .skills
+            .lock()
+            .await
+            .iter()
+            .find(|skill| skill.id == id)
+            .cloned()
+            .ok_or_else(|| AppError::ToolNotFound(format!("技能不存在: {}", id)))?;
+        if !skill.enabled {
+            return Ok(ToolResult::err(
+                "SKILL_DISABLED",
+                "技能已禁用，请先启用后再运行",
+            ));
+        }
+
+        if skill.skill_type == SkillType::BuiltIn {
+            let builtin = builtin_skills()
+                .into_iter()
+                .find(|candidate| candidate.definition.id == id)
+                .ok_or_else(|| AppError::ToolNotFound(format!("内置技能执行器不存在: {}", id)))?;
+            return match (builtin.handler)(args).await {
+                Ok(output) => Ok(ToolResult::ok(serde_json::json!({
+                    "skill_id": id, "output": output, "duration_ms": 0,
+                }))),
+                Err(error) => Ok(ToolResult::err("SKILL_ERROR", &error.to_string())),
+            };
+        }
+
+        let result = SkillExecutor::execute_local(&skill, args).await?;
+        if result.success {
+            Ok(ToolResult::ok(serde_json::json!({
+                "skill_id": id, "output": result.output, "duration_ms": result.duration_ms,
+            })))
+        } else {
+            Ok(ToolResult::err(
+                "SKILL_EXECUTION_FAILED",
+                &result.error.unwrap_or_else(|| "未知错误".to_string()),
+            ))
         }
     }
 
@@ -864,7 +1113,11 @@ impl SkillManager {
     }
 
     /// 安装打包技能（技能市场使用）
-    pub async fn install_bundled_skill(&self, def: SkillDefinition, script: &str) -> AppResult<SkillDefinition> {
+    pub async fn install_bundled_skill(
+        &self,
+        def: SkillDefinition,
+        script: &str,
+    ) -> AppResult<SkillDefinition> {
         let skill = SkillLoader::install_bundled(def, script)?;
         let mut skills = self.skills.lock().await;
         skills.push(skill.clone());

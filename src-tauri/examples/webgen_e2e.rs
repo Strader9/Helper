@@ -60,7 +60,12 @@ async fn main() {
     let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen3:8b".to_string());
     let client = OllamaClient::new(base_url, 300_000);
 
-    println!("[{}] 输入文档：{}（{} 字）", now(), doc_path, raw.chars().count());
+    println!(
+        "[{}] 输入文档：{}（{} 字）",
+        now(),
+        doc_path,
+        raw.chars().count()
+    );
     println!("[{}] 模型：{}", now(), model);
 
     // ---------- 阶段一：清洗 → 梳理 → 规格化 ----------
@@ -80,7 +85,12 @@ async fn main() {
     if let Some(digest) = normalized.digest.as_ref() {
         let digest_out = out_path.replace(".html", "").to_string() + ".digest.txt";
         let _ = std::fs::write(&digest_out, digest);
-        println!("[{}] 梳理稿已存：{}（{} 字）", now(), digest_out, digest.chars().count());
+        println!(
+            "[{}] 梳理稿已存：{}（{} 字）",
+            now(),
+            digest_out,
+            digest.chars().count()
+        );
     }
     let spec_out = out_path.replace(".html", "").to_string() + ".spec.md";
     let _ = std::fs::write(&spec_out, &normalized.spec);
@@ -227,10 +237,7 @@ async fn main() {
 
             // 与 lib.rs 一致：单文件网页里的站内绝对路径链接改成 hash 路由（否则点开必然 404）。
             if let Some(fixed) = webgen::fix_dead_links(&cleaned) {
-                println!(
-                    "[{}] [收口] 站内绝对路径链接已改写成 hash 路由。",
-                    now()
-                );
+                println!("[{}] [收口] 站内绝对路径链接已改写成 hash 路由。", now());
                 cleaned = fixed;
             }
 
@@ -286,7 +293,10 @@ async fn main() {
                     best = Some((cleaned.clone(), health));
                 }
                 if issues.is_empty() {
-                    println!("[{}] [自检] 通过：数据来源、交互绑定与需求覆盖都正常。", now());
+                    println!(
+                        "[{}] [自检] 通过：数据来源、交互绑定与需求覆盖都正常。",
+                        now()
+                    );
                     break;
                 }
                 let critical = issues
@@ -309,7 +319,10 @@ async fn main() {
                     break;
                 }
                 if repair_round >= MAX_FUNCTION_REPAIR_ROUNDS {
-                    println!("[{}] [自检] 修复轮次用尽，仍有 {critical} 项严重问题。", now());
+                    println!(
+                        "[{}] [自检] 修复轮次用尽，仍有 {critical} 项严重问题。",
+                        now()
+                    );
                     break;
                 }
                 if repair_round > 0 && health >= last_health {
@@ -322,8 +335,8 @@ async fn main() {
                 if plan.is_none() {
                     let (probe_system, probe_prompt) =
                         webgen::script_repair_prompt(&spec, &cleaned, &issues);
-                    let cap =
-                        webgen::budget_for_prompt(&format!("{probe_system}{probe_prompt}")).num_predict;
+                    let cap = webgen::budget_for_prompt(&format!("{probe_system}{probe_prompt}"))
+                        .num_predict;
                     let need = webgen::script_token_estimate(&cleaned);
                     if need as i64 > cap {
                         println!(
@@ -404,10 +417,7 @@ async fn main() {
                     });
                     (system, prompt, options)
                 };
-                let messages = vec![
-                    OllamaMessage::system(&system),
-                    OllamaMessage::user(&prompt),
-                ];
+                let messages = vec![OllamaMessage::system(&system), OllamaMessage::user(&prompt)];
                 let mut stream = match client
                     .chat_stream_with_options(&model, messages, 0.2, options)
                     .await
@@ -446,8 +456,7 @@ async fn main() {
                                 );
                                 None
                             } else {
-                                let conflicts =
-                                    webgen::appendix_conflicts(&cleaned, &definitions);
+                                let conflicts = webgen::appendix_conflicts(&cleaned, &definitions);
                                 if !conflicts.is_empty() {
                                     println!(
                                         "[{}] [修复] 补写内容会覆盖已有函数（{}），拒收。",
@@ -470,9 +479,8 @@ async fn main() {
                     if replacements.is_empty() {
                         println!("[{}] [修复] 没有返回可用的函数定义，保留当前版本。", now());
                         None
-                    } else if let Some((name, problem)) = replacements
-                        .iter()
-                        .find_map(|(name, definition)| {
+                    } else if let Some((name, problem)) =
+                        replacements.iter().find_map(|(name, definition)| {
                             webgen::delimiter_problem(definition)
                                 .map(|problem| (name.clone(), problem))
                         })
@@ -487,11 +495,7 @@ async fn main() {
                             replacements.iter().map(|(name, _)| name.clone()).collect();
                         match webgen::replace_functions(&cleaned, &replacements) {
                             Some(page) => {
-                                println!(
-                                    "[{}] [修复] 已替换函数：{}。",
-                                    now(),
-                                    names.join(" / ")
-                                );
+                                println!("[{}] [修复] 已替换函数：{}。", now(), names.join(" / "));
                                 Some(page)
                             }
                             None => {
@@ -557,10 +561,7 @@ async fn main() {
                         println!("[{}] [抢救] 脚本仍不完整（{problem}），已{reason}。", now());
                         cleaned = fixed;
                     }
-                    None => println!(
-                        "[{}] [抢救] 脚本不完整（{problem}），自动抢救失败。",
-                        now()
-                    ),
+                    None => println!("[{}] [抢救] 脚本不完整（{problem}），自动抢救失败。", now()),
                 }
             }
 
@@ -602,13 +603,15 @@ async fn main() {
                 {
                     salvaged = webgen::splice_script_body(&salvaged, &fixed);
                 }
-                if let Some(fixed) =
-                    webgen::fix_regex_properties(&webgen::merged_script(&salvaged))
+                if let Some(fixed) = webgen::fix_regex_properties(&webgen::merged_script(&salvaged))
                 {
                     salvaged = webgen::splice_script_body(&salvaged, &fixed);
                 }
                 if let Some(fixed) = webgen::strip_script_fences(&salvaged) {
-                    println!("[{}] [收口] 清掉了脚本里混进来的 Markdown 代码围栏。", now());
+                    println!(
+                        "[{}] [收口] 清掉了脚本里混进来的 Markdown 代码围栏。",
+                        now()
+                    );
                     salvaged = fixed;
                 }
                 let lower_salvaged = salvaged.to_ascii_lowercase();

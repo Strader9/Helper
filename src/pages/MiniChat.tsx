@@ -8,6 +8,8 @@ import {
   ChevronRight,
   Loader2,
   Maximize2,
+  MessageSquarePlus,
+  GripHorizontal,
   Send,
   ShieldCheck,
   X,
@@ -45,6 +47,36 @@ interface ToolExecution {
   collapsed: boolean;
 }
 
+interface MiniWindowConfig {
+  skin: string;
+  size: "compact" | "balanced" | "spacious";
+  opacity: number;
+  always_on_top: boolean;
+  show_status: boolean;
+  default_expanded: boolean;
+  visible: boolean;
+}
+
+interface MiniSkinAsset {
+  id: string;
+  name: string;
+  kind: "image" | "video";
+  data_url: string;
+  scale: number;
+  offset_y: number;
+  playback_rate: number;
+}
+
+const DEFAULT_MINI_CONFIG: MiniWindowConfig = {
+  skin: "guardian",
+  size: "balanced",
+  opacity: 0.94,
+  always_on_top: true,
+  show_status: true,
+  default_expanded: false,
+  visible: true,
+};
+
 // 动态人像资源（从视频抠像生成的透明背景 WebP）
 const AVATAR_SRC = "/assets/avatar/avatar_animated.webp";
 
@@ -66,36 +98,21 @@ function MiniChat() {
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [showChat, setShowChat] = useState(false); // 是否展开聊天面板
   const [avatarError, setAvatarError] = useState(false);
+  const [miniConfig, setMiniConfig] = useState<MiniWindowConfig>(DEFAULT_MINI_CONFIG);
+  const [customSkin, setCustomSkin] = useState<MiniSkinAsset | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const avatarAreaRef = useRef<HTMLDivElement>(null);
   const unlistenRef = useRef<UnlistenFn[]>([]);
   const listenerSetupGenerationRef = useRef(0);
   const activeRunIdRef = useRef<string | null>(null);
   // 用 ref 存储当前对话 ID，避免 setupEventListeners 闭包捕获旧值
   const currentConversationIdRef = useRef<string | null>(null);
+  const configInitializedRef = useRef(false);
 
-  // ---- 初始化：加载或创建对话 + 原生拖动事件 ----
+  // ---- 初始化：加载或创建对话 ----
   useEffect(() => {
     initConversation();
-
-    // 用原生 addEventListener 监听 mousedown，在原生事件同步上下文中调用 startDragging
-    // Tauri 官方要求：startDragging 必须在原生 mousedown 事件中调用，React 合成事件中调用会失效
-    const avatarEl = avatarAreaRef.current;
-    if (avatarEl) {
-      const handleNativeMouseDown = (e: MouseEvent) => {
-        if (e.button !== 0) return;
-        // 同步调用 startDragging，这是透明窗口最可靠的拖动方式
-        getCurrentWindow().startDragging().catch(() => {});
-      };
-      avatarEl.addEventListener("mousedown", handleNativeMouseDown);
-      return () => {
-        avatarEl.removeEventListener("mousedown", handleNativeMouseDown);
-        unlistenRef.current.forEach((unlisten) => unlisten());
-      };
-    }
-
     return () => {
       unlistenRef.current.forEach((unlisten) => unlisten());
     };
@@ -104,6 +121,43 @@ function MiniChat() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingText, toolExecutions, showChat]);
+
+  // 形象设计室的设置会同时持久化并通过事件实时推送到已打开的浮窗。
+  useEffect(() => {
+    let unlistenConfig: UnlistenFn | null = null;
+    const applyConfig = (config: MiniWindowConfig) => {
+      setMiniConfig(config);
+      const customId = config.skin.startsWith("custom:") ? config.skin.slice(7) : null;
+      if (customId) {
+        invoke<MiniSkinAsset[]>("list_mini_skin_assets")
+          .then((items) => setCustomSkin(items.find((item) => item.id === customId) ?? null))
+          .catch(() => setCustomSkin(null));
+      } else {
+        setCustomSkin(null);
+      }
+      if (!configInitializedRef.current) {
+        setShowChat(config.default_expanded);
+        configInitializedRef.current = true;
+      }
+    };
+
+    invoke<MiniWindowConfig>("get_mini_window_config")
+      .then((config) => {
+        applyConfig(config);
+        // 新建窗口先用安全的默认尺寸出现，再立即恢复用户上次保存的原生窗口属性。
+        return invoke<MiniWindowConfig>("update_mini_window_config", { config });
+      })
+      .catch(() => {
+        configInitializedRef.current = true;
+      });
+    listen<MiniWindowConfig>("mini:config-changed", (event) => applyConfig(event.payload))
+      .then((fn) => { unlistenConfig = fn; })
+      .catch(() => {});
+
+    return () => {
+      unlistenConfig?.();
+    };
+  }, []);
 
   // 同步 ref，确保 setupEventListeners 闭包始终拿到最新对话 ID
   useEffect(() => {
@@ -344,6 +398,29 @@ function MiniChat() {
     }
   }
 
+  async function handleNewConversation() {
+    try {
+      const conv = await invoke<{ id: string }>("create_conversation", { title: null });
+      currentConversationIdRef.current = conv.id;
+      setCurrentConversationId(conv.id);
+      setMessages([]);
+      setStreamingText("");
+      setToolExecutions([]);
+      setShowChat(true);
+      window.setTimeout(() => inputRef.current?.focus(), 80);
+    } catch (e) {
+      console.error("Failed to create conversation:", e);
+    }
+  }
+
+  function toggleChat() {
+    setShowChat((prev) => {
+      const next = !prev;
+      if (next) window.setTimeout(() => inputRef.current?.focus(), 80);
+      return next;
+    });
+  }
+
   function toggleToolCollapse(id: string) {
     setToolExecutions((prev) =>
       prev.map((t) => (t.id === id ? { ...t, collapsed: !t.collapsed } : t))
@@ -355,31 +432,80 @@ function MiniChat() {
   // 点击头像展开聊天面板，鼠标悬停显示控制按钮
 
   return (
-    <div className="ds mini-window group relative flex h-screen w-screen flex-col overflow-hidden bg-transparent text-[var(--color-foreground)]">
+    <div
+      className={cn(
+        "ds mini-window group relative flex h-screen w-screen flex-col overflow-hidden bg-transparent text-[var(--color-foreground)]",
+        `mini-window--${miniConfig.skin}`,
+      )}
+      style={{ '--mini-opacity': miniConfig.opacity } as React.CSSProperties}
+    >
       {/* 悬浮控制按钮 —— 默认隐藏，鼠标悬停淡入 */}
-      <div className="pointer-events-none absolute right-2 top-2 z-30 flex gap-1.5 opacity-0 transition-opacity duration-300 group-hover:pointer-events-auto group-hover:opacity-100">
+      <div className="pointer-events-none absolute left-2 right-2 top-2 z-30 flex items-center justify-between opacity-0 transition-opacity duration-300 group-hover:pointer-events-auto group-hover:opacity-100">
+        <button
+          type="button"
+          data-tauri-drag-region
+          onMouseDown={(event) => {
+            if (event.button === 0) void getCurrentWindow().startDragging();
+          }}
+          className="inline-flex h-7 cursor-grab items-center gap-1 rounded-full border border-white/15 bg-black/45 px-2 text-[10px] text-white/70 backdrop-blur-md active:cursor-grabbing"
+          title="拖动浮窗"
+        >
+          <GripHorizontal className="size-3.5" /> 拖动
+        </button>
+        <div className="flex gap-1.5">
+        <FloatBtn onClick={handleNewConversation} title="新对话">
+          <MessageSquarePlus className="size-3.5" />
+        </FloatBtn>
         <FloatBtn onClick={handleExpand} title="展开主窗口">
           <Maximize2 className="size-3.5" />
         </FloatBtn>
         <FloatBtn onClick={handleClose} title="关闭浮窗" danger>
           <X className="size-3.5" />
         </FloatBtn>
+        </div>
       </div>
 
-      {/* 动态人像区域 —— 原生 mousedown 调用 startDragging，onClick 处理展开/收起 */}
+      {/* 动态人像只负责点击交互；移动窗口使用上方独立拖动把手，避免系统吞掉 click。 */}
       <div
-        ref={avatarAreaRef}
-        data-tauri-drag-region
-        onClick={() => setShowChat((prev) => !prev)}
-        title={showChat ? "点击收起 / 拖动移动" : "点击对话 / 拖动移动"}
+        onClick={toggleChat}
+        title={showChat ? "点击收起对话" : "点击与 AI 对话"}
         className={cn(
-          "relative flex cursor-grab items-center justify-center transition-transform duration-200",
-          // 分层窗口中完全透明的区域鼠标事件会穿透，这里保留一点底色来接收事件
-          "bg-[rgba(13,12,11,0.15)] hover:scale-[1.03] active:scale-[0.97]",
+          "relative flex cursor-pointer items-center justify-center bg-transparent transition-transform duration-200",
+          "hover:scale-[1.03] active:scale-[0.97]",
           showChat ? "h-[104px] shrink-0 pt-2" : "min-h-0 flex-1"
         )}
       >
-        {!avatarError ? (
+        {customSkin ? (
+          customSkin.kind === "video" ? (
+            <video
+              src={customSkin.data_url}
+              aria-label={customSkin.name}
+              autoPlay
+              muted
+              loop
+              playsInline
+              onLoadedMetadata={(event) => { event.currentTarget.playbackRate = customSkin.playback_rate; }}
+              className={cn(
+                "select-none object-contain",
+                showChat ? "h-[90px] w-auto max-w-[90%]" : "max-h-[90%] max-w-[90%]",
+                (thinking || isLoading) && "mini-avatar-glow",
+              )}
+              style={{ transform: `translateY(${customSkin.offset_y}%) scale(${customSkin.scale})` }}
+            />
+          ) : (
+            <img
+              src={customSkin.data_url}
+              alt={customSkin.name}
+              draggable={false}
+              className={cn(
+                "select-none object-contain",
+                showChat ? "h-[90px] w-auto max-w-[90%]" : "max-h-[90%] max-w-[90%]",
+                (thinking || isLoading) && "mini-avatar-glow",
+              )}
+              style={{ transform: `translateY(${customSkin.offset_y}%) scale(${customSkin.scale})` }}
+            />
+          )
+        ) : (miniConfig.skin === "guardian" || miniConfig.skin.startsWith("custom:")) && !avatarError ? (
           <img
             src={AVATAR_SRC}
             alt="AI Assistant"
@@ -391,14 +517,26 @@ function MiniChat() {
             onError={() => setAvatarError(true)}
             draggable={false}
           />
+        ) : miniConfig.skin === "core" ? (
+          <div
+            className={cn(
+              "mini-core-skin",
+              (thinking || isLoading) && "mini-avatar-glow",
+            )}
+            aria-label="能量核心形象"
+          >
+            <span className="mini-core-skin__ring" />
+            <span className="mini-core-skin__center" />
+          </div>
         ) : (
-          <div className="flex size-28 items-center justify-center rounded-full bg-[radial-gradient(circle,rgba(255,140,0,0.14),transparent_70%)]">
-            <ShieldCheck className="size-11 text-[var(--color-brand)] drop-shadow-[0_0_10px_rgba(255,140,0,0.5)]" />
+          <div className={cn("mini-halo-skin", (thinking || isLoading) && "mini-avatar-glow")}>
+            <span className="mini-halo-skin__orbit" />
+            <ShieldCheck className="size-11 text-cyan-100 drop-shadow-[0_0_12px_rgba(103,232,249,0.75)]" />
           </div>
         )}
 
         {/* 思考/说话状态指示器 */}
-        {(thinking || isLoading) && (
+        {miniConfig.show_status && (thinking || isLoading) && (
           <div className="absolute bottom-2.5 left-1/2 -translate-x-1/2">
             <span className="block size-2 animate-[ds-pulse-dot_1.2s_ease-in-out_infinite] rounded-full bg-[var(--color-brand)] shadow-[0_0_10px_var(--color-brand)]" />
           </div>

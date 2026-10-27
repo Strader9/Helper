@@ -17,6 +17,11 @@ import {
   Ban,
   FileCode2,
   CircleDot,
+  Globe2,
+  Plus,
+  Server,
+  Trash2,
+  X,
 } from 'lucide-react';
 import { LumiPageShell } from '../../components/lumi/LumiPageShell';
 import {
@@ -47,6 +52,29 @@ interface TrustedTool {
   path_pattern?: string | null;
   risk_level: string;
   added_at: string;
+}
+
+interface McpServerInfo {
+  id: string;
+  name?: string;
+  transport?: string;
+  status?: string;
+  lastError?: string | null;
+  error?: string | null;
+  tools?: Array<{ name: string; description?: string }>;
+}
+
+interface McpToolInfo {
+  server: string;
+  name: string;
+  description?: string;
+}
+
+interface McpCapabilitySnapshot {
+  reachable?: boolean;
+  servers?: McpServerInfo[];
+  tools?: McpToolInfo[];
+  error?: string;
 }
 
 type SecurityLevel = 'safe' | 'confirm' | 'forbidden';
@@ -119,7 +147,12 @@ function verificationLabel(v: string): string {
   return VERIFICATION_LABEL[v] || v || '—';
 }
 
-export default function LumiTools() {
+interface LumiToolsProps {
+  /** 嵌入“能力中心”时由父页面提供标题与页签。 */
+  embedded?: boolean;
+}
+
+export default function LumiTools({ embedded = false }: LumiToolsProps) {
   const [tools, setTools] = useState<ToolContractView[]>([]);
   const [trustedSet, setTrustedSet] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
@@ -128,6 +161,12 @@ export default function LumiTools() {
   const [trustFilter, setTrustFilter] = useState<TrustFilter>('all');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [toggling, setToggling] = useState<string | null>(null);
+  const [mcpServers, setMcpServers] = useState<McpServerInfo[]>([]);
+  const [mcpTools, setMcpTools] = useState<McpToolInfo[]>([]);
+  const [mcpError, setMcpError] = useState<string | null>(null);
+  const [showInstall, setShowInstall] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [installForm, setInstallForm] = useState({ id: '', name: '', url: '' });
 
   const loadTools = async () => {
     setLoading(true);
@@ -157,9 +196,57 @@ export default function LumiTools() {
     }
   };
 
+  const loadMcpCapabilities = async () => {
+    try {
+      const snapshot = await invoke<McpCapabilitySnapshot>('list_mcp_capabilities');
+      setMcpServers(Array.isArray(snapshot.servers) ? snapshot.servers : []);
+      setMcpTools(Array.isArray(snapshot.tools) ? snapshot.tools : []);
+      setMcpError(snapshot.reachable === false ? snapshot.error || 'MCP 网关不可达' : null);
+    } catch (error) {
+      setMcpServers([]);
+      setMcpTools([]);
+      setMcpError(typeof error === 'string' ? error : 'MCP 工具源加载失败');
+    }
+  };
+
   useEffect(() => {
     loadTools();
+    void loadMcpCapabilities();
   }, []);
+
+  const installMcpServer = async () => {
+    const id = installForm.id.trim();
+    const name = installForm.name.trim();
+    const url = installForm.url.trim();
+    if (!id || !url) {
+      toast.warning('请填写工具源 ID 和 MCP 地址');
+      return;
+    }
+    setInstalling(true);
+    try {
+      const result = await invoke<{ tools?: Array<{ name: string }> }>('install_mcp_server', { id, name, url });
+      const count = Array.isArray(result.tools) ? result.tools.length : 0;
+      toast.success(`工具源安装成功，已发现 ${count} 个工具`);
+      setShowInstall(false);
+      setInstallForm({ id: '', name: '', url: '' });
+      await loadMcpCapabilities();
+    } catch (error) {
+      toast.error(`安装失败：${typeof error === 'string' ? error : '未知错误'}`);
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const removeMcpServer = async (server: McpServerInfo) => {
+    if (!window.confirm(`确定移除工具源「${server.name || server.id}」吗？AI 将无法再调用它提供的工具。`)) return;
+    try {
+      await invoke('remove_mcp_server', { id: server.id });
+      toast.success(`已移除工具源：${server.name || server.id}`);
+      await loadMcpCapabilities();
+    } catch (error) {
+      toast.error(`移除失败：${typeof error === 'string' ? error : '未知错误'}`);
+    }
+  };
 
   /* ── 过滤与分组 ────────────────────────────────────── */
   const filtered = useMemo(() => {
@@ -244,19 +331,27 @@ export default function LumiTools() {
     { key: 'untrusted', label: '未信任' },
   ];
 
-  return (
-    <LumiPageShell
-      icon={<Wrench size={20} />}
-      iconBg="bg-amber-500/15 border-amber-400/20 text-amber-400"
-      title="工具控制面板"
-      subtitle={loading ? '正在加载...' : `${tools.length} 个能力契约`}
+  const installButton = (
+    <button
+      type="button"
+      onClick={() => setShowInstall(true)}
+      className="flex items-center gap-1.5 rounded-xl border border-celestial-saturn/25 bg-celestial-saturn/[0.12] px-3 py-2 text-xs font-black text-celestial-saturn transition-colors hover:bg-celestial-saturn/[0.18]"
     >
+      <Plus size={14} />
+      安装工具源
+    </button>
+  );
+
+  const content = (
+    <>
+      {embedded && <div className="mb-4 flex justify-end">{installButton}</div>}
       {/* 统计行 */}
-      <div className="mb-5 grid grid-cols-3 gap-3">
+      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[
           { label: '契约总数', value: stats.total, cls: 'text-celestial-saturn' },
           { label: '已注册', value: stats.registered, cls: 'text-emerald-400' },
           { label: '已信任', value: stats.trusted, cls: 'text-amber-400' },
+          { label: '外部工具', value: mcpTools.length, cls: 'text-cyan-400' },
         ].map((s) => (
           <div key={s.label} className="glass-panel rounded-2xl p-4">
             <p className="text-[10px] font-bold uppercase tracking-wider text-white/40">{s.label}</p>
@@ -264,6 +359,59 @@ export default function LumiTools() {
           </div>
         ))}
       </div>
+
+      <SectionTitle label="外部工具源" count={mcpServers.length} color="bg-cyan-400" />
+      {mcpError ? (
+        <div className="mb-5 rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3">
+          <p className="text-xs font-bold text-amber-300">MCP 网关未连接</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-amber-200/55">{mcpError}</p>
+        </div>
+      ) : mcpServers.length === 0 ? (
+        <div className="mb-5 flex items-center justify-between gap-4 rounded-2xl border border-white/[0.06] bg-white/[0.02] px-4 py-3">
+          <div>
+            <p className="text-xs font-bold text-white/65">还没有外部工具源</p>
+            <p className="mt-1 text-[11px] text-white/35">安装标准 MCP 服务后，AI 会自动发现它公开的工具。</p>
+          </div>
+          {installButton}
+        </div>
+      ) : (
+        <div className="mb-5 grid gap-3 md:grid-cols-2">
+          {mcpServers.map((server) => {
+            const tools = mcpTools.filter((tool) => tool.server === server.id);
+            const connected = server.status === 'connected' && !server.error;
+            return (
+              <div key={server.id} className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">
+                <div className="flex items-start gap-3">
+                  <IconBox
+                    size="sm"
+                    className={connected ? 'border-cyan-400/20 bg-cyan-400/10 text-cyan-300' : 'border-amber-400/20 bg-amber-400/10 text-amber-300'}
+                    icon={<Server size={16} />}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="truncate text-sm font-bold text-white/85">{server.name || server.id}</p>
+                      <Badge variant={connected ? 'safe' : 'warning'}>{connected ? '已连接' : '异常'}</Badge>
+                    </div>
+                    <p className="mt-1 font-mono text-[10px] text-white/30">{server.id} · {server.transport || 'http'}</p>
+                    <p className="mt-2 text-xs text-white/45">{tools.length} 个工具已适配</p>
+                    {(server.error || server.lastError) && (
+                      <p className="mt-1 line-clamp-2 text-[10px] text-amber-300/65">{server.error || server.lastError}</p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    title="移除工具源"
+                    onClick={() => void removeMcpServer(server)}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/10 bg-white/5 text-white/35 transition-colors hover:border-red-500/30 hover:bg-red-500/10 hover:text-red-400"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* 搜索框 */}
       <div className="relative mb-3">
@@ -491,6 +639,93 @@ export default function LumiTools() {
           );
         })
       )}
+
+      <AnimatePresence>
+        {showInstall && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4 backdrop-blur-sm"
+            onClick={() => !installing && setShowInstall(false)}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 10 }}
+              onClick={(event) => event.stopPropagation()}
+              className="glass-panel w-full max-w-lg rounded-2xl p-6"
+            >
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-white/90">安装 MCP 工具源</h3>
+                  <p className="mt-1 text-[11px] text-white/35">连接、发现工具并验证成功后才会保存。</p>
+                </div>
+                <button type="button" onClick={() => !installing && setShowInstall(false)} className="text-white/40 hover:text-white">
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <label className="block">
+                  <span className="mb-1 block text-[10px] font-black uppercase text-white/40">工具源 ID</span>
+                  <input
+                    value={installForm.id}
+                    onChange={(event) => setInstallForm((prev) => ({ ...prev, id: event.target.value }))}
+                    placeholder="例如 notion-tools"
+                    className="w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2 font-mono text-xs text-white outline-none placeholder:text-white/25 focus:border-celestial-saturn/40"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[10px] font-black uppercase text-white/40">显示名称</span>
+                  <input
+                    value={installForm.name}
+                    onChange={(event) => setInstallForm((prev) => ({ ...prev, name: event.target.value }))}
+                    placeholder="例如 Notion 工具"
+                    className="w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2 text-xs text-white outline-none placeholder:text-white/25 focus:border-celestial-saturn/40"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 flex items-center gap-1 text-[10px] font-black uppercase text-white/40"><Globe2 size={10} /> Streamable HTTP 地址</span>
+                  <input
+                    value={installForm.url}
+                    onChange={(event) => setInstallForm((prev) => ({ ...prev, url: event.target.value }))}
+                    placeholder="https://example.com/mcp"
+                    className="w-full rounded-xl border border-white/10 bg-black/25 px-3 py-2 font-mono text-xs text-white outline-none placeholder:text-white/25 focus:border-celestial-saturn/40"
+                  />
+                </label>
+
+                <div className="rounded-xl border border-amber-500/15 bg-amber-500/[0.05] px-3 py-2 text-[10px] leading-relaxed text-amber-200/55">
+                  安装会与该地址建立连接并读取工具名称、说明和参数结构。第三方工具每次执行仍按高风险操作确认，不会因安装而自动获得系统权限。
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void installMcpServer()}
+                  disabled={installing}
+                  className="w-full rounded-xl border border-celestial-saturn/30 bg-celestial-saturn/15 py-2.5 text-xs font-black text-celestial-saturn transition-colors hover:bg-celestial-saturn/25 disabled:opacity-40"
+                >
+                  {installing ? '正在连接并验证…' : '确认安装'}
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+
+  if (embedded) return content;
+
+  return (
+    <LumiPageShell
+      icon={<Wrench size={20} />}
+      iconBg="bg-amber-500/15 border-amber-400/20 text-amber-400"
+      title="工具控制面板"
+      subtitle={loading ? '正在加载...' : `${tools.length} 个能力契约`}
+      actions={installButton}
+    >
+      {content}
     </LumiPageShell>
   );
 }

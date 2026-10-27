@@ -697,6 +697,81 @@
   white-space: nowrap;
 }
 
+.mission-device-summary {
+  position: absolute;
+  bottom: 16px;
+  left: 20px;
+  z-index: 35;
+  display: grid;
+  min-width: 210px;
+  height: 46px;
+  grid-template-columns: 30px 1fr 18px 14px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 9px 4px 7px;
+  border: 1px solid var(--mission-line);
+  border-radius: 4px;
+  color: rgba(226, 232, 240, 0.72);
+  background: rgba(3, 6, 13, 0.78);
+  text-align: left;
+  transition: border-color 180ms ease, background 180ms ease, transform 180ms ease;
+}
+
+.mission-device-summary:hover {
+  border-color: var(--mission-line-strong);
+  background: rgba(11, 18, 31, 0.9);
+  transform: translateY(-1px);
+}
+
+.mission-device-summary__icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 3px;
+  color: var(--mission-active);
+  background: rgba(148, 163, 184, 0.05);
+}
+
+.mission-device-summary__body,
+.mission-device-summary__body strong,
+.mission-device-summary__body small {
+  display: block;
+  min-width: 0;
+}
+
+.mission-device-summary__body strong {
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: .08em;
+}
+
+.mission-device-summary__body small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: rgba(203, 213, 225, 0.36);
+  font-family: var(--font-mono);
+  font-size: 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mission-device-summary__signal {
+  display: grid;
+  place-items: center;
+  color: rgba(148, 163, 184, 0.3);
+}
+
+.mission-device-summary__signal.is-online {
+  color: #6ee7b7;
+  filter: drop-shadow(0 0 5px rgba(110, 231, 183, .5));
+}
+
+.mission-device-summary__arrow {
+  color: rgba(148, 163, 184, 0.28);
+}
+
 .mission-dock {
   position: absolute;
   bottom: 16px;
@@ -776,6 +851,19 @@
   .mission-rail__item {
     display: flex;
     justify-content: center;
+  }
+
+  .mission-device-summary {
+    min-width: 46px;
+    width: 46px;
+    grid-template-columns: 1fr;
+    padding: 7px;
+  }
+
+  .mission-device-summary__body,
+  .mission-device-summary__signal,
+  .mission-device-summary__arrow {
+    display: none;
   }
 
   .mission-rail__index,

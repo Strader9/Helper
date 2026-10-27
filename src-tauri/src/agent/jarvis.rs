@@ -114,7 +114,7 @@ pub(crate) async fn run(context: JarvisContext<'_>, mut task: Task) -> AppResult
             build_jarvis_prompt()
         } else {
             format!(
-                "{}\n\n## 关于用户的长期记忆\n以下是此前确认过的用户偏好与事实，执行时应当遵守：\n{}",
+                "{}\n\n## 用户适应上下文\n以下内容来自用户可查看、可修改的长期记忆。稳定偏好应默认遵守；相关经历仅在当前任务确实相关时使用。不要据此推断未记录的人格或敏感属性：\n{}",
                 build_jarvis_prompt(),
                 memory
             )
@@ -169,11 +169,7 @@ pub(crate) async fn run(context: JarvisContext<'_>, mut task: Task) -> AppResult
             .cloned()
             .collect();
 
-        (
-            assembled.messages,
-            cached.map(|(s, _)| s),
-            pending,
-        )
+        (assembled.messages, cached.map(|(s, _)| s), pending)
     };
 
     let mut messages = vec![OllamaMessage::system(&system_prompt)];
@@ -199,7 +195,10 @@ pub(crate) async fn run(context: JarvisContext<'_>, mut task: Task) -> AppResult
             Some(summary) => {
                 let db = context.db.lock().await;
                 let manager = ConversationManager::new(db.connection());
-                if manager.save_summary(context.session_id, &summary, upto_id).is_ok() {
+                if manager
+                    .save_summary(context.session_id, &summary, upto_id)
+                    .is_ok()
+                {
                     Some(summary)
                 } else {
                     cached_summary // 落库失败：沿用旧摘要，不用这次的
@@ -271,13 +270,8 @@ pub(crate) async fn run(context: JarvisContext<'_>, mut task: Task) -> AppResult
             let chunk = match next_chunk {
                 Ok(chunk) => chunk,
                 Err(_) => {
-                    return fail_task(
-                        &mut task,
-                        context.db,
-                        context.tx,
-                        "模型响应超时（20秒）",
-                    )
-                    .await;
+                    return fail_task(&mut task, context.db, context.tx, "模型响应超时（20秒）")
+                        .await;
                 }
             };
 
@@ -299,13 +293,7 @@ pub(crate) async fn run(context: JarvisContext<'_>, mut task: Task) -> AppResult
 
         if tool_calls.is_empty() {
             if display_text.trim().is_empty() {
-                return fail_task(
-                    &mut task,
-                    context.db,
-                    context.tx,
-                    "模型未返回有效响应",
-                )
-                .await;
+                return fail_task(&mut task, context.db, context.tx, "模型未返回有效响应").await;
             }
             let _ = context.tx.send(ChatEvent::Text(display_text.clone())).await;
             finish_task(&mut task, context.db, context.tx, &display_text).await?;
@@ -447,7 +435,9 @@ fn build_jarvis_prompt() -> String {
 4. 一次只做当前请求必要的操作，不做用户未要求的扩展动作。
 5. 工具成功且结果中已有 message/summary 时，直接采用该结果，不再额外推理。
 6. 严格使用原生工具调用；只有模型不支持原生调用时才输出 <tool_call> 兼容格式。
-7. 可用能力以本次请求附带的工具定义为准，不要猜测不存在的工具。"#
+7. 可用能力以本次请求附带的工具定义为准，不要猜测不存在的工具。
+8. 用户明确表达可长期复用的称呼、沟通偏好、工作方式或应用习惯时，用 remember 保存为 user_preference 或 app_usage；不要从一次行为推测人格，不保存密码、令牌、隐私凭据或短暂情绪。
+9. 用户用自然语言发布提醒、周期任务或条件监控时，直接调用 Automation 工具落地；普通时间任务用 schedule_job，系统指标/进程/事件条件用 create_proactive_rule。未取得工具成功回执前不得声称已创建。用户查看、暂停、恢复、立即运行、删除或查询执行结果时，也必须调用对应工具返回真实状态。"#
         .to_string()
 }
 
@@ -460,11 +450,7 @@ fn build_jarvis_prompt() -> String {
 ///
 /// 失败时返回 `None` —— 拿不准就保留原状，绝不写入一段残缺的摘要
 /// 污染后续所有对话。
-async fn summarize_history(
-    ollama: &OllamaClient,
-    model: &str,
-    flat: &str,
-) -> Option<String> {
+async fn summarize_history(ollama: &OllamaClient, model: &str, flat: &str) -> Option<String> {
     let instruction = format!(
         "请把下面这段对话压缩成一段简洁的中文摘要，供后续对话回忆上下文。\n\
          要求：\n\
