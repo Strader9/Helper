@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$logRoot = Join-Path $env:LOCALAPPDATA 'PC Guardian'
+$logRoot = Join-Path $env:LOCALAPPDATA 'E-Assisant'
 $logPath = Join-Path $logRoot 'deploy.log'
 
 New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
@@ -54,13 +54,20 @@ function Set-AppShortcut([string]$shortcutPath, [string]$executable) {
     $shortcut.TargetPath = $executable
     $shortcut.WorkingDirectory = Split-Path -Parent $executable
     $shortcut.IconLocation = "$executable,0"
-    $shortcut.Description = 'PC Guardian AI'
+    $shortcut.Description = 'E-Assisant'
     $shortcut.Save()
+}
+
+function Remove-LegacyShortcut([string]$shortcutPath) {
+    if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
+        Remove-Item -LiteralPath $shortcutPath -Force
+        Write-Step "Removed legacy shortcut: $shortcutPath"
+    }
 }
 
 try {
     Set-Location -LiteralPath $repoRoot
-    Write-Step 'Starting PC Guardian deployment'
+    Write-Step 'Starting E-Assisant deployment'
 
     $npm = (Get-Command npm.cmd -ErrorAction Stop).Source
     if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'node_modules'))) {
@@ -72,29 +79,35 @@ try {
     Invoke-Logged $npm @('run', 'tauri', 'build')
 
     $targetDirectory = Resolve-TargetDirectory
-    $releaseExe = Join-Path $targetDirectory 'release\pc-guardian.exe'
+    $releaseExe = Join-Path $targetDirectory 'release\e-assisant.exe'
     if (-not (Test-Path -LiteralPath $releaseExe)) {
         throw "Build completed but executable was not found: $releaseExe"
     }
 
-    $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'PC Guardian.lnk'
-    $startMenuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\PC Guardian\PC Guardian.lnk'
+    $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'E-Assisant.lnk'
+    $startMenuShortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\E-Assisant\E-Assisant.lnk'
     Set-AppShortcut $desktopShortcut $releaseExe
     Set-AppShortcut $startMenuShortcut $releaseExe
 
     # Update an existing taskbar pin. Windows does not allow apps to silently
     # create a new pin, so this only repairs a shortcut the user already pinned.
-    $taskbarShortcut = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\PC Guardian.lnk'
+    $taskbarShortcut = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\E-Assisant.lnk'
     if (Test-Path -LiteralPath $taskbarShortcut) {
         Set-AppShortcut $taskbarShortcut $releaseExe
     }
+
+    # The executable and user data migrate in place; only obsolete shortcuts
+    # are removed so Windows no longer exposes the previous product name.
+    Remove-LegacyShortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) 'PC Guardian.lnk')
+    Remove-LegacyShortcut (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\PC Guardian\PC Guardian.lnk')
+    Remove-LegacyShortcut (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar\PC Guardian.lnk')
 
     Write-Step "Deployment complete: $releaseExe"
     Write-Step 'Desktop, Start menu, and existing taskbar shortcuts now use the bundled app'
 
     if (-not $NoLaunch) {
         Start-Process -FilePath $releaseExe -WorkingDirectory (Split-Path -Parent $releaseExe)
-        Write-Step 'PC Guardian started'
+        Write-Step 'E-Assisant started'
     }
 } catch {
     $message = "Deployment failed: $($_.Exception.Message)"

@@ -59,13 +59,17 @@ fn read_lines(path: &str) -> AppResult<Vec<String>> {
     let meta = std::fs::metadata(path)
         .map_err(|e| AppError::InvalidArgument(format!("文件不可读 {}: {}", path, e)))?;
     if meta.len() > MAX_FILE_BYTES {
-        return Err(AppError::InvalidArgument("文件超过 5MB，暂不支持 diff".into()));
+        return Err(AppError::InvalidArgument(
+            "文件超过 5MB，暂不支持 diff".into(),
+        ));
     }
     let content = std::fs::read_to_string(path)
         .map_err(|e| AppError::InvalidArgument(format!("读取失败 {}: {}", path, e)))?;
     let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
     if lines.len() > MAX_LINES {
-        return Err(AppError::InvalidArgument("文件行数超过 2 万，暂不支持 diff".into()));
+        return Err(AppError::InvalidArgument(
+            "文件行数超过 2 万，暂不支持 diff".into(),
+        ));
     }
     Ok(lines)
 }
@@ -100,9 +104,16 @@ impl AgentTool for DiffDocumentsTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let a = args["path_a"].as_str().ok_or_else(|| AppError::InvalidArgument("path_a is required".into()))?;
-        let b = args["path_b"].as_str().ok_or_else(|| AppError::InvalidArgument("path_b is required".into()))?;
-        let max_lines = args["max_diff_lines"].as_i64().unwrap_or(200).clamp(10, 2000) as usize;
+        let a = args["path_a"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("path_a is required".into()))?;
+        let b = args["path_b"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("path_b is required".into()))?;
+        let max_lines = args["max_diff_lines"]
+            .as_i64()
+            .unwrap_or(200)
+            .clamp(10, 2000) as usize;
 
         let a_lines = read_lines(a)?;
         let b_lines = read_lines(b)?;

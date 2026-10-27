@@ -84,7 +84,7 @@ impl MemoryType {
 
 /// 记忆层级（tier）：决定衰减速率与固化优先级。
 ///
-/// 借鉴 LumiCore 的 MemoryTier 分层，用 Rust 重写：
+/// 借鉴早期原型的 MemoryTier 分层，用 Rust 重写：
 /// - `Episodic`：原始对话/任务记忆，快速衰减，是固化器的原料
 /// - `Internalized`：内化偏好（用户偏好、应用习惯），较稳定
 /// - `Growth`：固化器产出的凝练叙事记忆

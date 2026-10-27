@@ -46,11 +46,15 @@ impl AgentTool for OpenFileTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let path = args["path"].as_str()
+        let path = args["path"]
+            .as_str()
             .ok_or_else(|| AppError::InvalidArgument("path is required".to_string()))?;
 
         if !Path::new(path).exists() {
-            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在: {}", path)));
+            return Ok(ToolResult::err(
+                "FILE_NOT_FOUND",
+                &format!("文件不存在: {}", path),
+            ));
         }
 
         #[cfg(target_os = "windows")]
@@ -114,19 +118,26 @@ impl AgentTool for ReadFileTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let path = args["path"].as_str()
+        let path = args["path"]
+            .as_str()
             .ok_or_else(|| AppError::InvalidArgument("path is required".to_string()))?;
         let max_lines = args["max_lines"].as_u64();
 
         if !Path::new(path).exists() {
-            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在: {}", path)));
+            return Ok(ToolResult::err(
+                "FILE_NOT_FOUND",
+                &format!("文件不存在: {}", path),
+            ));
         }
 
-        let content = fs::read_to_string(path)
-            .map_err(|e| AppError::Io(e))?;
+        let content = fs::read_to_string(path).map_err(|e| AppError::Io(e))?;
 
         let final_content = if let Some(max) = max_lines {
-            content.lines().take(max as usize).collect::<Vec<_>>().join("\n")
+            content
+                .lines()
+                .take(max as usize)
+                .collect::<Vec<_>>()
+                .join("\n")
         } else if content.chars().count() > 10240 {
             let total_chars = content.chars().count();
             format!(
@@ -185,7 +196,11 @@ impl AgentTool for ReadFilesBatchTool {
         let max_files = args["max_files"].as_u64().unwrap_or(20).min(50) as usize;
         let paths: Vec<String> = args["paths"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         if paths.is_empty() {
@@ -269,9 +284,11 @@ impl AgentTool for WriteFileTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let path = args["path"].as_str()
+        let path = args["path"]
+            .as_str()
             .ok_or_else(|| AppError::InvalidArgument("path is required".to_string()))?;
-        let content = args["content"].as_str()
+        let content = args["content"]
+            .as_str()
             .ok_or_else(|| AppError::InvalidArgument("content is required".to_string()))?;
 
         if let Some(parent) = Path::new(path).parent() {
@@ -323,13 +340,17 @@ impl AgentTool for ListDirectoryTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let raw_path = args["path"].as_str()
+        let raw_path = args["path"]
+            .as_str()
             .ok_or_else(|| AppError::InvalidArgument("path is required".to_string()))?;
         // 解析环境变量（如 %USERPROFILE%\Desktop）
         let path = expand_env_vars(raw_path);
 
         if !Path::new(&path).exists() {
-            return Ok(ToolResult::err("DIR_NOT_FOUND", &format!("目录不存在: {}", path)));
+            return Ok(ToolResult::err(
+                "DIR_NOT_FOUND",
+                &format!("目录不存在: {}", path),
+            ));
         }
 
         let entries = fs::read_dir(&path)?

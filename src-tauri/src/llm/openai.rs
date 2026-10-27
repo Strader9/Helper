@@ -159,7 +159,9 @@ impl OpenAiStreamParser {
         if let Some(reason) = &choice.finish_reason {
             self.flush_calls(tx).await;
             let usage = usage_from_openai(chunk.usage.as_ref());
-            let _ = tx.send(ChatChunk::Done(Some(reason.clone()), Some(usage))).await;
+            let _ = tx
+                .send(ChatChunk::Done(Some(reason.clone()), Some(usage)))
+                .await;
             return true;
         }
 
@@ -227,10 +229,8 @@ impl OpenAiChatMessage {
                 .into_iter()
                 .map(|mut call| {
                     if let serde_json::Value::String(args) = &call.function.arguments {
-                        call.function.arguments =
-                            serde_json::from_str(args).unwrap_or_else(|_| {
-                                serde_json::Value::String(args.clone())
-                            });
+                        call.function.arguments = serde_json::from_str(args)
+                            .unwrap_or_else(|_| serde_json::Value::String(args.clone()));
                     }
                     call
                 })

@@ -1,12 +1,12 @@
 //! 行业场景模板（industry 域）
 //!
-//! 借鉴 LumiCore 的 business_line（电商/金融等垂直行业）设计，用 Rust 重写。
+//! 借鉴早期原型的 business_line（电商/金融等垂直行业）设计，用 Rust 重写。
 //! 每个场景 = 行业 + 场景名 + 领域提示词 + 推荐工具集，让助手在识别到
 //! 「帮我写商品描述」「帮我分析财报」这类请求时，能加载对应领域的专业上下文，
 //! 而不是用通用口径硬答。全部为静态数据，无外部依赖。
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::error::{AppError, AppResult};
 use crate::tools::{AgentTool, RiskLevel, ToolResult};
@@ -198,11 +198,8 @@ fn search_scenarios(query: &str) -> Vec<&'static IndustryScenario> {
     scenarios()
         .iter()
         .filter(|s| {
-            let haystack = format!(
-                "{} {} {} {}",
-                s.id, s.industry, s.name, s.description
-            )
-            .to_lowercase();
+            let haystack =
+                format!("{} {} {} {}", s.id, s.industry, s.name, s.description).to_lowercase();
             keywords.is_empty() || keywords.iter().any(|k| haystack.contains(k))
         })
         .collect()

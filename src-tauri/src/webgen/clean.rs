@@ -109,10 +109,8 @@ fn anchor_variants(raw: &str) -> Vec<String> {
 /// 实测原样抄进了产物（生成的 HTML 末尾真留着一句「（后面省略）」，文件就此截断）。
 /// 省略提示属于**给模型看的自然语言**，由调用方写在代码块外面，不能混进代码。
 pub fn take_excerpt(text: &str, anchor: &str, count: usize) -> (String, bool) {
-    take_excerpt_with_span(text, anchor, count).map_or_else(
-        || (take_head(text, count), false),
-        |span| (span.text, true),
-    )
+    take_excerpt_with_span(text, anchor, count)
+        .map_or_else(|| (take_head(text, count), false), |span| (span.text, true))
 }
 
 /// 摘取片段并回报它**在原文中的字符区间**（`start` 含、`end` 不含）。
@@ -144,9 +142,17 @@ pub fn take_excerpt_with_span(text: &str, anchor: &str, count: usize) -> Option<
         .lines()
         .map(|line| {
             // 去掉「元素：」「选择器：」「当前文字：」这类标签，只留特征本身。
-            let raw = line.split_once('：').map(|(_, value)| value).unwrap_or(line).trim();
+            let raw = line
+                .split_once('：')
+                .map(|(_, value)| value)
+                .unwrap_or(line)
+                .trim();
             // outerHTML 行最硬：它逐字来自源码。
-            let hardness = if line.trim_start().starts_with("HTML") { 3 } else { 0 };
+            let hardness = if line.trim_start().starts_with("HTML") {
+                3
+            } else {
+                0
+            };
             (hardness, raw.to_string())
         })
         .flat_map(|(hardness, raw)| {
@@ -226,7 +232,12 @@ pub struct ExcerptSpan {
 ///
 /// 返回 `None` 表示"这次改动没法安全合并"，调用方必须**保留原文**而不是接受产物：
 /// 宁可告诉用户"这次没改成"，也不能把一份残缺的页面交出去。
-pub fn merge_patch(original: &str, anchor: &str, count: usize, patched: &str) -> Option<MergeOutcome> {
+pub fn merge_patch(
+    original: &str,
+    anchor: &str,
+    count: usize,
+    patched: &str,
+) -> Option<MergeOutcome> {
     let span = take_excerpt_with_span(original, anchor, count)?;
     let patch = strip_code_fence(patched);
 
@@ -316,7 +327,11 @@ fn locate_element(excerpt: &str, anchor: &str) -> Option<(usize, usize)> {
     let needle = anchor
         .lines()
         .flat_map(|line| {
-            let raw = line.split_once('：').map(|(_, value)| value).unwrap_or(line).trim();
+            let raw = line
+                .split_once('：')
+                .map(|(_, value)| value)
+                .unwrap_or(line)
+                .trim();
             anchor_variants(raw)
         })
         .filter(|value| value.chars().count() >= 2)
@@ -355,7 +370,10 @@ fn locate_element(excerpt: &str, anchor: &str) -> Option<(usize, usize)> {
             continue;
         }
         if lowercase[cursor..].starts_with(&name_lower)
-            && matches!(lowercase.get(cursor + name_lower.len()), Some(' ') | Some('>') | Some('\n') | Some('\t') | Some('/'))
+            && matches!(
+                lowercase.get(cursor + name_lower.len()),
+                Some(' ') | Some('>') | Some('\n') | Some('\t') | Some('/')
+            )
         {
             depth += 1;
         } else if lowercase[cursor..].starts_with(&['<', '/'])
@@ -399,7 +417,8 @@ fn drop_ellipsis_marks(text: &str) -> &str {
     let mut value = text.trim();
     loop {
         let before = value;
-        for marker in ["（前面省略）", "（后面省略）", "(前面省略)", "(后面省略)"] {
+        for marker in ["（前面省略）", "（后面省略）", "(前面省略)", "(后面省略)"]
+        {
             value = value.trim();
             value = value.strip_prefix(marker).unwrap_or(value).trim();
             value = value.strip_suffix(marker).unwrap_or(value).trim();
@@ -418,13 +437,11 @@ fn keeps_anchor_signal(before: &str, after: &str) -> bool {
     let tokens: Vec<String> = ["id=\"", "class=\"", "id='", "class='"]
         .iter()
         .flat_map(|prefix| {
-            before
-                .match_indices(prefix)
-                .filter_map(move |(at, _)| {
-                    let rest = &before[at + prefix.len()..];
-                    let end = rest.find(['"', '\''])?;
-                    Some(rest[..end].to_string())
-                })
+            before.match_indices(prefix).filter_map(move |(at, _)| {
+                let rest = &before[at + prefix.len()..];
+                let end = rest.find(['"', '\''])?;
+                Some(rest[..end].to_string())
+            })
         })
         .filter(|value| !value.trim().is_empty())
         .collect();
@@ -538,7 +555,7 @@ pub(crate) fn is_horizontal_rule(line: &str) -> bool {
 /// 是否是标题 / 列表项这类有结构含义的行（这类行不参与「重复行」判定）。
 pub(crate) fn is_structural(line: &str) -> bool {
     let text = line.trim_start();
-    if text.starts_with('#') || text.starts_with("- ") || text.starts_with("* " ) {
+    if text.starts_with('#') || text.starts_with("- ") || text.starts_with("* ") {
         return true;
     }
     if text.starts_with("· ") || text.starts_with("•") || text.starts_with("●") {
@@ -847,7 +864,10 @@ mod tests {
             "片段的中心必须是目标元素本身：{excerpt}"
         );
         // 片段必须是**纯代码**：省略提示曾经混在这里，被模型原样抄进了产物。
-        assert!(!excerpt.contains("省略"), "片段里不能出现给模型看的省略提示：{excerpt}");
+        assert!(
+            !excerpt.contains("省略"),
+            "片段里不能出现给模型看的省略提示：{excerpt}"
+        );
         assert_eq!(excerpt.chars().count(), 600, "按要求的长度摘取");
     }
 
@@ -862,7 +882,10 @@ mod tests {
             .expect("应当能定位到锚点");
         let chars: Vec<char> = page.chars().collect();
         // 区间必须精确切回原片段，否则合并会把改动贴错位置。
-        assert_eq!(chars[span.start..span.end].iter().collect::<String>(), span.text);
+        assert_eq!(
+            chars[span.start..span.end].iter().collect::<String>(),
+            span.text
+        );
         assert!(span.text.contains(target), "区间要覆盖目标元素");
     }
 
@@ -874,7 +897,10 @@ mod tests {
         let (excerpt, located) = take_excerpt(&page, "选择器：body > button#early", 500);
         assert!(located);
         assert!(excerpt.contains(target), "{excerpt}");
-        assert!(excerpt.starts_with(target), "靠开头就该从 0 开始，不留前置内容");
+        assert!(
+            excerpt.starts_with(target),
+            "靠开头就该从 0 开始，不留前置内容"
+        );
     }
 
     /// 窗口比锚点还短时，片段要撑到能装下**锚点本身** —— 看不见目标的片段毫无价值。
@@ -909,7 +935,10 @@ mod tests {
         let page = format!("{head}{target}{}", "B".repeat(1000));
 
         let (excerpt, located) = take_excerpt(&page, "选择器：main > button#gen", 400);
-        assert!(located, "选择器 button#gen 应当能展开成 id=\"gen\" 命中：{excerpt}");
+        assert!(
+            located,
+            "选择器 button#gen 应当能展开成 id=\"gen\" 命中：{excerpt}"
+        );
         assert!(excerpt.contains(target), "{excerpt}");
     }
 
@@ -930,7 +959,10 @@ mod tests {
 
         let span = take_excerpt_with_span(&page, anchor, 400).expect("应当能定位");
         let target = "<button onclick=\"generateNames()\">生成名字</button>";
-        let target_at = page.find(target).map(|b| page[..b].chars().count()).unwrap();
+        let target_at = page
+            .find(target)
+            .map(|b| page[..b].chars().count())
+            .unwrap();
         assert!(
             span.start <= target_at && target_at < span.end,
             "片段必须包住真实的按钮（目标在 {target_at}，片段是 {}..{}）",
@@ -964,7 +996,11 @@ mod tests {
     /// 锚点描述里的标签前缀（「元素：」）要去掉，用特征本身去匹配。
     #[test]
     fn excerpt_strips_the_label_prefix_before_matching() {
-        let page = format!("{}<div class=\"card\">内容</div>{}", "a".repeat(300), "b".repeat(300));
+        let page = format!(
+            "{}<div class=\"card\">内容</div>{}",
+            "a".repeat(300),
+            "b".repeat(300)
+        );
         // 只有"当前文字"那一行的特征能命中。
         let anchor = "元素：span#nope\n选择器：div#nope\n当前文字：内容";
         let (excerpt, located) = take_excerpt(&page, anchor, 400);
@@ -992,13 +1028,20 @@ mod tests {
         // 前后文一字不动。
         assert!(outcome.html.starts_with(&head));
         assert!(outcome.html.ends_with(&tail));
-        assert_eq!(outcome.html.chars().count(), 1000 + patched.chars().count() + 1000);
+        assert_eq!(
+            outcome.html.chars().count(),
+            1000 + patched.chars().count() + 1000
+        );
     }
 
     /// 模型原样抄回片段 = 没改动，要如实报告，不能谎称改过。
     #[test]
     fn merge_patch_reports_when_nothing_actually_changed() {
-        let page = format!("{}<button id=\"gen\">生成</button>{}", "A".repeat(500), "B".repeat(500));
+        let page = format!(
+            "{}<button id=\"gen\">生成</button>{}",
+            "A".repeat(500),
+            "B".repeat(500)
+        );
         let outcome = merge_patch(
             &page,
             "选择器：button#gen",
@@ -1013,7 +1056,11 @@ mod tests {
     /// 模型把「省略」提示抄进代码时，合并前要替它摘掉 —— 否则产物会被这句中文截断。
     #[test]
     fn merge_patch_strips_ellipsis_marks_the_model_copied_in() {
-        let page = format!("{}<button id=\"gen\">生成</button>{}", "A".repeat(500), "B".repeat(500));
+        let page = format!(
+            "{}<button id=\"gen\">生成</button>{}",
+            "A".repeat(500),
+            "B".repeat(500)
+        );
         let outcome = merge_patch(
             &page,
             "选择器：button#gen",
@@ -1022,7 +1069,11 @@ mod tests {
         )
         .expect("应当能合并");
         assert!(outcome.html.contains("再摇一次"));
-        assert!(!outcome.html.contains("省略"), "提示不能进产物：{}", outcome.html);
+        assert!(
+            !outcome.html.contains("省略"),
+            "提示不能进产物：{}",
+            outcome.html
+        );
     }
 
     /// patch 自身缺胳膊少腿（开了标签没关）→ 拒绝合并。
@@ -1039,14 +1090,23 @@ mod tests {
 
         // 只返回了半个 button —— 不合法。
         assert!(
-            merge_patch(&page, "选择器：button#gen", 500, "<button id=\"gen\">再摇一次").is_none(),
+            merge_patch(
+                &page,
+                "选择器：button#gen",
+                500,
+                "<button id=\"gen\">再摇一次"
+            )
+            .is_none(),
             "半截标签必须拒绝"
         );
         // 完整的一小块 —— 放行。
-        assert!(
-            merge_patch(&page, "选择器：button#gen", 500, "<button id=\"gen\">再摇一次</button>")
-                .is_some()
-        );
+        assert!(merge_patch(
+            &page,
+            "选择器：button#gen",
+            500,
+            "<button id=\"gen\">再摇一次</button>"
+        )
+        .is_some());
     }
 
     /// 片段里带 `<html>/<body>/<script>` 上下文时，模型只返回一个元素也必须能合并。
@@ -1060,10 +1120,11 @@ mod tests {
             "<html><body><div>{}</div><script>function go(){{}}</script></body></html>",
             "A".repeat(600)
         );
-        let patch = "<button id=\"gen\" style=\"background-color:#16a34a; color:white;\">再摇一次</button>";
+        let patch =
+            "<button id=\"gen\" style=\"background-color:#16a34a; color:white;\">再摇一次</button>";
         // 造一个锚点指向片段里的某个位置。
-        let outcome = merge_patch(&page, "选择器：script", 2000, patch)
-            .expect("单个元素 patch 必须能合并");
+        let outcome =
+            merge_patch(&page, "选择器：script", 2000, patch).expect("单个元素 patch 必须能合并");
         assert!(outcome.html.contains("再摇一次"));
         assert!(outcome.html.starts_with("<html><body><div>"));
     }
@@ -1071,7 +1132,11 @@ mod tests {
     /// 改后片段体量暴涨数倍 → 说明模型偷着重写了别的东西，拒绝合并。
     #[test]
     fn merge_patch_refuses_a_fragment_that_balloons() {
-        let page = format!("{}<button id=\"gen\">生成</button>{}", "A".repeat(500), "B".repeat(500));
+        let page = format!(
+            "{}<button id=\"gen\">生成</button>{}",
+            "A".repeat(500),
+            "B".repeat(500)
+        );
         let huge = format!("<button id=\"gen\">{}</button>", "改".repeat(4000));
         assert!(merge_patch(&page, "选择器：button#gen", 500, &huge).is_none());
     }
@@ -1094,7 +1159,11 @@ mod tests {
     /// 代码围栏要剥掉，不能把 ``` 也贴进产物。
     #[test]
     fn merge_patch_strips_a_code_fence() {
-        let page = format!("{}<button id=\"gen\">生成</button>{}", "A".repeat(500), "B".repeat(500));
+        let page = format!(
+            "{}<button id=\"gen\">生成</button>{}",
+            "A".repeat(500),
+            "B".repeat(500)
+        );
         let outcome = merge_patch(
             &page,
             "选择器：button#gen",
@@ -1110,6 +1179,8 @@ mod tests {
     #[test]
     fn merge_patch_refuses_when_the_anchor_cannot_be_found() {
         let page = format!("{}<button id=\"gen\">生成</button>", "A".repeat(500));
-        assert!(merge_patch(&page, "选择器：button#不存在", 500, "<button>改了</button>").is_none());
+        assert!(
+            merge_patch(&page, "选择器：button#不存在", 500, "<button>改了</button>").is_none()
+        );
     }
 }

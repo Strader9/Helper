@@ -1,6 +1,6 @@
 //! 行业工作台（industry 域）——电商经营台账 + 工作区绑定 + 行业工作流。
 //!
-//! 对齐 LumiCore 的 industry_workflow_tools，做务实裁剪：
+//! 对齐早期原型的 industry_workflow_tools，做务实裁剪：
 //! - 这些工具**只计算并持久化本地台账**，绝不连外部店铺、不登录、不上架、
 //!   不调价、不发送、不发布。所有外部动作仍走工具层三层闸门由用户确认。
 //! - 「经营快照 / 动作队列 / 客服草稿」的输入是 LLM 已整理好的**内联事实**
@@ -159,7 +159,13 @@ fn write_workspace(v: &Value) -> AppResult<()> {
 // 快照持久化
 // ============================================================
 
-fn persist_snapshot(product_line: &str, kind: &str, title: &str, facts: &Value, result: &Value) -> AppResult<String> {
+fn persist_snapshot(
+    product_line: &str,
+    kind: &str,
+    title: &str,
+    facts: &Value,
+    result: &Value,
+) -> AppResult<String> {
     let db = db()?;
     let id = uuid::Uuid::new_v4().to_string();
     db.connection().execute(
@@ -257,9 +263,18 @@ impl AgentTool for IndustryWorkspaceBindTool {
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
         let mut attrs = json!({});
         for key in [
-            "platform", "storeId", "accountLabel", "reportingPeriod", "timezone",
-            "entityName", "taxpayerId", "jurisdiction", "accountingPeriod", "currency",
-            "caseName", "caseNumber",
+            "platform",
+            "storeId",
+            "accountLabel",
+            "reportingPeriod",
+            "timezone",
+            "entityName",
+            "taxpayerId",
+            "jurisdiction",
+            "accountingPeriod",
+            "currency",
+            "caseName",
+            "caseNumber",
         ] {
             if let Some(v) = args.get(key) {
                 if !v.is_null() {
@@ -327,7 +342,10 @@ impl AgentTool for IndustryEcommerceSnapshotTool {
 
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
         if args.get("sourceBound").and_then(|v| v.as_bool()) != Some(true) {
-            return Ok(ToolResult::err("SOURCE_BOUND_REQUIRED", "sourceBound 必须为 true（事实口径必须来自当前会话）"));
+            return Ok(ToolResult::err(
+                "SOURCE_BOUND_REQUIRED",
+                "sourceBound 必须为 true（事实口径必须来自当前会话）",
+            ));
         }
 
         let revenue = num(&args["revenue"]);
@@ -337,8 +355,16 @@ impl AgentTool for IndustryEcommerceSnapshotTool {
 
         let gmv = revenue;
         let avg_order_value = if orders > 0.0 { revenue / orders } else { 0.0 };
-        let roas = if ad_spend > 0.0 { revenue / ad_spend } else { 0.0 };
-        let refund_rate = if revenue > 0.0 { refunds / revenue } else { 0.0 };
+        let roas = if ad_spend > 0.0 {
+            revenue / ad_spend
+        } else {
+            0.0
+        };
+        let refund_rate = if revenue > 0.0 {
+            refunds / revenue
+        } else {
+            0.0
+        };
 
         let mut inventory_alerts: Vec<Value> = Vec::new();
         for sku in facts_array(&args, "skus") {
@@ -429,7 +455,10 @@ impl AgentTool for IndustryEcommerceActionQueueTool {
 
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
         if args.get("sourceBound").and_then(|v| v.as_bool()) != Some(true) {
-            return Ok(ToolResult::err("SOURCE_BOUND_REQUIRED", "sourceBound 必须为 true"));
+            return Ok(ToolResult::err(
+                "SOURCE_BOUND_REQUIRED",
+                "sourceBound 必须为 true",
+            ));
         }
 
         let mut queue: Vec<Value> = Vec::new();
@@ -481,7 +510,10 @@ impl AgentTool for IndustryEcommerceActionQueueTool {
             "totalContributionProfit": total_profit,
         });
 
-        let title = args["title"].as_str().unwrap_or("SKU 审核动作队列").to_string();
+        let title = args["title"]
+            .as_str()
+            .unwrap_or("SKU 审核动作队列")
+            .to_string();
         let facts = json!({ "skus": facts_array(&args, "skus") });
         let task_id = persist_snapshot("ecommerce", "action_queue", &title, &facts, &snapshot)?;
 
@@ -534,7 +566,10 @@ impl AgentTool for IndustryEcommerceServiceDraftsTool {
 
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
         if args.get("sourceBound").and_then(|v| v.as_bool()) != Some(true) {
-            return Ok(ToolResult::err("SOURCE_BOUND_REQUIRED", "sourceBound 必须为 true"));
+            return Ok(ToolResult::err(
+                "SOURCE_BOUND_REQUIRED",
+                "sourceBound 必须为 true",
+            ));
         }
 
         let case_type = args["caseType"].as_str().unwrap_or("其他").to_string();
@@ -590,9 +625,17 @@ impl AgentTool for IndustryEcommerceServiceDraftsTool {
 fn classify_case(case_type: &str) -> String {
     let t = case_type.trim();
     for (kw, bucket) in [
-        ("退", "退货"), ("款", "退款"), ("物流", "物流"), ("快递", "物流"),
-        ("差评", "差评"), ("评价", "差评"), ("咨询", "咨询"), ("问", "咨询"),
-        ("投诉", "投诉"), ("发票", "发票"), ("售后", "售后"),
+        ("退", "退货"),
+        ("款", "退款"),
+        ("物流", "物流"),
+        ("快递", "物流"),
+        ("差评", "差评"),
+        ("评价", "差评"),
+        ("咨询", "咨询"),
+        ("问", "咨询"),
+        ("投诉", "投诉"),
+        ("发票", "发票"),
+        ("售后", "售后"),
     ] {
         if t.contains(kw) {
             return bucket.to_string();
@@ -710,11 +753,15 @@ impl AgentTool for IndustryWorkflowCompleteTool {
         if task_id.is_empty() {
             return Ok(ToolResult::err("INVALID_TASK", "taskId 不能为空"));
         }
-        let task = crate::work_takeover::get_task(&task_id)?
-            .ok_or_else(|| AppError::InvalidArgument(format!("行业工作流任务不存在：{}", task_id)))?;
+        let task = crate::work_takeover::get_task(&task_id)?.ok_or_else(|| {
+            AppError::InvalidArgument(format!("行业工作流任务不存在：{}", task_id))
+        })?;
 
         if task.category != "industry_workflow" {
-            return Ok(ToolResult::err("NOT_INDUSTRY_TASK", "该任务不是行业工作流任务"));
+            return Ok(ToolResult::err(
+                "NOT_INDUSTRY_TASK",
+                "该任务不是行业工作流任务",
+            ));
         }
         if task.status == "delivered" {
             return Ok(ToolResult::ok(json!({
@@ -722,16 +769,26 @@ impl AgentTool for IndustryWorkflowCompleteTool {
             })));
         }
 
-        let summary = args["resultSummary"].as_str().unwrap_or("").trim().to_string();
+        let summary = args["resultSummary"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if summary.is_empty() {
-            return Ok(ToolResult::err("SUMMARY_REQUIRED", "resultSummary 不能为空；需给出有回执支撑的结果摘要"));
+            return Ok(ToolResult::err(
+                "SUMMARY_REQUIRED",
+                "resultSummary 不能为空；需给出有回执支撑的结果摘要",
+            ));
         }
 
-        let updated = crate::work_takeover::update_task(&task_id, crate::work_takeover::UpdateTaskPatch {
-            status: Some("delivered".to_string()),
-            result: Some(summary.clone()),
-            ..Default::default()
-        })?
+        let updated = crate::work_takeover::update_task(
+            &task_id,
+            crate::work_takeover::UpdateTaskPatch {
+                status: Some("delivered".to_string()),
+                result: Some(summary.clone()),
+                ..Default::default()
+            },
+        )?
         .ok_or_else(|| AppError::Internal("更新任务后读回失败".to_string()))?;
 
         Ok(ToolResult::ok(json!({
@@ -778,7 +835,10 @@ impl AgentTool for BusinessArchiveGetTool {
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
         let line = args["line"].as_str().unwrap_or("ecommerce").to_string();
         if line != "ecommerce" && line != "finance" {
-            return Ok(ToolResult::err("INVALID_LINE", "line 只能是 ecommerce 或 finance"));
+            return Ok(ToolResult::err(
+                "INVALID_LINE",
+                "line 只能是 ecommerce 或 finance",
+            ));
         }
         let query = args["query"].as_str().unwrap_or("").trim().to_lowercase();
 
@@ -850,7 +910,10 @@ mod tests {
 
     #[test]
     fn mask_phone_masks_mobile_numbers() {
-        assert_eq!(mask_phone("联系我 13812345678 谢谢"), "联系我 138****5678 谢谢");
+        assert_eq!(
+            mask_phone("联系我 13812345678 谢谢"),
+            "联系我 138****5678 谢谢"
+        );
         assert_eq!(mask_phone("电话：15987654321"), "电话：159****4321");
     }
 
@@ -861,10 +924,7 @@ mod tests {
 
     #[test]
     fn mask_id_masks_middle_digits() {
-        assert_eq!(
-            mask_id("110101199001011234"),
-            "110101********1234"
-        );
+        assert_eq!(mask_id("110101199001011234"), "110101********1234");
     }
 
     #[test]

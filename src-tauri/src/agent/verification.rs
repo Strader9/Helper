@@ -136,10 +136,7 @@ impl VerificationEngine {
 
     /// 验证 close_program：检查进程是否真正关闭
     fn verify_close_program(&self, arguments: &serde_json::Value) -> VerificationResult {
-        let name = arguments
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let name = arguments.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
         if name.is_empty() {
             return VerificationResult::Fail {
@@ -168,10 +165,7 @@ impl VerificationEngine {
 
     /// 验证 write_file：检查文件是否存在
     fn verify_write_file(&self, arguments: &serde_json::Value) -> VerificationResult {
-        let path = arguments
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
         if path.is_empty() {
             return VerificationResult::Fail {
@@ -382,7 +376,11 @@ impl VerificationEngine {
         result: &ToolResult,
     ) -> VerificationResult {
         if let Some(data) = &result.data {
-            if data.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if data
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
                 VerificationResult::Pass {
                     summary: format!("已聚焦窗口: {}", title),
@@ -411,7 +409,11 @@ impl VerificationEngine {
         result: &ToolResult,
     ) -> VerificationResult {
         if let Some(data) = &result.data {
-            if data.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if data
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
                 VerificationResult::Pass {
                     summary: format!("已最小化窗口: {}", title),
@@ -439,7 +441,11 @@ impl VerificationEngine {
         result: &ToolResult,
     ) -> VerificationResult {
         if let Some(data) = &result.data {
-            if data.get("success").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if data
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
                 VerificationResult::Pass {
                     summary: format!("已发送关闭消息: {}", title),
@@ -466,10 +472,7 @@ impl VerificationEngine {
 
     /// 验证 create_directory
     fn verify_create_directory(&self, arguments: &serde_json::Value) -> VerificationResult {
-        let path = arguments
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
         if path.is_empty() {
             return VerificationResult::Fail {
                 reason: "无法获取目录路径".to_string(),
@@ -488,10 +491,7 @@ impl VerificationEngine {
 
     /// 验证 delete_file
     fn verify_delete_file(&self, arguments: &serde_json::Value) -> VerificationResult {
-        let path = arguments
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
         if path.is_empty() {
             return VerificationResult::Fail {
                 reason: "无法获取文件路径".to_string(),

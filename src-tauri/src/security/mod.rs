@@ -362,7 +362,11 @@ mod tests {
             PermissionResult::Allowed
         );
         assert_eq!(
-            permissions.check_permission(RiskLevel::High, "read_file", Some(r"C:\\Safe-Evil\\note.txt")),
+            permissions.check_permission(
+                RiskLevel::High,
+                "read_file",
+                Some(r"C:\\Safe-Evil\\note.txt")
+            ),
             PermissionResult::ConfirmationRequired
         );
     }

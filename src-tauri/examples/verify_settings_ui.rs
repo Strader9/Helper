@@ -8,18 +8,18 @@
 //! 3. 主动助手的预设规则存在，且阈值是从 trigger_config 里读得出来的
 //! 4. 值校验真的会拒绝越界输入
 
-use pc_guardian_lib::db::Database;
+use e_assisant_lib::db::Database;
 use std::path::PathBuf;
 
 fn main() {
     let appdata = std::env::var("APPDATA").expect("需要 APPDATA");
     let real = PathBuf::from(&appdata)
-        .join("pc-guardian")
-        .join("pc-guardian.db");
+        .join("e-assisant")
+        .join("e-assisant.db");
     let work = std::env::temp_dir().join("pcg-ui-probe");
     let _ = std::fs::remove_dir_all(&work);
     std::fs::create_dir_all(&work).expect("建目录");
-    let copy = work.join("pc-guardian.db");
+    let copy = work.join("e-assisant.db");
     std::fs::copy(&real, &copy).expect("复制库");
 
     let db = Database::new(&copy).expect("打开");
@@ -72,7 +72,7 @@ fn main() {
 
     // 预设规则的阈值可读性
     println!("\n=== 主动助手预设规则 ===");
-    let rules = pc_guardian_lib::proactive::get_rules(db.connection()).expect("读规则");
+    let rules = e_assisant_lib::proactive::get_rules(db.connection()).expect("读规则");
     if rules.is_empty() {
         failures.push("没有任何主动助手规则，界面会是空的".to_string());
     }

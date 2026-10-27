@@ -20,7 +20,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, NaiveDateTime, TimeZone, Timelike};
+use chrono::{
+    DateTime, Datelike, Duration as ChronoDuration, Local, NaiveDate, NaiveDateTime, TimeZone,
+    Timelike,
+};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::Mutex;
@@ -86,22 +89,25 @@ pub fn parse_interval_secs(raw: &str) -> Result<u64, String> {
         return Err("间隔不能为空".to_string());
     }
 
-    let (number_part, multiplier) = if let Some(rest) = text.strip_suffix("sec").or(text.strip_suffix('s')) {
-        (rest.trim(), 1u64)
-    } else if let Some(rest) = text.strip_suffix("min").or(text.strip_suffix('m')) {
-        (rest.trim(), 60u64)
-    } else if let Some(rest) = text.strip_suffix("hour").or(text.strip_suffix('h')) {
-        (rest.trim(), 3600u64)
-    } else if let Some(rest) = text.strip_suffix('d') {
-        (rest.trim(), 86_400u64)
-    } else {
-        (text.as_str(), 1u64)
-    };
+    let (number_part, multiplier) =
+        if let Some(rest) = text.strip_suffix("sec").or(text.strip_suffix('s')) {
+            (rest.trim(), 1u64)
+        } else if let Some(rest) = text.strip_suffix("min").or(text.strip_suffix('m')) {
+            (rest.trim(), 60u64)
+        } else if let Some(rest) = text.strip_suffix("hour").or(text.strip_suffix('h')) {
+            (rest.trim(), 3600u64)
+        } else if let Some(rest) = text.strip_suffix('d') {
+            (rest.trim(), 86_400u64)
+        } else {
+            (text.as_str(), 1u64)
+        };
 
-    let value: u64 = number_part
-        .trim()
-        .parse()
-        .map_err(|_| format!("无法把「{}」解析成间隔秒数，可写成 90 / 30m / 2h", raw.trim()))?;
+    let value: u64 = number_part.trim().parse().map_err(|_| {
+        format!(
+            "无法把「{}」解析成间隔秒数，可写成 90 / 30m / 2h",
+            raw.trim()
+        )
+    })?;
 
     let secs = value
         .checked_mul(multiplier)
@@ -186,7 +192,8 @@ fn parse_cron_field(field: &str, min: u32, max: u32, name: &str) -> Result<Vec<u
 
         if low < min || high > max || low > high {
             return Err(format!(
-                "cron {} 字段超出范围 {}..{}：{}", name, min, max, part
+                "cron {} 字段超出范围 {}..{}：{}",
+                name, min, max, part
             ));
         }
 
@@ -261,9 +268,7 @@ impl CronSpec {
     /// 逐分钟前进，上限一年。一年是刻意的硬上限：像 `0 0 30 2 *` 这种
     /// 永不成立的表达式如果无限找下去，调度线程就卡死了。
     pub fn next_after(&self, from: DateTime<Local>) -> Option<DateTime<Local>> {
-        let start = from
-            .with_second(0)?
-            .with_nanosecond(0)?;
+        let start = from.with_second(0)?.with_nanosecond(0)?;
         let mut cursor = start + ChronoDuration::minutes(1);
 
         for _ in 0..(366 * 24 * 60) {
@@ -370,12 +375,17 @@ fn parse_hour_minute(text: &str) -> Result<(u32, u32), String> {
         .replace('分', "");
 
     if let Some((h, m)) = cleaned.split_once(':') {
-        let hour: u32 = h.trim().parse().map_err(|_| "小时部分不是数字".to_string())?;
+        let hour: u32 = h
+            .trim()
+            .parse()
+            .map_err(|_| "小时部分不是数字".to_string())?;
         let minute_text = m.trim();
         let minute: u32 = if minute_text.is_empty() {
             0
         } else {
-            minute_text.parse().map_err(|_| "分钟部分不是数字".to_string())?
+            minute_text
+                .parse()
+                .map_err(|_| "分钟部分不是数字".to_string())?
         };
         if hour > 23 || minute > 59 {
             return Err(format!("时间超出范围：{}", text.trim()));
@@ -383,7 +393,10 @@ fn parse_hour_minute(text: &str) -> Result<(u32, u32), String> {
         return Ok((hour, minute));
     }
 
-    let hour: u32 = cleaned.trim().parse().map_err(|_| "时间格式无法识别".to_string())?;
+    let hour: u32 = cleaned
+        .trim()
+        .parse()
+        .map_err(|_| "时间格式无法识别".to_string())?;
     if hour > 23 {
         return Err(format!("小时超出范围：{}", text.trim()));
     }
@@ -539,7 +552,8 @@ pub fn list_jobs(conn: &rusqlite::Connection) -> Result<Vec<ScheduledJob>, Strin
     let rows = stmt
         .query_map([], |row| row_to_job(row))
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 pub fn get_job(conn: &rusqlite::Connection, id: &str) -> Result<Option<ScheduledJob>, String> {
@@ -553,7 +567,10 @@ pub fn get_job(conn: &rusqlite::Connection, id: &str) -> Result<Option<Scheduled
 }
 
 /// 按 id 或名称找作业：模型经常只记得名字，不记得 uuid。
-pub fn find_job(conn: &rusqlite::Connection, id_or_name: &str) -> Result<Option<ScheduledJob>, String> {
+pub fn find_job(
+    conn: &rusqlite::Connection,
+    id_or_name: &str,
+) -> Result<Option<ScheduledJob>, String> {
     let key = id_or_name.trim();
     if key.is_empty() {
         return Ok(None);
@@ -661,11 +678,16 @@ pub fn due_jobs(conn: &rusqlite::Connection, now: &str) -> Result<Vec<ScheduledJ
     let rows = stmt
         .query_map([now], |row| row_to_job(row))
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 /// 给无人值守会话建一行会话记录（chat_messages 有外键，必须先有会话）。
-pub fn ensure_session(conn: &rusqlite::Connection, session_id: &str, title: &str) -> Result<(), String> {
+pub fn ensure_session(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    title: &str,
+) -> Result<(), String> {
     let now = now_string();
     conn.execute(
         "INSERT OR IGNORE INTO chat_sessions (id, title, created_at, updated_at, message_count, is_pinned, is_archived) \
@@ -783,11 +805,19 @@ pub fn recent_runs(
                 steps, tools_used FROM scheduled_job_runs";
     let (sql, param): (String, Option<String>) = match job_id {
         Some(id) => (
-            format!("{} WHERE job_id = ?1 ORDER BY started_at DESC LIMIT {}", base, limit.clamp(1, 200)),
+            format!(
+                "{} WHERE job_id = ?1 ORDER BY started_at DESC LIMIT {}",
+                base,
+                limit.clamp(1, 200)
+            ),
             Some(id.to_string()),
         ),
         None => (
-            format!("{} ORDER BY started_at DESC LIMIT {}", base, limit.clamp(1, 200)),
+            format!(
+                "{} ORDER BY started_at DESC LIMIT {}",
+                base,
+                limit.clamp(1, 200)
+            ),
             None,
         ),
     };
@@ -822,7 +852,8 @@ pub fn recent_runs(
         None => stmt.query_map([], map_row).map_err(|e| e.to_string())?,
     };
 
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 // ============================================================
@@ -885,7 +916,9 @@ impl Scheduler {
                             .get_setting("agent.scheduler_enabled")
                             .ok()
                             .flatten()
-                            .map(|v| !matches!(v.trim().to_lowercase().as_str(), "false" | "0" | "off"))
+                            .map(|v| {
+                                !matches!(v.trim().to_lowercase().as_str(), "false" | "0" | "off")
+                            })
                             .unwrap_or(true),
                         Err(_) => true,
                     };
@@ -996,7 +1029,11 @@ async fn run_job(app_handle: &AppHandle, job: &ScheduledJob) -> Result<(), Strin
     // 1. 备好会话与运行记录
     let run_id = {
         let db = state.db.lock().await;
-        ensure_session(db.connection(), &session_id, &format!("定时任务：{}", job.name))?;
+        ensure_session(
+            db.connection(),
+            &session_id,
+            &format!("定时任务：{}", job.name),
+        )?;
         start_run(db.connection(), &job.id, &session_id)?
     };
 
@@ -1041,10 +1078,7 @@ async fn run_job(app_handle: &AppHandle, job: &ScheduledJob) -> Result<(), Strin
 
     eprintln!(
         "[Scheduler] '{}' {}（{}ms，{} 步）",
-        job.name,
-        outcome.status,
-        duration_ms,
-        outcome.steps
+        job.name, outcome.status, duration_ms, outcome.steps
     );
 
     // 4. 只在失败时弹系统通知：成功的任务天天弹等于训练用户忽略通知
@@ -1095,7 +1129,8 @@ fn notify_failure(app_handle: &AppHandle, job: &ScheduledJob, outcome: &RunOutco
 pub(crate) async fn drain_agent_run(
     mut events: tokio::sync::mpsc::Receiver<ChatEvent>,
     timeout_secs: u64,
-) -> RunOutcome {    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+) -> RunOutcome {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
     let mut text = String::new();
     let mut tools: Vec<String> = Vec::new();
     let mut error: Option<String> = None;
@@ -1220,14 +1255,20 @@ mod tests {
     fn next_cron_matches_same_day_later_time() {
         let spec = CronSpec::parse("0 9 * * *").unwrap();
         let next = spec.next_after(at("2026-10-19 08:30:00")).unwrap();
-        assert_eq!(next.format("%Y-%m-%d %H:%M").to_string(), "2026-10-19 09:00");
+        assert_eq!(
+            next.format("%Y-%m-%d %H:%M").to_string(),
+            "2026-10-19 09:00"
+        );
     }
 
     #[test]
     fn next_cron_rolls_to_tomorrow_when_time_passed() {
         let spec = CronSpec::parse("0 9 * * *").unwrap();
         let next = spec.next_after(at("2026-10-19 10:00:00")).unwrap();
-        assert_eq!(next.format("%Y-%m-%d %H:%M").to_string(), "2026-10-20 09:00");
+        assert_eq!(
+            next.format("%Y-%m-%d %H:%M").to_string(),
+            "2026-10-20 09:00"
+        );
     }
 
     #[test]
@@ -1235,7 +1276,10 @@ mod tests {
         // 2026-10-23 是周五，只要工作日 09:00 → 下一次是 10-26（周一）
         let spec = CronSpec::parse("0 9 * * 1-5").unwrap();
         let next = spec.next_after(at("2026-10-23 10:00:00")).unwrap();
-        assert_eq!(next.format("%Y-%m-%d %H:%M").to_string(), "2026-10-26 09:00");
+        assert_eq!(
+            next.format("%Y-%m-%d %H:%M").to_string(),
+            "2026-10-26 09:00"
+        );
     }
 
     #[test]
@@ -1247,11 +1291,26 @@ mod tests {
 
     #[test]
     fn shorthand_daily_and_weekly_expand() {
-        assert_eq!(normalize_schedule(JobKind::Cron, "每天 09:00").unwrap(), "0 9 * * *");
-        assert_eq!(normalize_schedule(JobKind::Cron, "每天 9点").unwrap(), "0 9 * * *");
-        assert_eq!(normalize_schedule(JobKind::Cron, "每周一 08:30").unwrap(), "30 8 * * 1");
-        assert_eq!(normalize_schedule(JobKind::Cron, "每小时").unwrap(), "0 * * * *");
-        assert_eq!(normalize_schedule(JobKind::Cron, "0 9 * * 1-5").unwrap(), "0 9 * * 1-5");
+        assert_eq!(
+            normalize_schedule(JobKind::Cron, "每天 09:00").unwrap(),
+            "0 9 * * *"
+        );
+        assert_eq!(
+            normalize_schedule(JobKind::Cron, "每天 9点").unwrap(),
+            "0 9 * * *"
+        );
+        assert_eq!(
+            normalize_schedule(JobKind::Cron, "每周一 08:30").unwrap(),
+            "30 8 * * 1"
+        );
+        assert_eq!(
+            normalize_schedule(JobKind::Cron, "每小时").unwrap(),
+            "0 * * * *"
+        );
+        assert_eq!(
+            normalize_schedule(JobKind::Cron, "0 9 * * 1-5").unwrap(),
+            "0 9 * * 1-5"
+        );
     }
 
     #[test]
@@ -1274,7 +1333,9 @@ mod tests {
     #[test]
     fn interval_next_run_is_relative_to_now() {
         let from = at("2026-10-19 12:00:00");
-        let next = next_run_after(JobKind::Interval, "3600", from).unwrap().unwrap();
+        let next = next_run_after(JobKind::Interval, "3600", from)
+            .unwrap()
+            .unwrap();
         assert_eq!(next.format("%H:%M").to_string(), "13:00");
     }
 
@@ -1339,7 +1400,9 @@ mod tests {
         })
         .await
         .unwrap();
-        tx.send(ChatEvent::Text("磁盘还剩 12GB".to_string())).await.unwrap();
+        tx.send(ChatEvent::Text("磁盘还剩 12GB".to_string()))
+            .await
+            .unwrap();
         tx.send(ChatEvent::Done).await.unwrap();
         drop(tx);
 
@@ -1354,7 +1417,9 @@ mod tests {
     #[tokio::test]
     async fn drain_treats_error_event_as_failure() {
         let (tx, rx) = tokio::sync::mpsc::channel(4);
-        tx.send(ChatEvent::Error("模型不可用".to_string())).await.unwrap();
+        tx.send(ChatEvent::Error("模型不可用".to_string()))
+            .await
+            .unwrap();
         drop(tx);
 
         let outcome = drain_agent_run(rx, 5).await;
@@ -1391,11 +1456,8 @@ mod tests {
     // ------------------------------------------------------------
 
     fn fresh_db(tag: &str) -> (crate::db::Database, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "pcg-sched-test-{}-{}",
-            tag,
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pcg-sched-test-{}-{}", tag, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("创建临时目录");
         let db = crate::db::Database::new(&dir.join("t.db")).expect("打开数据库");
@@ -1489,13 +1551,18 @@ mod tests {
 
         mark_due_now(conn, &job).expect("标记到期");
         let run_id = start_run(conn, &job.id, "autonomous:test").expect("写运行记录");
-        finish_run(conn, &job, &run_id, &RunOutcome {
-            status: "ok".to_string(),
-            summary: Some("已提醒".to_string()),
-            error: None,
-            steps: 0,
-            tools_used: vec![],
-        })
+        finish_run(
+            conn,
+            &job,
+            &run_id,
+            &RunOutcome {
+                status: "ok".to_string(),
+                summary: Some("已提醒".to_string()),
+                error: None,
+                steps: 0,
+                tools_used: vec![],
+            },
+        )
         .expect("收尾");
 
         let after = get_job(conn, &job.id).expect("读回").expect("存在");
@@ -1525,13 +1592,18 @@ mod tests {
 
         mark_due_now(conn, &job).expect("标记到期");
         let run_id = start_run(conn, &job.id, "autonomous:test").expect("写运行记录");
-        finish_run(conn, &job, &run_id, &RunOutcome {
-            status: "ok".to_string(),
-            summary: None,
-            error: None,
-            steps: 0,
-            tools_used: vec![],
-        })
+        finish_run(
+            conn,
+            &job,
+            &run_id,
+            &RunOutcome {
+                status: "ok".to_string(),
+                summary: None,
+                error: None,
+                steps: 0,
+                tools_used: vec![],
+            },
+        )
         .expect("收尾");
 
         let after = get_job(conn, &job.id).expect("读回").expect("存在");
@@ -1561,13 +1633,18 @@ mod tests {
 
         mark_due_now(conn, &job).expect("标记到期");
         let run_id = start_run(conn, &job.id, "autonomous:test").expect("写运行记录");
-        finish_run(conn, &job, &run_id, &RunOutcome {
-            status: "failed".to_string(),
-            summary: None,
-            error: Some("模型不可用".to_string()),
-            steps: 1,
-            tools_used: vec!["client_state".to_string()],
-        })
+        finish_run(
+            conn,
+            &job,
+            &run_id,
+            &RunOutcome {
+                status: "failed".to_string(),
+                summary: None,
+                error: Some("模型不可用".to_string()),
+                steps: 1,
+                tools_used: vec!["client_state".to_string()],
+            },
+        )
         .expect("收尾");
 
         let after = get_job(conn, &job.id).expect("读回").expect("存在");
@@ -1599,9 +1676,11 @@ mod tests {
 
         assert!(delete_job(conn, &job.id).expect("删除"));
         let runs = recent_runs(conn, Some(&job.id), 10).expect("查历史");
-        assert!(runs.is_empty(), "删任务应连带清掉运行历史（外键 ON DELETE CASCADE）");
+        assert!(
+            runs.is_empty(),
+            "删任务应连带清掉运行历史（外键 ON DELETE CASCADE）"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
 }
-

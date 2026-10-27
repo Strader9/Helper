@@ -24,8 +24,7 @@ fn require_str<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
 
 /// 借一次数据库连接
 fn conn() -> AppResult<rusqlite::Connection> {
-    crate::memory::open_connection()
-        .ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))
+    crate::memory::open_connection().ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))
 }
 
 fn now_text() -> String {
@@ -121,7 +120,11 @@ impl AgentTool for WorkflowCreateTool {
 
         let c = conn()?;
         let exists: Option<String> = c
-            .query_row("SELECT id FROM workflow_defs WHERE name = ?1", [&name], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM workflow_defs WHERE name = ?1",
+                [&name],
+                |r| r.get(0),
+            )
             .ok();
         if exists.is_some() {
             return Ok(ToolResult::err(
@@ -412,7 +415,10 @@ impl AgentTool for WorkflowDeleteTool {
             )
             .unwrap_or(0);
         c.execute("DELETE FROM workflow_steps WHERE run_id IN (SELECT id FROM workflow_runs WHERE workflow_id = ?1)", [&def.id])?;
-        c.execute("DELETE FROM workflow_runs WHERE workflow_id = ?1", [&def.id])?;
+        c.execute(
+            "DELETE FROM workflow_runs WHERE workflow_id = ?1",
+            [&def.id],
+        )?;
         c.execute("DELETE FROM workflow_defs WHERE id = ?1", [&def.id])?;
 
         // 回读：删干净了才算成功
@@ -804,7 +810,11 @@ impl AgentTool for WorkflowCloneTool {
         let def = require_definition(key)?;
         let c = conn()?;
         let taken: Option<String> = c
-            .query_row("SELECT id FROM workflow_defs WHERE name = ?1", [&new_name], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM workflow_defs WHERE name = ?1",
+                [&new_name],
+                |r| r.get(0),
+            )
             .ok();
         if taken.is_some() {
             return Ok(ToolResult::err(
@@ -953,19 +963,19 @@ impl AgentTool for WorkflowImportTool {
     }
 
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
-        let payload: Value = if let Some(path) = args["path"].as_str().filter(|s| !s.trim().is_empty()) {
-            let text = std::fs::read_to_string(path).map_err(|e| {
-                AppError::InvalidArgument(format!("读取导入文件失败: {}", e))
-            })?;
-            serde_json::from_str(&text)
-                .map_err(|e| AppError::InvalidArgument(format!("JSON 解析失败: {}", e)))?
-        } else if let Some(data) = args.get("data") {
-            data.clone()
-        } else {
-            return Err(AppError::InvalidArgument(
-                "path 或 data 至少给一个".to_string(),
-            ));
-        };
+        let payload: Value =
+            if let Some(path) = args["path"].as_str().filter(|s| !s.trim().is_empty()) {
+                let text = std::fs::read_to_string(path)
+                    .map_err(|e| AppError::InvalidArgument(format!("读取导入文件失败: {}", e)))?;
+                serde_json::from_str(&text)
+                    .map_err(|e| AppError::InvalidArgument(format!("JSON 解析失败: {}", e)))?
+            } else if let Some(data) = args.get("data") {
+                data.clone()
+            } else {
+                return Err(AppError::InvalidArgument(
+                    "path 或 data 至少给一个".to_string(),
+                ));
+            };
 
         let items: Vec<Value> = match payload {
             Value::Array(arr) => arr,
@@ -1096,7 +1106,11 @@ mod tests {
     #[test]
     fn require_definition_says_what_to_do_next() {
         let err = require_definition("不存在的流程").unwrap_err().to_string();
-        assert!(err.contains("workflow_list"), "错误信息应给出下一步: {}", err);
+        assert!(
+            err.contains("workflow_list"),
+            "错误信息应给出下一步: {}",
+            err
+        );
     }
 
     #[test]

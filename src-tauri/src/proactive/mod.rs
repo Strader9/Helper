@@ -15,9 +15,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 use tokio::sync::Mutex;
 
-use chrono::{DateTime, Datelike, Local};
 use crate::monitoring::{get_system_metrics, SystemMetrics};
 use crate::tools::executor::ToolCallRequest;
+use chrono::{DateTime, Datelike, Local};
 
 // ============================================================
 // 数据模型
@@ -177,11 +177,16 @@ pub fn get_rules(conn: &rusqlite::Connection) -> Result<Vec<ProactiveRule>, Stri
         })
         .map_err(|e| e.to_string())?;
 
-    rules.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rules
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 /// 根据 ID 获取规则
-pub fn get_rule_by_id(conn: &rusqlite::Connection, id: &str) -> Result<Option<ProactiveRule>, String> {
+pub fn get_rule_by_id(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<ProactiveRule>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, name, trigger_type, trigger_config, action_type, action_config, \
@@ -379,8 +384,7 @@ pub fn upgrade_preset_messages(conn: &rusqlite::Connection) -> Result<usize, Str
 
         action.message = new_message.to_string();
         let mut updated = rule.clone();
-        updated.action_config =
-            serde_json::to_string(&action).map_err(|e| e.to_string())?;
+        updated.action_config = serde_json::to_string(&action).map_err(|e| e.to_string())?;
         update_rule(conn, &updated)?;
         upgraded += 1;
     }
@@ -417,7 +421,8 @@ fn build_preset_rules() -> Vec<ProactiveRule> {
                 // `{threshold}` 是占位符，发送通知时替换成规则**当前**的阈值。
                 // 写死数字会导致用户改了阈值后，通知文案还在说旧值——
                 // "已超过 90%" 而实际卡在 75% 触发，属于自相矛盾。
-                message: "系统内存使用率已超过 {threshold}%，建议关闭不必要的应用程序。".to_string(),
+                message: "系统内存使用率已超过 {threshold}%，建议关闭不必要的应用程序。"
+                    .to_string(),
                 level: "warning".to_string(),
             })
             .unwrap(),
@@ -442,7 +447,9 @@ fn build_preset_rules() -> Vec<ProactiveRule> {
             action_type: ActionType::Notify.as_str().to_string(),
             action_config: serde_json::to_string(&NotifyAction {
                 title: "CPU 负载过高".to_string(),
-                message: "CPU 使用率已持续超过 {threshold}%，电脑可能出现卡顿，建议检查占用高的进程。".to_string(),
+                message:
+                    "CPU 使用率已持续超过 {threshold}%，电脑可能出现卡顿，建议检查占用高的进程。"
+                        .to_string(),
                 level: "warning".to_string(),
             })
             .unwrap(),
@@ -467,7 +474,8 @@ fn build_preset_rules() -> Vec<ProactiveRule> {
             action_type: ActionType::Notify.as_str().to_string(),
             action_config: serde_json::to_string(&NotifyAction {
                 title: "C盘空间不足".to_string(),
-                message: "C盘可用空间已不足 {threshold}GB，建议清理临时文件或卸载不常用软件。".to_string(),
+                message: "C盘可用空间已不足 {threshold}GB，建议清理临时文件或卸载不常用软件。"
+                    .to_string(),
                 level: "critical".to_string(),
             })
             .unwrap(),
@@ -535,10 +543,16 @@ fn evaluate_system_metric_rule(
     metrics: &SystemMetrics,
 ) -> (bool, String) {
     let (current_value, value_desc) = match trigger.metric.as_str() {
-        "cpu" => (metrics.cpu_usage as f64, format!("CPU {:.1}%", metrics.cpu_usage)),
+        "cpu" => (
+            metrics.cpu_usage as f64,
+            format!("CPU {:.1}%", metrics.cpu_usage),
+        ),
         "memory" => (
             metrics.memory_usage_percent as f64,
-            format!("内存 {:.1}% ({:.1}GB / {:.1}GB)", metrics.memory_usage_percent, metrics.memory_used_gb, metrics.memory_total_gb),
+            format!(
+                "内存 {:.1}% ({:.1}GB / {:.1}GB)",
+                metrics.memory_usage_percent, metrics.memory_used_gb, metrics.memory_total_gb
+            ),
         ),
         "disk" => {
             let drive = trigger.drive.as_deref().unwrap_or("C:");
@@ -625,8 +639,8 @@ pub struct OpenAppAction {
 /// V21: 获取当前进程名称列表
 #[cfg(windows)]
 fn get_process_names() -> Vec<String> {
-    use std::process::Command;
     use std::os::windows::process::CommandExt;
+    use std::process::Command;
     let output = Command::new("tasklist")
         .args(["/FO", "CSV", "/NH"])
         .creation_flags(0x08000000)
@@ -646,7 +660,9 @@ fn get_process_names() -> Vec<String> {
 }
 
 #[cfg(not(windows))]
-fn get_process_names() -> Vec<String> { Vec::new() }
+fn get_process_names() -> Vec<String> {
+    Vec::new()
+}
 
 /// V21: 评估 schedule 规则是否满足触发条件
 fn evaluate_schedule_rule(rule: &ProactiveRule) -> bool {
@@ -710,19 +726,24 @@ fn detect_new_processes(
                 .into_iter()
                 .filter(|p| p.contains(&target))
                 .collect();
-            if matched.is_empty() { None } else { Some(matched) }
+            if matched.is_empty() {
+                None
+            } else {
+                Some(matched)
+            }
         }
         "unknown" => {
-            let whitelist: std::collections::HashSet<String> = trigger
-                .whitelist
-                .iter()
-                .map(|s| s.to_lowercase())
-                .collect();
+            let whitelist: std::collections::HashSet<String> =
+                trigger.whitelist.iter().map(|s| s.to_lowercase()).collect();
             let unknown: Vec<String> = new_procs
                 .into_iter()
                 .filter(|p| !whitelist.contains(p))
                 .collect();
-            if unknown.is_empty() { None } else { Some(unknown) }
+            if unknown.is_empty() {
+                None
+            } else {
+                Some(unknown)
+            }
         }
         _ => Some(new_procs),
     }
@@ -868,9 +889,8 @@ impl ProactiveEngine {
                 // 获取系统指标
                 let metrics = get_system_metrics();
                 checks_count.fetch_add(1, Ordering::Relaxed);
-                *last_check.lock().await = Some(
-                    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                );
+                *last_check.lock().await =
+                    Some(chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
 
                 // V21: 获取当前进程列表（用于 process 触发器）
                 let current_processes = get_process_names();
@@ -926,13 +946,8 @@ impl ProactiveEngine {
                                 }
 
                                 // 执行动作
-                                execute_action(
-                                    &app_handle,
-                                    rule,
-                                    &value_desc,
-                                    &triggers_count,
-                                )
-                                .await;
+                                execute_action(&app_handle, rule, &value_desc, &triggers_count)
+                                    .await;
 
                                 // 记录触发
                                 {
@@ -954,7 +969,13 @@ impl ProactiveEngine {
                                     continue;
                                 }
                                 let now = Local::now().format("%H:%M").to_string();
-                                execute_action(&app_handle, rule, &format!("定时触发 {}", now), &triggers_count).await;
+                                execute_action(
+                                    &app_handle,
+                                    rule,
+                                    &format!("定时触发 {}", now),
+                                    &triggers_count,
+                                )
+                                .await;
                                 {
                                     let state = app_handle.state::<crate::AppState>();
                                     let db = state.db.lock().await;
@@ -965,12 +986,15 @@ impl ProactiveEngine {
                         // V21: Process 触发器（进程变化检测）
                         TriggerType::Process => {
                             if let Some(ref prev) = *last_processes.lock().await {
-                                if let Some(new_procs) = detect_new_processes(prev, &current_processes, rule) {
+                                if let Some(new_procs) =
+                                    detect_new_processes(prev, &current_processes, rule)
+                                {
                                     if !is_offline_cooldown_ok(&rule.last_triggered, cooldown_sec) {
                                         continue;
                                     }
                                     let context = format!("新进程: {}", new_procs.join(", "));
-                                    execute_action(&app_handle, rule, &context, &triggers_count).await;
+                                    execute_action(&app_handle, rule, &context, &triggers_count)
+                                        .await;
                                     {
                                         let state = app_handle.state::<crate::AppState>();
                                         let db = state.db.lock().await;
@@ -1007,9 +1031,9 @@ impl ProactiveEngine {
 
         ProactiveStatus {
             running,
-            rules_total: 0,      // 由命令层从数据库补充
-            rules_enabled: 0,    // 由命令层从数据库补充
-            last_check: None,    // 由命令层补充
+            rules_total: 0,   // 由命令层从数据库补充
+            rules_enabled: 0, // 由命令层从数据库补充
+            last_check: None, // 由命令层补充
             checks_count: checks,
             triggers_count: triggers,
         }
@@ -1022,7 +1046,12 @@ impl ProactiveEngine {
 
 /// 执行规则配置的动作
 /// V21: 显示系统通知（同时发送 Tauri 事件供前端展示）
-fn emit_proactive_notification(app_handle: &AppHandle, payload: &serde_json::Value, title: &str, message: &str) {
+fn emit_proactive_notification(
+    app_handle: &AppHandle,
+    payload: &serde_json::Value,
+    title: &str,
+    message: &str,
+) {
     // 1. 发送 Tauri 事件（前端 Settings 页面监听并展示）
     let _ = app_handle.emit("proactive:notification", payload.to_string());
 
@@ -1155,9 +1184,16 @@ async fn execute_action(
 
                     // 写入审计日志（auto_approved）
                     write_proactive_audit_log(
-                        app_handle, rule, &action.tool_name, &risk,
-                        &action.arguments, true, success, &summary,
-                    ).await;
+                        app_handle,
+                        rule,
+                        &action.tool_name,
+                        &risk,
+                        &action.arguments,
+                        true,
+                        success,
+                        &summary,
+                    )
+                    .await;
                 }
                 _ => {
                     // MEDIUM/HIGH 风险：降级为通知，不自动执行
@@ -1230,9 +1266,16 @@ async fn execute_action(
             triggers_count.fetch_add(1, Ordering::Relaxed);
 
             write_proactive_audit_log(
-                app_handle, rule, "launch_program", &crate::tools::RiskLevel::Low,
-                &args, true, success, &summary,
-            ).await;
+                app_handle,
+                rule,
+                "launch_program",
+                &crate::tools::RiskLevel::Low,
+                &args,
+                true,
+                success,
+                &summary,
+            )
+            .await;
         }
     }
 }
@@ -1297,7 +1340,11 @@ async fn write_proactive_audit_log(
             tool_name,
             format!("{:?}", risk),
             arguments.to_string(),
-            if auto_approved { "auto_approved" } else { "requires_confirmation" },
+            if auto_approved {
+                "auto_approved"
+            } else {
+                "requires_confirmation"
+            },
             "proactive_engine",
             if success { 1 } else { 0 },
             format!("[Proactive:{}] {}", rule.name, summary),

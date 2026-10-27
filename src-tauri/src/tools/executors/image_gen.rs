@@ -48,14 +48,22 @@ pub fn sniff_image(bytes: &[u8]) -> Option<ImageMeta> {
         }
         let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
         let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
-        return Some(ImageMeta { format: "png", width, height });
+        return Some(ImageMeta {
+            format: "png",
+            width,
+            height,
+        });
     }
 
     // GIF: "GIF87a" / "GIF89a"，宽高小端位于 6..10
     if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
         let width = u16::from_le_bytes([bytes[6], bytes[7]]) as u32;
         let height = u16::from_le_bytes([bytes[8], bytes[9]]) as u32;
-        return Some(ImageMeta { format: "gif", width, height });
+        return Some(ImageMeta {
+            format: "gif",
+            width,
+            height,
+        });
     }
 
     // WebP: RIFF....WEBP
@@ -64,18 +72,30 @@ pub fn sniff_image(bytes: &[u8]) -> Option<ImageMeta> {
         if chunk == b"VP8X" {
             let width = 1 + u32::from_le_bytes([bytes[24], bytes[25], bytes[26], 0]);
             let height = 1 + u32::from_le_bytes([bytes[27], bytes[28], bytes[29], 0]);
-            return Some(ImageMeta { format: "webp", width, height });
+            return Some(ImageMeta {
+                format: "webp",
+                width,
+                height,
+            });
         }
         if chunk == b"VP8 " && bytes.len() >= 30 {
             let width = u16::from_le_bytes([bytes[26], bytes[27]]) as u32 & 0x3FFF;
             let height = u16::from_le_bytes([bytes[28], bytes[29]]) as u32 & 0x3FFF;
-            return Some(ImageMeta { format: "webp", width, height });
+            return Some(ImageMeta {
+                format: "webp",
+                width,
+                height,
+            });
         }
         if chunk == b"VP8L" && bytes.len() >= 25 {
             let bits = u32::from_le_bytes([bytes[21], bytes[22], bytes[23], bytes[24]]);
             let width = (bits & 0x3FFF) + 1;
             let height = ((bits >> 14) & 0x3FFF) + 1;
-            return Some(ImageMeta { format: "webp", width, height });
+            return Some(ImageMeta {
+                format: "webp",
+                width,
+                height,
+            });
         }
         return None;
     }
@@ -118,7 +138,11 @@ pub fn sniff_image(bytes: &[u8]) -> Option<ImageMeta> {
                 }
                 let height = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
                 let width = u16::from_be_bytes([bytes[i + 7], bytes[i + 8]]) as u32;
-                return Some(ImageMeta { format: "jpeg", width, height });
+                return Some(ImageMeta {
+                    format: "jpeg",
+                    width,
+                    height,
+                });
             }
             i += 2 + len;
         }
@@ -128,12 +152,12 @@ pub fn sniff_image(bytes: &[u8]) -> Option<ImageMeta> {
     None
 }
 
-/// 默认落点：`<图片目录>/PCGuardian`；没有图片目录的老系统退到用户目录。
+/// 默认落点：`<图片目录>/EAssisant`；没有图片目录的老系统退到用户目录。
 pub fn default_image_dir() -> PathBuf {
     dirs::picture_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join("Pictures")))
         .unwrap_or_else(std::env::temp_dir)
-        .join("PCGuardian")
+        .join("EAssisant")
 }
 
 fn resolve_dir(requested: Option<&str>, default: PathBuf) -> AppResult<PathBuf> {
@@ -184,7 +208,7 @@ impl AgentTool for ImageGenerateTool {
                 "size": { "type": "string", "description": "可选，如 1024x1024 / 1792x1024；留空用设置里的默认值" },
                 "n": { "type": "integer", "description": "生成张数，1-4，默认 1" },
                 "model": { "type": "string", "description": "可选，覆盖设置里的模型名" },
-                "output_dir": { "type": "string", "description": "可选，保存目录；相对路径基于默认图片目录，默认 <图片目录>/PCGuardian" }
+                "output_dir": { "type": "string", "description": "可选，保存目录；相对路径基于默认图片目录，默认 <图片目录>/EAssisant" }
             },
             "required": ["prompt"],
             "additionalProperties": false
@@ -234,7 +258,7 @@ impl AgentTool for ImageGenerateTool {
         let url = endpoint(&cfg.base_url, "images/generations");
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_millis(cfg.timeout_ms))
-            .user_agent("pc-guardian/0.1")
+            .user_agent("e-assisant/0.1")
             .build()
             .map_err(|e| AppError::Internal(format!("HTTP 客户端构造失败: {e}")))?;
 
@@ -397,14 +421,7 @@ impl AgentTool for ImageGenerateTool {
             } else {
                 let first_path = saved[0]["path"].as_str().unwrap_or_default();
                 let total: i64 = saved.iter().filter_map(|v| v["bytes"].as_i64()).sum();
-                update_generation(
-                    id,
-                    "completed",
-                    None,
-                    Some(first_path),
-                    Some(total),
-                    None,
-                );
+                update_generation(id, "completed", None, Some(first_path), Some(total), None);
             }
         }
 
@@ -434,7 +451,10 @@ impl AgentTool for ImageGenerateTool {
 }
 
 /// 从单条结果里取出图片字节：优先 b64_json（无需二次下载），否则取 url。
-async fn image_bytes_from_item(client: &reqwest::Client, item: &Value) -> Result<Option<Vec<u8>>, String> {
+async fn image_bytes_from_item(
+    client: &reqwest::Client,
+    item: &Value,
+) -> Result<Option<Vec<u8>>, String> {
     use base64::Engine;
 
     if let Some(b64) = item.get("b64_json").and_then(|v| v.as_str()) {

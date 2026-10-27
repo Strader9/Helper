@@ -2,7 +2,7 @@ import * as React from "react";
 import { cn } from "../../lib/cn";
 
 /**
- * 卡片（对齐 LumiCore Card）。
+ * 卡片（对齐 EAssistantCore Card）。
  *
  * 层级只靠两件事：卡片比背景亮一档的底色 + 1px 半透明 ring。
  * 不用投影。桌面应用里大面积投影会显得脏，阴影只留给真正浮起来的

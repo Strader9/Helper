@@ -1,6 +1,6 @@
 //! 记忆衰减：按层级（tier）调整时间衰减率
 //!
-//! 借鉴 LumiCore 的 MemoryTier 分层（episodic → internalized → growth → core_identity），
+//! 借鉴早期原型的 MemoryTier 分层（episodic → internalized → growth → core_identity），
 //! 用 Rust 重写。核心思想：不同层级的记忆以不同速率淡出检索结果——
 //! 原始对话记忆（episodic）快速淡出，核心身份（core_identity）永不衰减。
 

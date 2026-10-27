@@ -1,14 +1,14 @@
 [package]
-name = "pc-guardian"
+name = "e-assisant"
 version = "0.1.0"
-description = "PC Guardian AI - Local-first Windows Desktop AI Agent"
-authors = ["PC Guardian Team"]
+description = "E-Assisant - Local-first Windows Desktop AI Agent"
+authors = ["E-Assisant Team"]
 license = "AGPL-3.0-or-later"
 edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "pc_guardian_lib"
+name = "e_assisant_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

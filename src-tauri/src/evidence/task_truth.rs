@@ -174,7 +174,10 @@ fn summarize(receipt: &ToolReceipt, status: VerificationStatus, missing: &[Strin
                 "{}：工具说成功，但核对结果是「{}」，不算完成",
                 receipt.tool_name, evidence
             ),
-            None => format!("{}：工具说成功，但核对结果相反，不算完成", receipt.tool_name),
+            None => format!(
+                "{}：工具说成功，但核对结果相反，不算完成",
+                receipt.tool_name
+            ),
         },
         VerificationStatus::Failed => {
             let code = receipt.error_code.as_deref().unwrap_or("未知错误");
@@ -310,9 +313,9 @@ pub fn build(run_id: Option<&str>, receipts: &[ToolReceipt]) -> TaskTruthSnapsho
 /// 不用正则库：要的只是"这句话在声称事情办完了吗"，
 /// 词表加窗口够用，也不必为它把整条依赖引进二进制。
 const ACTION_VERBS: &[&str] = &[
-    "打开", "启动", "创建", "新建", "写入", "保存", "发送", "生成", "导出",
-    "上传", "下载", "安装", "卸载", "关闭", "删除", "修改", "绘制", "执行",
-    "完成", "处理", "搞定", "弄好", "办好", "重启", "切换", "设置", "整理",
+    "打开", "启动", "创建", "新建", "写入", "保存", "发送", "生成", "导出", "上传", "下载", "安装",
+    "卸载", "关闭", "删除", "修改", "绘制", "执行", "完成", "处理", "搞定", "弄好", "办好", "重启",
+    "切换", "设置", "整理",
 ];
 
 /// 出现在动作词**之前**的完成标记（五个字以内，"已经帮你打开了"也要能认出来）
@@ -328,8 +331,14 @@ const NEGATION_MARKERS: &[&str] = &[
 
 /// 英文的完成语，只保留最典型的一批。
 const CLAIM_MARKERS_EN: &[&str] = &[
-    "successfully ", "all done", "task complete", "operation complete",
-    "has been created", "has been opened", "has been saved", "is now open",
+    "successfully ",
+    "all done",
+    "task complete",
+    "operation complete",
+    "has been created",
+    "has been opened",
+    "has been saved",
+    "is now open",
 ];
 
 /// 取 `index` 前最多 `n` 个字（按字符边界切，不会切坏 UTF-8）。
@@ -357,7 +366,9 @@ fn after(text: &str, index: usize, n: usize) -> &str {
 
 fn negated_at(text: &str, index: usize) -> bool {
     let window = before(text, index, 3);
-    NEGATION_MARKERS.iter().any(|marker| window.contains(marker))
+    NEGATION_MARKERS
+        .iter()
+        .any(|marker| window.contains(marker))
 }
 
 /// 这段话在声称"已经做完了"吗。
@@ -386,7 +397,9 @@ pub fn claims_success(text: &str) -> bool {
         }
     }
     let lowered = text.to_lowercase();
-    CLAIM_MARKERS_EN.iter().any(|marker| lowered.contains(marker))
+    CLAIM_MARKERS_EN
+        .iter()
+        .any(|marker| lowered.contains(marker))
 }
 
 /// 对模型最终回复的判定：它说的和账本对得上吗。
@@ -416,9 +429,7 @@ fn correction_for(snapshot: &TaskTruthSnapshot) -> String {
         TaskVerdict::Unverified => {
             "这一步我还不能确认完成：没有拿到可以核对的证据。你可以让我再试一次。".to_string()
         }
-        TaskVerdict::Partial => {
-            "这一步只完成了一部分：有些操作有证据，有些没有。".to_string()
-        }
+        TaskVerdict::Partial => "这一步只完成了一部分：有些操作有证据，有些没有。".to_string(),
         _ => "这一步的结果我无法确认。".to_string(),
     }
 }
@@ -491,7 +502,12 @@ mod tests {
     fn one_contradicted_call_vetoes_the_whole_run() {
         let receipts = vec![
             receipt("write_file", "local_write", "VERIFIED", Some("回读一致")),
-            receipt("start_process", "process_execution", "CONTRADICTED", Some("进程未在运行")),
+            receipt(
+                "start_process",
+                "process_execution",
+                "CONTRADICTED",
+                Some("进程未在运行"),
+            ),
         ];
         let snapshot = build(Some("run-1"), &receipts);
         assert_eq!(snapshot.verdict, TaskVerdict::Contradicted);
@@ -505,7 +521,10 @@ mod tests {
             receipt("write_file", "local_write", "VERIFIED", Some("回读一致")),
             receipt("set_volume", "local_state_change", "UNVERIFIED", None),
         ];
-        assert_eq!(build(Some("run-1"), &receipts).verdict, TaskVerdict::Partial);
+        assert_eq!(
+            build(Some("run-1"), &receipts).verdict,
+            TaskVerdict::Partial
+        );
     }
 
     #[test]
@@ -523,7 +542,10 @@ mod tests {
             receipt("read_file", "local_read", "NOT_REQUIRED", None),
             receipt("write_file", "local_write", "VERIFIED", Some("回读一致")),
         ];
-        assert_eq!(build(Some("run-1"), &receipts).verdict, TaskVerdict::Verified);
+        assert_eq!(
+            build(Some("run-1"), &receipts).verdict,
+            TaskVerdict::Verified
+        );
     }
 
     #[test]
@@ -536,7 +558,12 @@ mod tests {
 
     #[test]
     fn unbacked_claim_gets_a_correction() {
-        let receipts = vec![receipt("start_process", "process_execution", "UNVERIFIED", None)];
+        let receipts = vec![receipt(
+            "start_process",
+            "process_execution",
+            "UNVERIFIED",
+            None,
+        )];
         let snapshot = build(Some("run-1"), &receipts);
         let assessment = assess_claim("已经帮你打开了记事本。", &snapshot);
         assert!(assessment.claims_success);
@@ -546,7 +573,12 @@ mod tests {
 
     #[test]
     fn backed_claim_is_left_alone() {
-        let receipts = vec![receipt("write_file", "local_write", "VERIFIED", Some("回读一致"))];
+        let receipts = vec![receipt(
+            "write_file",
+            "local_write",
+            "VERIFIED",
+            Some("回读一致"),
+        )];
         let snapshot = build(Some("run-1"), &receipts);
         let assessment = assess_claim("文件已写入。", &snapshot);
         assert!(assessment.claims_success);
@@ -558,7 +590,12 @@ mod tests {
     fn evidence_line_carries_the_receipt_timestamp() {
         // 证据时间线靠这个字段画刻度：一旦它在映射时被丢掉，
         // 界面上就只剩一堆没有先后的行。
-        let line = evidence_line(&receipt("write_file", "local_write", "VERIFIED", Some("回读一致")));
+        let line = evidence_line(&receipt(
+            "write_file",
+            "local_write",
+            "VERIFIED",
+            Some("回读一致"),
+        ));
         assert_eq!(line.at, "2026-10-19 12:00:00");
     }
 

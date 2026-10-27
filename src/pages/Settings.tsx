@@ -740,7 +740,7 @@ export default function Settings() {
                 <Card>
                   <SectionHeader className="px-4 pt-4" title="运行信息" description="全部来自本机，不上云" />
                   <div className="px-4 pb-4 pt-1">
-                    <KeyValue label="产品">PC Guardian</KeyValue>
+                    <KeyValue label="产品">E-Assisant</KeyValue>
                     <KeyValue label="版本" mono>0.1.0</KeyValue>
                     <KeyValue label="内核">Rust + Tauri 2</KeyValue>
                     <KeyValue label="数据位置" mono>

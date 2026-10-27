@@ -10,5 +10,5 @@
 未迁入：Python 虚拟环境、Electron 桌面壳、模型权重、编译出的 worker、日志、
 记忆、课程会话及其他本机运行数据。
 
-原因：PC Guardian 已提供 Tauri/React 桌面壳；这些未迁入项不是源码或不适合纳入
+原因：E-Assisant 已提供 Tauri/React 桌面壳；这些未迁入项不是源码或不适合纳入
 版本控制。模型和构建产物由本机配置指定。

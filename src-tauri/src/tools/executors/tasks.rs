@@ -2,7 +2,7 @@
 //!
 //! 让助手能自己排计划、报进度、记断点、接着干。
 //!
-//! 与 LumiCore 的 workflow 那套的差别：那边是"可发布、可复用的流程包"
+//! 与早期原型的 workflow 那套的差别：那边是"可发布、可复用的流程包"
 //! （save/publish/run/pause/reconcile 一整套生命周期），这里只做
 //! **单个任务的执行轨迹**——计划、步骤状态、断点、错误。理由很简单：
 //! helper 现在连"这一轮干了什么、干到哪一步"都留不下来，先把这个补上，
@@ -338,7 +338,12 @@ impl AgentTool for GetAgentTaskTool {
 
         let task = match with_tasks(|manager| manager.get(task_id))? {
             Some(task) => task,
-            None => return Ok(ToolResult::err("NOT_FOUND", &format!("找不到任务 {}", task_id))),
+            None => {
+                return Ok(ToolResult::err(
+                    "NOT_FOUND",
+                    &format!("找不到任务 {}", task_id),
+                ))
+            }
         };
 
         Ok(ToolResult::ok(task_detail(&task)))
@@ -466,7 +471,10 @@ impl AgentTool for UpdateTaskStepTool {
             other => {
                 return Ok(ToolResult::err(
                     "INVALID_STATUS",
-                    &format!("不支持的状态 {}，只接受 start / completed / failed / skipped", other),
+                    &format!(
+                        "不支持的状态 {}，只接受 start / completed / failed / skipped",
+                        other
+                    ),
                 ))
             }
         }
@@ -626,7 +634,12 @@ impl AgentTool for ResumeTaskContextTool {
         let remaining: Vec<Value> = task
             .plan
             .iter()
-            .filter(|s| matches!(s.status, StepStatus::Pending | StepStatus::Executing | StepStatus::Failed))
+            .filter(|s| {
+                matches!(
+                    s.status,
+                    StepStatus::Pending | StepStatus::Executing | StepStatus::Failed
+                )
+            })
             .map(|s| {
                 json!({
                     "step_id": s.step_id,
@@ -638,9 +651,9 @@ impl AgentTool for ResumeTaskContextTool {
             })
             .collect();
 
-        let next = task.next_pending_step().map(|s| {
-            json!({ "step_id": s.step_id, "action": s.action, "tool_name": s.tool_name })
-        });
+        let next = task
+            .next_pending_step()
+            .map(|s| json!({ "step_id": s.step_id, "action": s.action, "tool_name": s.tool_name }));
 
         let last_errors: Vec<Value> = task
             .errors
@@ -698,7 +711,10 @@ mod tests {
     #[test]
     fn parse_steps_rejects_object_without_action() {
         let raw = vec![json!({ "tool_name": "write_file" })];
-        assert!(parse_steps(&raw).is_err(), "缺 action 必须报错，不能静默跳过");
+        assert!(
+            parse_steps(&raw).is_err(),
+            "缺 action 必须报错，不能静默跳过"
+        );
     }
 
     /// 端到端：建计划 → 推进步骤 → 断点续做 → 取消。
@@ -745,7 +761,10 @@ mod tests {
             .expect("update step 1");
         assert!(step1.success, "{:?}", step1.error);
         let d1 = step1.data.expect("有数据");
-        assert_eq!(d1["persisted_status"], "completed", "落库状态必须是 completed");
+        assert_eq!(
+            d1["persisted_status"], "completed",
+            "落库状态必须是 completed"
+        );
         assert_eq!(d1["progress_percent"], 33);
 
         // 重复上报同一步：不能把 completed_steps 塞两遍（33% 变 66% 是假的）

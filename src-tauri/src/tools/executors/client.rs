@@ -35,24 +35,20 @@ fn uptime_seconds() -> Option<u64> {
 // ============================================================
 
 fn require_conn() -> AppResult<rusqlite::Connection> {
-    crate::memory::open_connection()
-        .ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))
+    crate::memory::open_connection().ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))
 }
 
 /// 表名只允许字母数字下划线：来源虽是 sqlite_master，但拼进 SQL 前仍要过一遍。
 fn safe_table_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// 统计每张表的行数，按行数倒序。
 fn table_row_counts(conn: &rusqlite::Connection, limit: usize) -> Vec<(String, i64)> {
     let mut tables: Vec<String> = Vec::new();
-    if let Ok(mut stmt) = conn.prepare(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
-    ) {
+    if let Ok(mut stmt) = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+    {
         if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
             for name in rows.flatten() {
                 if safe_table_name(&name) {
@@ -66,7 +62,9 @@ fn table_row_counts(conn: &rusqlite::Connection, limit: usize) -> Vec<(String, i
         .into_iter()
         .map(|name| {
             let count: i64 = conn
-                .query_row(&format!("SELECT COUNT(*) FROM {}", name), [], |row| row.get(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {}", name), [], |row| {
+                    row.get(0)
+                })
                 .unwrap_or(-1);
             (name, count)
         })
@@ -133,10 +131,12 @@ impl AgentTool for ClientStateTool {
 
         let snapshot = registry::registry_snapshot();
         let categories: std::collections::BTreeMap<&str, usize> =
-            snapshot.iter().fold(Default::default(), |mut acc, (_, category)| {
-                *acc.entry(category.as_str()).or_insert(0) += 1;
-                acc
-            });
+            snapshot
+                .iter()
+                .fold(Default::default(), |mut acc, (_, category)| {
+                    *acc.entry(category.as_str()).or_insert(0) += 1;
+                    acc
+                });
 
         Ok(ToolResult::ok(json!({
             "version": env!("CARGO_PKG_VERSION"),
@@ -381,7 +381,10 @@ impl AgentTool for ClientHealthCheckTool {
             findings.push(format!("过去 24 小时有 {} 次工具调用失败", recent_failed));
         }
 
-        let status = if findings.iter().any(|f| f.contains("完整性") || f.contains("不可写")) {
+        let status = if findings
+            .iter()
+            .any(|f| f.contains("完整性") || f.contains("不可写"))
+        {
             "attention"
         } else if findings.is_empty() {
             "ready"
@@ -605,7 +608,10 @@ mod integration_tests {
         // 新补齐的四个域必须在清单里出现
         let categories = data["by_category"].as_object().expect("有分类统计");
         for expected in ["agents", "messaging", "media", "client"] {
-            let count = categories.get(expected).and_then(Value::as_u64).unwrap_or(0);
+            let count = categories
+                .get(expected)
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             assert!(count > 0, "类别 {} 的能力数为 0", expected);
         }
 

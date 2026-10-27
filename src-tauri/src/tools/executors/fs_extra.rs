@@ -266,10 +266,7 @@ impl AgentTool for CopyPathTool {
                 "bytes": bytes,
                 "verified_bytes": tree_bytes(dst),
             }))),
-            Err(e) => Ok(ToolResult::err(
-                "COPY_FAILED",
-                &format!("复制失败: {}", e),
-            )),
+            Err(e) => Ok(ToolResult::err("COPY_FAILED", &format!("复制失败: {}", e))),
         }
     }
 }
@@ -346,9 +343,8 @@ impl AgentTool for MovePathTool {
                 "source_gone": !src.exists(),
             }))),
             Err(_) => {
-                let bytes = copy_tree(src, dst).map_err(|e| {
-                    AppError::ToolExecution(format!("跨卷移动失败: {}", e))
-                })?;
+                let bytes = copy_tree(src, dst)
+                    .map_err(|e| AppError::ToolExecution(format!("跨卷移动失败: {}", e)))?;
                 if src.is_dir() {
                     fs::remove_dir_all(src)?;
                 } else {
@@ -411,10 +407,7 @@ impl AgentTool for DeletePathTool {
         }
         // 根目录永远不动：一次手滑就是整盘
         if target.parent().is_none() {
-            return Ok(ToolResult::err(
-                "REFUSED_ROOT",
-                "拒绝删除磁盘根目录",
-            ));
+            return Ok(ToolResult::err("REFUSED_ROOT", "拒绝删除磁盘根目录"));
         }
 
         let kind = if target.is_dir() { "dir" } else { "file" };
@@ -440,10 +433,7 @@ impl AgentTool for DeletePathTool {
                 "exists_after": target.exists(),
                 "recoverable": !permanent,
             }))),
-            Err(e) => Ok(ToolResult::err(
-                "DELETE_FAILED",
-                &e.to_string(),
-            )),
+            Err(e) => Ok(ToolResult::err("DELETE_FAILED", &e.to_string())),
         }
     }
 }
@@ -496,7 +486,11 @@ impl AgentTool for GetFileInfoTool {
         };
 
         let is_dir = meta.is_dir();
-        let bytes = if is_dir { tree_bytes(target) } else { meta.len() };
+        let bytes = if is_dir {
+            tree_bytes(target)
+        } else {
+            meta.len()
+        };
         let mut payload = serde_json::json!({
             "path": path,
             "kind": if is_dir { "dir" } else { "file" },

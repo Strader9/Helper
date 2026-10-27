@@ -63,7 +63,14 @@ impl Chain {
     }
 
     /// 追加一版，返回版本号。
-    fn push(&mut self, html: String, note: String, health: usize, issues: usize, functional: usize) -> u32 {
+    fn push(
+        &mut self,
+        html: String,
+        note: String,
+        health: usize,
+        issues: usize,
+        functional: usize,
+    ) -> u32 {
         let version = self.versions.last().map_or(1, |last| last.version + 1);
         self.versions.push(Snapshot {
             version,
@@ -97,7 +104,8 @@ fn store() -> &'static Mutex<HashMap<String, Chain>> {
 fn active_chain() -> &'static Mutex<Option<String>> {
     static ACTIVE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     ACTIVE.get_or_init(|| Mutex::new(None))
-}/// 从需求文本算一个稳定的链标识。
+}
+/// 从需求文本算一个稳定的链标识。
 ///
 /// 只取前 32 个字符的哈希特征即可 —— 不需要密码学强度，只要求"同一份需求稳定、
 /// 不同需求大概率不同"。加长度做二次区分，避免"前缀相同、后面不同"的两份需求撞车。
@@ -129,7 +137,9 @@ pub fn push(
     issues: usize,
     functional: usize,
 ) -> u32 {
-    let mut guard = store().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let chain = guard.entry(chain_id.to_string()).or_insert_with(|| Chain {
         id: chain_id.to_string(),
         versions: Vec::new(),
@@ -149,7 +159,9 @@ pub fn list(chain_id: Option<&str>) -> Vec<SnapshotSummary> {
         Some(id) => id,
         None => return Vec::new(),
     };
-    let guard = store().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard
         .get(&id)
         .map(|chain| {
@@ -173,7 +185,9 @@ pub fn list(chain_id: Option<&str>) -> Vec<SnapshotSummary> {
 /// 取回某一版的完整 HTML，用于回退。
 pub fn get(chain_id: Option<&str>, version: u32) -> Option<String> {
     let id = resolve(chain_id)?;
-    let guard = store().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard
         .get(&id)
         .and_then(|chain| chain.get(version))
@@ -182,7 +196,9 @@ pub fn get(chain_id: Option<&str>, version: u32) -> Option<String> {
 
 /// 丢弃某条链（用户换了新需求时调用，避免旧链一直占着内存）。
 pub fn drop_chain(chain_id: &str) {
-    let mut guard = store().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.remove(chain_id);
     if let Ok(mut active) = active_chain().lock() {
         if active.as_deref() == Some(chain_id) {
@@ -197,7 +213,9 @@ pub fn drop_chain(chain_id: &str) {
 /// 进程重启后它本来就是空的。
 #[allow(dead_code)]
 pub fn clear() {
-    let mut guard = store().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.clear();
     if let Ok(mut active) = active_chain().lock() {
         *active = None;
@@ -208,10 +226,7 @@ fn resolve(chain_id: Option<&str>) -> Option<String> {
     if let Some(id) = chain_id.filter(|id| !id.trim().is_empty()) {
         return Some(id.to_string());
     }
-    active_chain()
-        .lock()
-        .ok()
-        .and_then(|active| active.clone())
+    active_chain().lock().ok().and_then(|active| active.clone())
 }
 
 /// 列表里的一项（不含正文，所以很小）。
@@ -248,9 +263,18 @@ mod tests {
     #[test]
     fn assigns_increasing_versions_within_a_chain() {
         let chain = lane("increasing");
-        assert_eq!(push(&chain, "<html>v1</html>".into(), "首版".into(), 10, 2, 1), 1);
-        assert_eq!(push(&chain, "<html>v2</html>".into(), "改主色".into(), 4, 1, 0), 2);
-        assert_eq!(push(&chain, "<html>v3</html>".into(), "加收藏".into(), 0, 0, 0), 3);
+        assert_eq!(
+            push(&chain, "<html>v1</html>".into(), "首版".into(), 10, 2, 1),
+            1
+        );
+        assert_eq!(
+            push(&chain, "<html>v2</html>".into(), "改主色".into(), 4, 1, 0),
+            2
+        );
+        assert_eq!(
+            push(&chain, "<html>v3</html>".into(), "加收藏".into(), 0, 0, 0),
+            3
+        );
 
         let list = list(Some(&chain));
         assert_eq!(list.len(), 3);
@@ -265,7 +289,14 @@ mod tests {
     fn returns_the_requested_version_for_rollback() {
         let chain = lane("rollback");
         push(&chain, "<html>第一版</html>".into(), "首版".into(), 9, 1, 1);
-        push(&chain, "<html>第二版</html>".into(), "改一下".into(), 2, 1, 0);
+        push(
+            &chain,
+            "<html>第二版</html>".into(),
+            "改一下".into(),
+            2,
+            1,
+            0,
+        );
 
         let back = get(Some(&chain), 1).expect("应当能取回第 1 版");
         assert_eq!(back, "<html>第一版</html>");
@@ -295,7 +326,10 @@ mod tests {
         //
         // 这条断言依赖"活跃指针"这个全局状态，所以在其它测试并行 push 时可能被改掉。
         // 只断言"能取到刚写的那一版"，不去断言链上只有 1 条 —— 后者会被邻居影响。
-        assert_eq!(get(None, 1).unwrap_or_default(), "<html>C</html>".to_string());
+        assert_eq!(
+            get(None, 1).unwrap_or_default(),
+            "<html>C</html>".to_string()
+        );
     }
 
     #[test]
@@ -303,7 +337,14 @@ mod tests {
         let chain = lane("cap");
         let total = MAX_VERSIONS_PER_CHAIN + 5;
         for index in 1..=total {
-            push(&chain, format!("<html>{index}</html>"), format!("第 {index} 次"), 0, 0, 0);
+            push(
+                &chain,
+                format!("<html>{index}</html>"),
+                format!("第 {index} 次"),
+                0,
+                0,
+                0,
+            );
         }
         let list = list(Some(&chain));
         assert_eq!(list.len(), MAX_VERSIONS_PER_CHAIN);

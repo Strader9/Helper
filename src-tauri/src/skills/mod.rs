@@ -39,7 +39,7 @@ use crate::tools::{AgentTool, RiskLevel, ToolResult};
 pub enum SkillType {
     /// 内置技能（硬编码，不需要外部文件）
     BuiltIn,
-    /// 本地技能（从 %APPDATA%/pc-guardian/skills/ 加载）
+    /// 本地技能（从 %APPDATA%/e-assisant/skills/ 加载）
     Local,
     /// 远程技能（从 URL 加载，预留）
     Remote,
@@ -122,10 +122,7 @@ pub struct SkillLoader;
 impl SkillLoader {
     /// 获取技能根目录
     pub fn skills_root() -> PathBuf {
-        dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("pc-guardian")
-            .join("skills")
+        crate::product_data_dir().join("skills")
     }
 
     /// 确保技能目录存在
@@ -516,7 +513,7 @@ fn builtin_skills() -> Vec<BuiltInSkill> {
                 name: "天气查询".to_string(),
                 description: "查询指定城市的当前天气信息，包括温度、湿度、风速和天气状况。使用 Open-Meteo 免费 API，无需 API Key。".to_string(),
                 version: "1.0.0".to_string(),
-                author: "PC Guardian".to_string(),
+                author: "E-Assisant".to_string(),
                 skill_type: SkillType::BuiltIn,
                 triggers: vec!["天气".to_string(), "weather".to_string(), "气温".to_string()],
                 parameters: vec![
@@ -542,7 +539,7 @@ fn builtin_skills() -> Vec<BuiltInSkill> {
                 name: "文本翻译".to_string(),
                 description: "将文本翻译为目标语言。使用 MyMemory 免费翻译 API，支持中英日韩等多种语言。".to_string(),
                 version: "1.0.0".to_string(),
-                author: "PC Guardian".to_string(),
+                author: "E-Assisant".to_string(),
                 skill_type: SkillType::BuiltIn,
                 triggers: vec!["翻译".to_string(), "translate".to_string(), "英文".to_string()],
                 parameters: vec![
@@ -575,7 +572,7 @@ fn builtin_skills() -> Vec<BuiltInSkill> {
                 name: "文件整理".to_string(),
                 description: "整理指定目录中的文件，按文件类型分类移动到子文件夹（图片、文档、视频、音频、压缩包、代码、其他）。".to_string(),
                 version: "1.0.0".to_string(),
-                author: "PC Guardian".to_string(),
+                author: "E-Assisant".to_string(),
                 skill_type: SkillType::BuiltIn,
                 triggers: vec!["整理文件".to_string(), "文件整理".to_string(), "organize".to_string()],
                 parameters: vec![

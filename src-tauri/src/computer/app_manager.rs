@@ -51,15 +51,22 @@ impl ApplicationManager {
             return Ok(Vec::new());
         }
 
-        let data: serde_json::Value = serde_json::from_str(trimmed).unwrap_or(serde_json::json!([]));
+        let data: serde_json::Value =
+            serde_json::from_str(trimmed).unwrap_or(serde_json::json!([]));
         let mut results = Vec::new();
         if let Some(arr) = data.as_array() {
             for p in arr {
-                if let (Some(pid), Some(pname)) = (p.get("Id").and_then(|v| v.as_u64()), p.get("ProcessName").and_then(|v| v.as_str())) {
+                if let (Some(pid), Some(pname)) = (
+                    p.get("Id").and_then(|v| v.as_u64()),
+                    p.get("ProcessName").and_then(|v| v.as_str()),
+                ) {
                     results.push((pid as u32, pname.to_string()));
                 }
             }
-        } else if let (Some(pid), Some(pname)) = (data.get("Id").and_then(|v| v.as_u64()), data.get("ProcessName").and_then(|v| v.as_str())) {
+        } else if let (Some(pid), Some(pname)) = (
+            data.get("Id").and_then(|v| v.as_u64()),
+            data.get("ProcessName").and_then(|v| v.as_str()),
+        ) {
             results.push((pid as u32, pname.to_string()));
         }
         Ok(results)
@@ -74,17 +81,27 @@ impl ApplicationManager {
         );
 
         let output = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps_script])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &ps_script,
+            ])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
-            .map_err(|e| crate::error::AppError::ToolExecution(format!("PowerShell 执行失败: {}", e)))?;
+            .map_err(|e| {
+                crate::error::AppError::ToolExecution(format!("PowerShell 执行失败: {}", e))
+            })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let trimmed = stdout.trim();
         if trimmed.is_empty() {
             return Ok(Vec::new());
         }
-        let data: serde_json::Value = serde_json::from_str(trimmed).unwrap_or(serde_json::json!([]));
+        let data: serde_json::Value =
+            serde_json::from_str(trimmed).unwrap_or(serde_json::json!([]));
         if let Some(arr) = data.as_array() {
             Ok(arr.clone())
         } else {
@@ -149,17 +166,27 @@ foreach ($path in $paths) {
 $apps | Sort-Object name -Unique | ConvertTo-Json -Compress
 "#;
         let output = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_script])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                ps_script,
+            ])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
-            .map_err(|e| crate::error::AppError::ToolExecution(format!("PowerShell 执行失败: {}", e)))?;
+            .map_err(|e| {
+                crate::error::AppError::ToolExecution(format!("PowerShell 执行失败: {}", e))
+            })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let trimmed = stdout.trim();
         if trimmed.is_empty() {
             return Ok(Vec::new());
         }
-        let data: serde_json::Value = serde_json::from_str(trimmed).unwrap_or(serde_json::json!([]));
+        let data: serde_json::Value =
+            serde_json::from_str(trimmed).unwrap_or(serde_json::json!([]));
         let mut apps: Vec<serde_json::Value> = if let Some(arr) = data.as_array() {
             arr.clone()
         } else {
@@ -178,14 +205,32 @@ $apps | Sort-Object name -Unique | ConvertTo-Json -Compress
         Ok(apps)
     }
 
-    /// 关闭所有用户级应用窗口（排除系统进程和 PC Guardian 自身）
+    /// 关闭所有用户级应用窗口（排除系统进程和 E-Assisant 自身）
     pub async fn close_all_user_applications() -> AppResult<Vec<String>> {
         let excluded = [
-            "explorer", "sihost", "taskhostw", "dwm", "winlogon", "csrss",
-            "smss", "lsass", "services", "svchost", "fontdrvhost", "pc-guardian",
-            "msedgewebview2", "conhost", "SearchHost", "StartMenuExperienceHost",
-            "TextInputHost", "ShellExperienceHost", "RuntimeBroker", "SecurityHealthService",
-            "SecurityHealthSystray", "WavesSvc", "RtkAudioService",
+            "explorer",
+            "sihost",
+            "taskhostw",
+            "dwm",
+            "winlogon",
+            "csrss",
+            "smss",
+            "lsass",
+            "services",
+            "svchost",
+            "fontdrvhost",
+            "e-assisant",
+            "msedgewebview2",
+            "conhost",
+            "SearchHost",
+            "StartMenuExperienceHost",
+            "TextInputHost",
+            "ShellExperienceHost",
+            "RuntimeBroker",
+            "SecurityHealthService",
+            "SecurityHealthSystray",
+            "WavesSvc",
+            "RtkAudioService",
         ];
 
         let ps_script = r#"
@@ -193,14 +238,24 @@ $apps | Sort-Object name -Unique | ConvertTo-Json -Compress
 Get-Process | Where-Object { $_.MainWindowTitle -ne '' -and $_.Responding } | Select-Object Id, ProcessName, MainWindowTitle | ConvertTo-Json -Compress
 "#;
         let output = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_script])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                ps_script,
+            ])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
-            .map_err(|e| crate::error::AppError::ToolExecution(format!("PowerShell 执行失败: {}", e)))?;
+            .map_err(|e| {
+                crate::error::AppError::ToolExecution(format!("PowerShell 执行失败: {}", e))
+            })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let trimmed = stdout.trim();
-        let data: serde_json::Value = serde_json::from_str(trimmed).unwrap_or(serde_json::json!([]));
+        let data: serde_json::Value =
+            serde_json::from_str(trimmed).unwrap_or(serde_json::json!([]));
         let windows: Vec<&serde_json::Value> = if let Some(arr) = data.as_array() {
             arr.iter().collect()
         } else {
@@ -209,12 +264,19 @@ Get-Process | Where-Object { $_.MainWindowTitle -ne '' -and $_.Responding } | Se
 
         let mut closed = Vec::new();
         for w in windows {
-            let pname = w.get("ProcessName").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+            let pname = w
+                .get("ProcessName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
             if excluded.contains(&pname.as_str()) {
                 continue;
             }
             if let Some(pid) = w.get("Id").and_then(|v| v.as_u64()) {
-                let _ = Command::new("taskkill").args(["/PID", &pid.to_string()]).creation_flags(CREATE_NO_WINDOW).output();
+                let _ = Command::new("taskkill")
+                    .args(["/PID", &pid.to_string()])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output();
                 if let Some(title) = w.get("MainWindowTitle").and_then(|v| v.as_str()) {
                     if !title.is_empty() {
                         closed.push(title.to_string());
@@ -315,7 +377,9 @@ pub struct IsApplicationRunningTool;
 
 #[async_trait]
 impl AgentTool for IsApplicationRunningTool {
-    fn name(&self) -> &'static str { "is_application_running" }
+    fn name(&self) -> &'static str {
+        "is_application_running"
+    }
     fn description(&self) -> &'static str {
         "检查指定应用是否正在运行。返回是否运行及 PID 列表。用于确认某个程序是否已打开。"
     }
@@ -328,7 +392,9 @@ impl AgentTool for IsApplicationRunningTool {
             "required": ["name"]
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Safe }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         let name = args["name"].as_str().unwrap_or("");
         if name.is_empty() {
@@ -355,7 +421,9 @@ pub struct GetApplicationStatusTool;
 
 #[async_trait]
 impl AgentTool for GetApplicationStatusTool {
-    fn name(&self) -> &'static str { "get_application_status" }
+    fn name(&self) -> &'static str {
+        "get_application_status"
+    }
     fn description(&self) -> &'static str {
         "查询指定应用的运行状态：运行中且响应、运行中但无响应、已关闭。通过进程存在性和窗口响应性检测。"
     }
@@ -368,7 +436,9 @@ impl AgentTool for GetApplicationStatusTool {
             "required": ["name"]
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Safe }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         let name = args["name"].as_str().unwrap_or("");
         if name.is_empty() {
@@ -381,9 +451,21 @@ impl AgentTool for GetApplicationStatusTool {
                 "message": format!("{} 已关闭（未找到进程）", name)
             })));
         }
-        let all_responding = details.iter().all(|d| d.get("responding").and_then(|v| v.as_bool()).unwrap_or(true));
-        let status = if all_responding { "running" } else { "not_responding" };
-        let status_text = if all_responding { "运行中（响应正常）" } else { "运行中（无响应）" };
+        let all_responding = details.iter().all(|d| {
+            d.get("responding")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true)
+        });
+        let status = if all_responding {
+            "running"
+        } else {
+            "not_responding"
+        };
+        let status_text = if all_responding {
+            "运行中（响应正常）"
+        } else {
+            "运行中（无响应）"
+        };
         Ok(ToolResult::ok(serde_json::json!({
             "name": name, "status": status, "running": true,
             "process_count": details.len(),
@@ -398,7 +480,9 @@ pub struct GetApplicationInfoTool;
 
 #[async_trait]
 impl AgentTool for GetApplicationInfoTool {
-    fn name(&self) -> &'static str { "get_application_info" }
+    fn name(&self) -> &'static str {
+        "get_application_info"
+    }
     fn description(&self) -> &'static str {
         "返回应用详细信息：PID、可执行路径、版本号、启动时间、内存占用(MB)、CPU占用(秒)、窗口标题、是否响应。"
     }
@@ -411,7 +495,9 @@ impl AgentTool for GetApplicationInfoTool {
             "required": ["name"]
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Safe }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         let name = args["name"].as_str().unwrap_or("");
         if name.is_empty() {
@@ -419,7 +505,10 @@ impl AgentTool for GetApplicationInfoTool {
         }
         let details = ApplicationManager::get_application_detail(name)?;
         if details.is_empty() {
-            return Ok(ToolResult::err("APP_NOT_FOUND", &format!("未找到运行中的应用: {}", name)));
+            return Ok(ToolResult::err(
+                "APP_NOT_FOUND",
+                &format!("未找到运行中的应用: {}", name),
+            ));
         }
         Ok(ToolResult::ok(serde_json::json!({
             "name": name,
@@ -435,7 +524,9 @@ pub struct RestartApplicationTool;
 
 #[async_trait]
 impl AgentTool for RestartApplicationTool {
-    fn name(&self) -> &'static str { "restart_application" }
+    fn name(&self) -> &'static str {
+        "restart_application"
+    }
     fn description(&self) -> &'static str {
         "重启指定应用：先优雅关闭（等待进程退出，超时则强制结束），再重新启动。用于应用卡死或需要刷新时。"
     }
@@ -449,7 +540,9 @@ impl AgentTool for RestartApplicationTool {
             "required": ["name"]
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Medium }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Medium
+    }
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         let name = args["name"].as_str().unwrap_or("");
         if name.is_empty() {
@@ -459,12 +552,17 @@ impl AgentTool for RestartApplicationTool {
 
         // 记录原始 PID（用于确认重启后是新进程）
         let original_pids: Vec<u32> = ApplicationManager::find_processes_by_name(name)?
-            .iter().map(|(pid, _)| *pid).collect();
+            .iter()
+            .map(|(pid, _)| *pid)
+            .collect();
 
         // 优雅关闭
         let closed = ApplicationManager::graceful_close(name, timeout_secs).await?;
         if !closed {
-            return Ok(ToolResult::err("CLOSE_FAILED", &format!("关闭 {} 失败（超时 {} 秒后仍有进程）", name, timeout_secs)));
+            return Ok(ToolResult::err(
+                "CLOSE_FAILED",
+                &format!("关闭 {} 失败（超时 {} 秒后仍有进程）", name, timeout_secs),
+            ));
         }
 
         // 重新启动
@@ -476,8 +574,11 @@ impl AgentTool for RestartApplicationTool {
             // 等待新进程出现
             tokio::time::sleep(Duration::from_millis(1500)).await;
             let new_pids: Vec<u32> = ApplicationManager::find_processes_by_name(name)?
-                .iter().map(|(pid, _)| *pid).collect();
-            let is_new = !new_pids.is_empty() && new_pids.iter().any(|p| !original_pids.contains(p));
+                .iter()
+                .map(|(pid, _)| *pid)
+                .collect();
+            let is_new =
+                !new_pids.is_empty() && new_pids.iter().any(|p| !original_pids.contains(p));
             Ok(ToolResult::ok(serde_json::json!({
                 "name": name,
                 "restarted": is_new,
@@ -500,7 +601,9 @@ pub struct ListInstalledApplicationsTool;
 
 #[async_trait]
 impl AgentTool for ListInstalledApplicationsTool {
-    fn name(&self) -> &'static str { "list_installed_applications" }
+    fn name(&self) -> &'static str {
+        "list_installed_applications"
+    }
     fn description(&self) -> &'static str {
         "列出系统已安装的应用（从注册表读取），返回名称、发布者、版本、安装路径、卸载命令。支持按名称搜索过滤。"
     }
@@ -513,7 +616,9 @@ impl AgentTool for ListInstalledApplicationsTool {
             }
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Safe }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         let search = args["search"].as_str();
         let limit = args["limit"].as_i64().unwrap_or(50) as usize;
@@ -541,9 +646,11 @@ pub struct CloseAllApplicationsTool;
 
 #[async_trait]
 impl AgentTool for CloseAllApplicationsTool {
-    fn name(&self) -> &'static str { "close_all_applications" }
+    fn name(&self) -> &'static str {
+        "close_all_applications"
+    }
     fn description(&self) -> &'static str {
-        "关闭所有用户级应用窗口（排除系统进程、资源管理器、PC Guardian 自身）。高风险操作，需二次确认。用于一键清理桌面、准备关机等场景。"
+        "关闭所有用户级应用窗口（排除系统进程、资源管理器、E-Assisant 自身）。高风险操作，需二次确认。用于一键清理桌面、准备关机等场景。"
     }
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
@@ -554,11 +661,16 @@ impl AgentTool for CloseAllApplicationsTool {
             "required": ["confirm"]
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::High }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::High
+    }
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         let confirm = args["confirm"].as_bool().unwrap_or(false);
         if !confirm {
-            return Ok(ToolResult::err("CONFIRMATION_REQUIRED", "此操作会关闭所有应用，请设置 confirm=true 确认执行"));
+            return Ok(ToolResult::err(
+                "CONFIRMATION_REQUIRED",
+                "此操作会关闭所有应用，请设置 confirm=true 确认执行",
+            ));
         }
         let closed = ApplicationManager::close_all_user_applications().await?;
         Ok(ToolResult::ok(serde_json::json!({
@@ -574,7 +686,9 @@ pub struct LaunchWorkspaceTool;
 
 #[async_trait]
 impl AgentTool for LaunchWorkspaceTool {
-    fn name(&self) -> &'static str { "launch_workspace" }
+    fn name(&self) -> &'static str {
+        "launch_workspace"
+    }
     fn description(&self) -> &'static str {
         "启动一组预设应用（工作区）。内置预设：开发环境(VSCode+Chrome+Terminal)、设计环境(Photoshop+Figma+Chrome)、办公环境(Word+Excel+Outlook)、娱乐环境(Steam+Discord+Spotify)。也支持自定义应用列表。"
     }
@@ -594,11 +708,18 @@ impl AgentTool for LaunchWorkspaceTool {
             }
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Medium }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Medium
+    }
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         let preset = args["preset"].as_str();
-        let custom_apps: Vec<String> = args["apps"].as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        let custom_apps: Vec<String> = args["apps"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let apps: Vec<&str> = if !custom_apps.is_empty() {
@@ -616,7 +737,10 @@ impl AgentTool for LaunchWorkspaceTool {
         };
 
         if apps.is_empty() {
-            return Ok(ToolResult::err("INVALID_ARGUMENT", "必须提供 preset 或 apps 参数"));
+            return Ok(ToolResult::err(
+                "INVALID_ARGUMENT",
+                "必须提供 preset 或 apps 参数",
+            ));
         }
 
         let launcher = crate::tools::executors::program::LaunchProgramTool;
@@ -632,11 +756,15 @@ impl AgentTool for LaunchWorkspaceTool {
                         results.push(serde_json::json!({ "app": app, "success": true }));
                     } else {
                         let err = r.error.unwrap_or_else(|| "启动失败".to_string());
-                        results.push(serde_json::json!({ "app": app, "success": false, "error": err }));
+                        results.push(
+                            serde_json::json!({ "app": app, "success": false, "error": err }),
+                        );
                     }
                 }
                 Err(e) => {
-                    results.push(serde_json::json!({ "app": app, "success": false, "error": e.to_string() }));
+                    results.push(
+                        serde_json::json!({ "app": app, "success": false, "error": e.to_string() }),
+                    );
                 }
             }
             tokio::time::sleep(Duration::from_millis(300)).await;

@@ -1,8 +1,8 @@
 //! 桌面 AI 目标（desktop-ai 域）。
 //!
-//! 对齐 LumiCore 的 desktop_ai_tools：把「本机其它 AI 工具（WorkBuddy / Cursor /
+//! 对齐早期原型的 desktop_ai_tools：把「本机其它 AI 工具（WorkBuddy / Cursor /
 //! Codex / 本地 LLM 应用）」登记成可寻址目标，并提供统一的「提问 → 提交 →
-//! 读屏收集答案」编排。底层复用 pc-guardian 已有的原子能力：
+//! 读屏收集答案」编排。底层复用 e-assisant 已有的原子能力：
 //! - 聚焦窗口：PowerShell + user32 `SetForegroundWindow`
 //! - 写剪贴板：`os_extra::run_powershell`（base64 传参，规避 GBK 编码）
 //! - 粘贴 / 提交：`computer::input` 的 `key_down` / `key_up` / `parse_key`
@@ -60,7 +60,11 @@ fn write_registered(targets: &[Value]) -> AppResult<()> {
 fn str_array(value: &Value) -> Vec<String> {
     value
         .as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -104,7 +108,10 @@ pub(crate) fn focus_window(open_targets: &[String]) -> AppResult<(bool, String)>
                 return Ok((true, msg));
             }
         }
-        Ok((false, format!("未找到目标窗口（尝试过 {}）", open_targets.join(" / "))))
+        Ok((
+            false,
+            format!("未找到目标窗口（尝试过 {}）", open_targets.join(" / ")),
+        ))
     }
 }
 
@@ -214,7 +221,11 @@ fn resolve_target(target_ref: &str, registered: &[Value], custom: &[Value]) -> O
         let label = t["label"].as_str().unwrap_or("").to_lowercase();
         let aliases: Vec<String> = t["aliases"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_lowercase())).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_lowercase()))
+                    .collect()
+            })
             .unwrap_or_default();
         if id == needle || label == needle || aliases.iter().any(|a| a == &needle) {
             return Some(str_array(&t["openTargets"]));
@@ -265,9 +276,20 @@ impl AgentTool for DesktopAiListTargetsTool {
     }
 
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
-        let include_stored = args.get("includeStored").and_then(|v| v.as_bool()).unwrap_or(true);
-        let custom = args.get("customTargets").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let registered = if include_stored { read_registered()? } else { Vec::new() };
+        let include_stored = args
+            .get("includeStored")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let custom = args
+            .get("customTargets")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let registered = if include_stored {
+            read_registered()?
+        } else {
+            Vec::new()
+        };
 
         let mut targets: Vec<Value> = builtin_targets()
             .iter()
@@ -324,9 +346,15 @@ impl AgentTool for DesktopAiDiscoveryPlanTool {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "桌面 AI 与桌面自动化工具".to_string());
-        let include_known = args.get("includeKnownTargets").and_then(|v| v.as_bool()).unwrap_or(true);
+        let include_known = args
+            .get("includeKnownTargets")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         let known = if include_known {
-            builtin_targets().iter().map(|t| target_json(t, "built_in")).collect::<Vec<_>>()
+            builtin_targets()
+                .iter()
+                .map(|t| target_json(t, "built_in"))
+                .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
@@ -403,7 +431,10 @@ impl AgentTool for DesktopAiRegisterTargetTool {
         let label = args["label"].as_str().unwrap_or("").trim().to_string();
         let open_targets = str_array(&args["openTargets"]);
         if label.is_empty() || open_targets.is_empty() {
-            return Ok(ToolResult::err("INVALID_TARGET", "label 与 openTargets 不能为空"));
+            return Ok(ToolResult::err(
+                "INVALID_TARGET",
+                "label 与 openTargets 不能为空",
+            ));
         }
         let id = args["id"]
             .as_str()
@@ -424,7 +455,9 @@ impl AgentTool for DesktopAiRegisterTargetTool {
         });
 
         let mut registered = read_registered()?;
-        let idx = registered.iter().position(|t| t["id"].as_str() == Some(target["id"].as_str().unwrap_or("")));
+        let idx = registered
+            .iter()
+            .position(|t| t["id"].as_str() == Some(target["id"].as_str().unwrap_or("")));
         match idx {
             Some(i) => registered[i] = target.clone(),
             None => registered.push(target.clone()),
@@ -483,9 +516,19 @@ impl AgentTool for DesktopAiAskTool {
             return Ok(ToolResult::err("QUESTION_REQUIRED", "question 不能为空"));
         }
         let send = args.get("send").and_then(|v| v.as_bool()).unwrap_or(true);
-        let submit_shortcut = args["submitShortcut"].as_str().unwrap_or("enter").to_string();
-        let open_if_needed = args.get("openIfNeeded").and_then(|v| v.as_bool()).unwrap_or(true);
-        let custom = args.get("customTargets").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let submit_shortcut = args["submitShortcut"]
+            .as_str()
+            .unwrap_or("enter")
+            .to_string();
+        let open_if_needed = args
+            .get("openIfNeeded")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let custom = args
+            .get("customTargets")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         let registered = read_registered()?;
 
         // 定位目标
@@ -493,7 +536,15 @@ impl AgentTool for DesktopAiAskTool {
         let open_targets = if !target_ref.is_empty() {
             match resolve_target(&target_ref, &registered, &custom) {
                 Some(t) => t,
-                None => return Ok(ToolResult::err("TARGET_NOT_FOUND", &format!("未找到目标「{}」，用 desktop_ai_list_targets 查看可用目标", target_ref))),
+                None => {
+                    return Ok(ToolResult::err(
+                        "TARGET_NOT_FOUND",
+                        &format!(
+                            "未找到目标「{}」，用 desktop_ai_list_targets 查看可用目标",
+                            target_ref
+                        ),
+                    ))
+                }
             }
         } else {
             Vec::new()
@@ -516,7 +567,8 @@ impl AgentTool for DesktopAiAskTool {
         // 提交
         let mut submitted = false;
         if prepared && send {
-            press_combo(&submit_shortcut).map_err(|e| AppError::ToolExecution(format!("提交失败: {}", e)))?;
+            press_combo(&submit_shortcut)
+                .map_err(|e| AppError::ToolExecution(format!("提交失败: {}", e)))?;
             submitted = true;
         }
 
@@ -578,7 +630,11 @@ impl AgentTool for DesktopAiCollectAnswerTool {
     }
 
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
-        let custom = args.get("customTargets").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let custom = args
+            .get("customTargets")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
         let registered = read_registered()?;
         let wait_ms = args["waitMs"].as_u64().unwrap_or(0).min(60_000);
 
@@ -587,9 +643,13 @@ impl AgentTool for DesktopAiCollectAnswerTool {
         let mut focused = false;
         if !target_ref.is_empty() {
             if let Some(open_targets) = resolve_target(&target_ref, &registered, &custom) {
-                let open_if_needed = args.get("openIfNeeded").and_then(|v| v.as_bool()).unwrap_or(true);
+                let open_if_needed = args
+                    .get("openIfNeeded")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
                 if open_if_needed {
-                    let (ok, _msg) = crate::tools::executors::desktop_ai::focus_window(&open_targets)?;
+                    let (ok, _msg) =
+                        crate::tools::executors::desktop_ai::focus_window(&open_targets)?;
                     focused = ok;
                 }
             }
@@ -663,9 +723,18 @@ mod tests {
             "id": "foo", "label": "Foo AI", "aliases": ["foobar"], "openTargets": ["Foo.exe"]
         })];
         let custom: Vec<Value> = vec![];
-        assert_eq!(resolve_target("foo", &registered, &custom), Some(vec!["Foo.exe".to_string()]));
-        assert_eq!(resolve_target("Foo AI", &registered, &custom), Some(vec!["Foo.exe".to_string()]));
-        assert_eq!(resolve_target("foobar", &registered, &custom), Some(vec!["Foo.exe".to_string()]));
+        assert_eq!(
+            resolve_target("foo", &registered, &custom),
+            Some(vec!["Foo.exe".to_string()])
+        );
+        assert_eq!(
+            resolve_target("Foo AI", &registered, &custom),
+            Some(vec!["Foo.exe".to_string()])
+        );
+        assert_eq!(
+            resolve_target("foobar", &registered, &custom),
+            Some(vec!["Foo.exe".to_string()])
+        );
         assert!(resolve_target("nope", &registered, &custom).is_none());
     }
 
@@ -675,6 +744,9 @@ mod tests {
         let custom: Vec<Value> = vec![];
         let got = resolve_target("cursor", &registered, &custom);
         assert!(got.is_some());
-        assert!(got.unwrap().iter().any(|s| s.eq_ignore_ascii_case("Cursor")));
+        assert!(got
+            .unwrap()
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case("Cursor")));
     }
 }

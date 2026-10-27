@@ -5,8 +5,8 @@ import {
   Volume2, Music, Settings, Globe, Activity, Bot,
   Mic, MicOff, Zap,
 } from 'lucide-react';
-import { LumiCoreSphere, type LumiCoreOrbitTask } from '../components/LumiCoreSphere';
-import '../styles/lumi-command-center.css';
+import { EAssistantCoreSphere, type EAssistantCoreOrbitTask } from '../components/EAssistantCoreSphere';
+import '../styles/eassistant-command-center.css';
 
 // 左侧功能入口
 const APP_ENTRIES = [
@@ -65,7 +65,7 @@ export function CommandCenter() {
   const [activeNav, setActiveNav] = useState(0);
 
   // 模拟任务轨道（后续接入真实任务状态）
-  const tasks: LumiCoreOrbitTask[] = [
+  const tasks: EAssistantCoreOrbitTask[] = [
     { id: '1', title: '系统监控', state: 'working', active: true },
     { id: '2', title: '记忆整理', state: 'queued', active: true },
   ];
@@ -78,12 +78,12 @@ export function CommandCenter() {
   return (
     <div className="command-center-root">
       {/* 中央粒子球指挥场 */}
-      <LumiCoreSphere
+      <EAssistantCoreSphere
         tasks={tasks}
         state="ready"
         labels={{
-          aria: 'PC Guardian 指挥中心',
-          lumiCore: 'PC GUARDIAN',
+          aria: 'E-Assisant 指挥中心',
+          eAssistantCore: 'E-ASSISANT',
           ready: '待命',
           working: '执行中',
           attention: '需关注',

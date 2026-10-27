@@ -2,8 +2,8 @@
 //!
 //! 提供程序启动和搜索能力。
 
-use std::fs;
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::{OnceLock, RwLock};
@@ -85,10 +85,16 @@ impl AgentTool for LaunchProgramTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let name_or_path = args["name_or_path"].as_str()
+        let name_or_path = args["name_or_path"]
+            .as_str()
             .ok_or_else(|| AppError::InvalidArgument("name_or_path is required".to_string()))?;
-        let program_args: Vec<String> = args["args"].as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        let program_args: Vec<String> = args["args"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
 
         // 安全校验：拒绝 shell 元字符，防止命令注入
@@ -142,11 +148,12 @@ impl AgentTool for LaunchProgramTool {
                 // 不再回退 cmd start（会返回 cmd 进程的虚假 PID）
                 return Ok(ToolResult::err(
                     "PROGRAM_NOT_FOUND",
-                    &format!("未找到程序: {}（请检查程序名或路径是否正确）", name_or_path)
+                    &format!("未找到程序: {}（请检查程序名或路径是否正确）", name_or_path),
                 ));
             };
 
-            let child = child.map_err(|e| AppError::ToolExecution(format!("无法启动程序: {}", e)))?;
+            let child =
+                child.map_err(|e| AppError::ToolExecution(format!("无法启动程序: {}", e)))?;
             let pid = child.id();
 
             // V16: 等待应用启动完成（等待窗口出现）
@@ -216,7 +223,10 @@ impl AgentTool for LaunchProgramTool {
             }
 
             if wait_for_start && !started {
-                return Ok(ToolResult::err("LAUNCH_FAILED", &format!("{} 启动失败（进程已退出）", name_or_path)));
+                return Ok(ToolResult::err(
+                    "LAUNCH_FAILED",
+                    &format!("{} 启动失败（进程已退出）", name_or_path),
+                ));
             }
             return Ok(ToolResult::ok(result_data));
         }
@@ -227,7 +237,8 @@ impl AgentTool for LaunchProgramTool {
             if !program_args.is_empty() {
                 cmd.args(&program_args);
             }
-            let child = cmd.spawn()
+            let child = cmd
+                .spawn()
                 .map_err(|e| AppError::ToolExecution(format!("无法启动程序: {}", e)))?;
             Ok(ToolResult::ok(serde_json::json!({
                 "program": name_or_path,
@@ -274,7 +285,8 @@ impl AgentTool for FindProgramTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let name = args["name"].as_str()
+        let name = args["name"]
+            .as_str()
             .ok_or_else(|| AppError::InvalidArgument("name is required".to_string()))?;
 
         let lookup_name = name.to_string();
@@ -330,7 +342,8 @@ impl AgentTool for CloseProgramTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let name = args["name"].as_str()
+        let name = args["name"]
+            .as_str()
             .ok_or_else(|| AppError::InvalidArgument("name is required".to_string()))?;
 
         // 安全校验
@@ -373,7 +386,10 @@ impl AgentTool for CloseProgramTool {
 
         #[cfg(not(target_os = "windows"))]
         {
-            Ok(ToolResult::err("UNSUPPORTED_PLATFORM", "close_program 仅在 Windows 上可用"))
+            Ok(ToolResult::err(
+                "UNSUPPORTED_PLATFORM",
+                "close_program 仅在 Windows 上可用",
+            ))
         }
     }
 }
@@ -443,9 +459,23 @@ fn score_program_path(path: &str, query: &str) -> i32 {
 
     // === 排除项（大幅扣分）===
     let exclude_patterns = [
-        "ext.", "extension.", "update.", "uninstall.", "helper.", "crash.",
-        "report.", "setup.", "installer.", "patch.", "launcher.", "daemon.",
-        "service.", "agent.", "background.", "renderer.", "webview.",
+        "ext.",
+        "extension.",
+        "update.",
+        "uninstall.",
+        "helper.",
+        "crash.",
+        "report.",
+        "setup.",
+        "installer.",
+        "patch.",
+        "launcher.",
+        "daemon.",
+        "service.",
+        "agent.",
+        "background.",
+        "renderer.",
+        "webview.",
     ];
     for pat in &exclude_patterns {
         if file_name.contains(pat) {
@@ -470,7 +500,10 @@ fn score_program_path(path: &str, query: &str) -> i32 {
     match query {
         // 微信：WeChat.exe 是主程序，WeixinExt.exe 是扩展
         "微信" | "wechat" => {
-            if file_name.contains("wechat") && !file_name.contains("ext") && !file_name.contains("xin") {
+            if file_name.contains("wechat")
+                && !file_name.contains("ext")
+                && !file_name.contains("xin")
+            {
                 score += 150; // WeChat.exe 最优先
             }
             if file_name.contains("weixin") && file_name.contains("ext") {
@@ -520,18 +553,51 @@ fn get_program_aliases(name: &str) -> Vec<String> {
 
     // 常见程序别名
     match name_lower.as_str() {
-        "qq" => { aliases.push("qq".to_string()); aliases.push("tencent".to_string()); }
-        "wechat" | "微信" => { aliases.push("wechat".to_string()); aliases.push("weixin".to_string()); }
-        "docker" | "docker desktop" => { aliases.push("docker".to_string()); aliases.push("docker desktop".to_string()); }
-        "vscode" | "vs code" | "visual studio code" => { aliases.push("code".to_string()); aliases.push("vscode".to_string()); aliases.push("visual studio code".to_string()); }
-        "chrome" | "google chrome" => { aliases.push("chrome".to_string()); aliases.push("google chrome".to_string()); }
-        "edge" | "microsoft edge" => { aliases.push("msedge".to_string()); aliases.push("microsoft edge".to_string()); }
-        "firefox" => { aliases.push("firefox".to_string()); }
-        "notepad++" => { aliases.push("notepad++".to_string()); }
-        "idea" | "intellij" => { aliases.push("idea".to_string()); aliases.push("intellij".to_string()); }
-        "steam" => { aliases.push("steam".to_string()); }
-        "spotify" => { aliases.push("spotify".to_string()); }
-        "obs" => { aliases.push("obs".to_string()); aliases.push("obs studio".to_string()); }
+        "qq" => {
+            aliases.push("qq".to_string());
+            aliases.push("tencent".to_string());
+        }
+        "wechat" | "微信" => {
+            aliases.push("wechat".to_string());
+            aliases.push("weixin".to_string());
+        }
+        "docker" | "docker desktop" => {
+            aliases.push("docker".to_string());
+            aliases.push("docker desktop".to_string());
+        }
+        "vscode" | "vs code" | "visual studio code" => {
+            aliases.push("code".to_string());
+            aliases.push("vscode".to_string());
+            aliases.push("visual studio code".to_string());
+        }
+        "chrome" | "google chrome" => {
+            aliases.push("chrome".to_string());
+            aliases.push("google chrome".to_string());
+        }
+        "edge" | "microsoft edge" => {
+            aliases.push("msedge".to_string());
+            aliases.push("microsoft edge".to_string());
+        }
+        "firefox" => {
+            aliases.push("firefox".to_string());
+        }
+        "notepad++" => {
+            aliases.push("notepad++".to_string());
+        }
+        "idea" | "intellij" => {
+            aliases.push("idea".to_string());
+            aliases.push("intellij".to_string());
+        }
+        "steam" => {
+            aliases.push("steam".to_string());
+        }
+        "spotify" => {
+            aliases.push("spotify".to_string());
+        }
+        "obs" => {
+            aliases.push("obs".to_string());
+            aliases.push("obs studio".to_string());
+        }
         "watt toolkit" | "watt" | "steam++" => {
             aliases.push("watt toolkit".to_string());
             aliases.push("watt".to_string());
@@ -578,7 +644,11 @@ fn find_all_program_paths(name: &str) -> AppResult<Vec<String>> {
             ];
 
             for search_name in &search_names {
-                if let Ok(output) = Command::new("cmd").args(&["/c", "where", search_name]).creation_flags(CREATE_NO_WINDOW).output() {
+                if let Ok(output) = Command::new("cmd")
+                    .args(&["/c", "where", search_name])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output()
+                {
                     if output.status.success() {
                         let stdout = String::from_utf8_lossy(&output.stdout);
                         for line in stdout.lines() {
@@ -653,7 +723,12 @@ fn known_program_candidates(name: &str) -> Vec<String> {
     let mut candidates = Vec::new();
     let mut add = |env_name: &str, relative: &str| {
         if let Ok(base) = std::env::var(env_name) {
-            candidates.push(Path::new(&base).join(relative).to_string_lossy().to_string());
+            candidates.push(
+                Path::new(&base)
+                    .join(relative)
+                    .to_string_lossy()
+                    .to_string(),
+            );
         }
     };
 
@@ -675,7 +750,10 @@ fn known_program_candidates(name: &str) -> Vec<String> {
         }
         "edge" | "microsoft edge" => {
             add("ProgramFiles", r"Microsoft\Edge\Application\msedge.exe");
-            add("ProgramFiles(x86)", r"Microsoft\Edge\Application\msedge.exe");
+            add(
+                "ProgramFiles(x86)",
+                r"Microsoft\Edge\Application\msedge.exe",
+            );
         }
         "vscode" | "vs code" | "visual studio code" => {
             add("LOCALAPPDATA", r"Programs\Microsoft VS Code\Code.exe");
@@ -740,13 +818,22 @@ fn get_common_program_dirs() -> Vec<String> {
         if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
             dirs.push(local_appdata.clone());
             // 增加 Start Menu 和 Programs 目录
-            dirs.push(format!("{}\\Microsoft\\Windows\\Start Menu\\Programs", local_appdata));
+            dirs.push(format!(
+                "{}\\Microsoft\\Windows\\Start Menu\\Programs",
+                local_appdata
+            ));
         }
         if let Ok(appdata) = std::env::var("APPDATA") {
-            dirs.push(format!("{}\\Microsoft\\Windows\\Start Menu\\Programs", appdata));
+            dirs.push(format!(
+                "{}\\Microsoft\\Windows\\Start Menu\\Programs",
+                appdata
+            ));
         }
         if let Ok(program_data) = std::env::var("ProgramData") {
-            dirs.push(format!("{}\\Microsoft\\Windows\\Start Menu\\Programs", program_data));
+            dirs.push(format!(
+                "{}\\Microsoft\\Windows\\Start Menu\\Programs",
+                program_data
+            ));
         }
         if let Ok(user_profile) = std::env::var("USERPROFILE") {
             dirs.push(format!("{}\\Desktop", user_profile));
@@ -847,9 +934,14 @@ fn search_directory_recursive(
 
 /// 检查字符串是否包含 shell 元字符（防止命令注入）
 fn contains_shell_metachars(s: &str) -> bool {
-    s.contains('&') || s.contains('|') || s.contains('>') ||
-    s.contains('<') || s.contains('^') || s.contains(';') ||
-    s.contains('"') || s.contains('`')
+    s.contains('&')
+        || s.contains('|')
+        || s.contains('>')
+        || s.contains('<')
+        || s.contains('^')
+        || s.contains(';')
+        || s.contains('"')
+        || s.contains('`')
 }
 
 #[cfg(test)]

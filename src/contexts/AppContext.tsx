@@ -1,4 +1,4 @@
-// Tauri 适配层：扩展版 AppContext，提供 LumiCore 页面所需的接口
+// Tauri 适配层：扩展版 AppContext，提供 EAssistantCore 页面所需的接口
 import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 
 export type OperationMode = 'chat' | 'assistant' | 'autonomous';
@@ -19,10 +19,10 @@ interface AppState {
   handleLogin: () => void;
   isLoginModalOpen: boolean;
   setIsLoginModalOpen: (open: boolean) => void;
-  // LumiCore 兼容：工具覆盖
+  // EAssistantCore 兼容：工具覆盖
   toolOverrides: Record<string, ToolOverride>;
   setToolOverride: (name: string, override: ToolOverride) => void;
-  // LumiCore 兼容：设置缓存
+  // EAssistantCore 兼容：设置缓存
   settings: Record<string, string>;
   setSetting: (key: string, value: string) => void;
   loadSettings: () => Promise<void>;

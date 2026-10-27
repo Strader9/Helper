@@ -1,7 +1,7 @@
 /* ============================================================
- * PC Guardian · Design System
+ * E-Assisant · Design System
  *
- * 对齐 LumiCore（shadcn base-nova / neutral）：
+ * 对齐 EAssistantCore（shadcn base-nova / neutral）：
  *   1. 中性灰阶，oklch 无彩度，靠明度台阶分层（底色 0.145，卡片 0.205）
  *   2. 主按钮用近白，橙色只做强调（激活条、状态点、聚焦环、图表）
  *   3. 卡片不用阴影，只用 1px ring-foreground/10；阴影只留给浮层
@@ -50,7 +50,7 @@
   --text-3xl: 28px;
   --text-3xl--line-height: 1.2;
 
-  /* ---- 圆角（10px 基准，与 Lumi 的 --radius 一致）---- */
+  /* ---- 圆角（10px 基准，与 EAssistant 的 --radius 一致）---- */
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 10px;
@@ -77,7 +77,7 @@
   --color-line-strong: oklch(1 0 0 / 16%);
   --color-line-faint: oklch(1 0 0 / 5%);
 
-  /* ---- shadcn 标准别名：便于直接套用 Lumi 组件代码 ---- */
+  /* ---- shadcn 标准别名：便于直接套用 EAssistant 组件代码 ---- */
   --color-border: oklch(1 0 0 / 10%);
   --color-input: oklch(1 0 0 / 15%);
   --color-ring: oklch(0.556 0 0);
@@ -93,7 +93,7 @@
   --color-popover-foreground: oklch(0.985 0 0);
   --color-card-foreground: oklch(0.985 0 0);
 
-  /* ---- shadcn sidebar / chart（Lumi 原版命名）---- */
+  /* ---- shadcn sidebar / chart（EAssistant 原版命名）---- */
   --color-sidebar: oklch(0.205 0 0);
   --color-sidebar-foreground: oklch(0.985 0 0);
   --color-sidebar-primary: oklch(0.488 0.243 264.376);
@@ -266,7 +266,7 @@
  * 复合效果
  * ============================================================ */
 
-/* 面板：Lumi 的做法——纯色底 + 1px 半透明环，不加阴影 */
+/* 面板：EAssistant 的做法——纯色底 + 1px 半透明环，不加阴影 */
 @utility surface-glass {
   background: var(--color-card);
   border: 1px solid var(--color-line);

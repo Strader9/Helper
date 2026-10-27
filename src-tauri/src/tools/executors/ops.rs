@@ -253,8 +253,12 @@ impl AgentTool for ModelConfigurationUpdateTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let key = args["key"].as_str().ok_or_else(|| AppError::InvalidArgument("key is required".into()))?;
-        let value = args["value"].as_str().ok_or_else(|| AppError::InvalidArgument("value is required".into()))?;
+        let key = args["key"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("key is required".into()))?;
+        let value = args["value"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("value is required".into()))?;
 
         if !UPDATABLE_KEYS.contains(&key) {
             return Ok(ToolResult::err(
@@ -272,12 +276,18 @@ impl AgentTool for ModelConfigurationUpdateTool {
                 })?;
                 if let Some(lo) = lo {
                     if parsed < lo {
-                        return Ok(ToolResult::err("VALUE_OUT_OF_RANGE", &format!("值 {} 低于下界 {}", parsed, lo)));
+                        return Ok(ToolResult::err(
+                            "VALUE_OUT_OF_RANGE",
+                            &format!("值 {} 低于下界 {}", parsed, lo),
+                        ));
                     }
                 }
                 if let Some(hi) = hi {
                     if parsed > hi {
-                        return Ok(ToolResult::err("VALUE_OUT_OF_RANGE", &format!("值 {} 高于上界 {}", parsed, hi)));
+                        return Ok(ToolResult::err(
+                            "VALUE_OUT_OF_RANGE",
+                            &format!("值 {} 高于上界 {}", parsed, hi),
+                        ));
                     }
                 }
             }
@@ -328,7 +338,9 @@ impl AgentTool for ModelConfigurationTestTool {
 
         match provider {
             "sidecar" => {
-                let base = db.get_setting("sidecar.url")?.unwrap_or_else(|| "http://127.0.0.1:4770".into());
+                let base = db
+                    .get_setting("sidecar.url")?
+                    .unwrap_or_else(|| "http://127.0.0.1:4770".into());
                 let url = base.trim_end_matches('/').to_string() + "/health";
                 let started = Instant::now();
                 let resp = reqwest::Client::builder()
@@ -355,13 +367,24 @@ impl AgentTool for ModelConfigurationTestTool {
                 }
             }
             _ => {
-                let base = db.get_setting("ollama.base_url")?.unwrap_or_else(|| "http://localhost:11434".into());
-                let model = db.get_setting("ollama.model")?.unwrap_or_else(|| "qwen3:8b".into());
-                let timeout = db.get_setting("ollama.timeout_ms")?.and_then(|s| s.parse().ok()).unwrap_or(5000u64);
+                let base = db
+                    .get_setting("ollama.base_url")?
+                    .unwrap_or_else(|| "http://localhost:11434".into());
+                let model = db
+                    .get_setting("ollama.model")?
+                    .unwrap_or_else(|| "qwen3:8b".into());
+                let timeout = db
+                    .get_setting("ollama.timeout_ms")?
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(5000u64);
 
                 let client = crate::llm::OllamaClient::new(base.clone(), timeout);
                 let reachable = client.is_available().await;
-                let models = if reachable { client.list_models().await.unwrap_or_default() } else { vec![] };
+                let models = if reachable {
+                    client.list_models().await.unwrap_or_default()
+                } else {
+                    vec![]
+                };
                 let model_present = models.iter().any(|m| m.name == model || m.model == model);
 
                 Ok(ToolResult::ok(json!({
@@ -404,7 +427,9 @@ impl AgentTool for SleepStatusTool {
 
     async fn execute(&self, _args: serde_json::Value) -> AppResult<ToolResult> {
         let db = db()?;
-        let mode = db.get_setting("agent.sleep_mode")?.unwrap_or_else(|| "off".into());
+        let mode = db
+            .get_setting("agent.sleep_mode")?
+            .unwrap_or_else(|| "off".into());
         let until = db.get_setting("agent.sleep_until")?.unwrap_or_default();
         Ok(ToolResult::ok(json!({
             "mode": mode,
@@ -442,7 +467,9 @@ impl AgentTool for SleepCycleTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let mode = args["mode"].as_str().ok_or_else(|| AppError::InvalidArgument("mode is required".into()))?;
+        let mode = args["mode"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("mode is required".into()))?;
         if mode != "on" && mode != "off" {
             return Ok(ToolResult::err("INVALID_MODE", "mode 只能是 on 或 off"));
         }
@@ -457,7 +484,9 @@ impl AgentTool for SleepCycleTool {
         upsert_setting("agent.sleep_mode", mode)?;
         upsert_setting("agent.sleep_until", &until)?;
 
-        Ok(ToolResult::ok(json!({ "ok": true, "mode": mode, "sleep_until": until })))
+        Ok(ToolResult::ok(
+            json!({ "ok": true, "mode": mode, "sleep_until": until }),
+        ))
     }
 }
 
@@ -658,7 +687,9 @@ impl AgentTool for RuntimeWorkStatusTool {
 
     async fn execute(&self, _args: serde_json::Value) -> AppResult<ToolResult> {
         let tasks = active_tasks()?;
-        Ok(ToolResult::ok(json!({ "count": tasks.len(), "tasks": tasks })))
+        Ok(ToolResult::ok(
+            json!({ "count": tasks.len(), "tasks": tasks }),
+        ))
     }
 }
 
@@ -688,9 +719,13 @@ impl AgentTool for RuntimeWorkPauseTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let task_id = args["task_id"].as_str().ok_or_else(|| AppError::InvalidArgument("task_id is required".into()))?;
+        let task_id = args["task_id"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("task_id is required".into()))?;
         let n = set_task_status(task_id, "PAUSED")?;
-        Ok(ToolResult::ok(json!({ "ok": n > 0, "affected": n, "task_id": task_id, "status": "PAUSED" })))
+        Ok(ToolResult::ok(
+            json!({ "ok": n > 0, "affected": n, "task_id": task_id, "status": "PAUSED" }),
+        ))
     }
 }
 
@@ -720,9 +755,13 @@ impl AgentTool for RuntimeWorkResumeTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let task_id = args["task_id"].as_str().ok_or_else(|| AppError::InvalidArgument("task_id is required".into()))?;
+        let task_id = args["task_id"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("task_id is required".into()))?;
         let n = set_task_status(task_id, "PENDING")?;
-        Ok(ToolResult::ok(json!({ "ok": n > 0, "affected": n, "task_id": task_id, "status": "PENDING" })))
+        Ok(ToolResult::ok(
+            json!({ "ok": n > 0, "affected": n, "task_id": task_id, "status": "PENDING" }),
+        ))
     }
 }
 
@@ -752,9 +791,13 @@ impl AgentTool for RuntimeWorkCancelTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let task_id = args["task_id"].as_str().ok_or_else(|| AppError::InvalidArgument("task_id is required".into()))?;
+        let task_id = args["task_id"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("task_id is required".into()))?;
         let n = set_task_status(task_id, "CANCELLED")?;
-        Ok(ToolResult::ok(json!({ "ok": n > 0, "affected": n, "task_id": task_id, "status": "CANCELLED" })))
+        Ok(ToolResult::ok(
+            json!({ "ok": n > 0, "affected": n, "task_id": task_id, "status": "CANCELLED" }),
+        ))
     }
 }
 
@@ -763,11 +806,15 @@ impl AgentTool for RuntimeWorkCancelTool {
 // ============================================================
 
 /// 白名单：只允许这些无交互、无持久副作用的只读/工具型命令。
-const CLI_ALLOWLIST: &[&str] = &["git", "python", "node", "npm", "ffmpeg", "ffprobe", "where", "echo"];
+const CLI_ALLOWLIST: &[&str] = &[
+    "git", "python", "node", "npm", "ffmpeg", "ffprobe", "where", "echo",
+];
 
 fn last_run() -> AppResult<Value> {
     let db = db()?;
-    let raw = db.get_setting("external_cli.last_run")?.unwrap_or_else(|| "{}".into());
+    let raw = db
+        .get_setting("external_cli.last_run")?
+        .unwrap_or_else(|| "{}".into());
     Ok(serde_json::from_str(&raw).unwrap_or_else(|_| json!({})))
 }
 
@@ -794,7 +841,11 @@ fn terminate_cli_process_tree(child: &mut std::process::Child) {
 }
 
 /// 带超时的外部命令执行：读输出在独立线程，超时终止该命令的进程树，避免死锁与进程泄漏。
-fn run_cli(program: &str, args: &[String], timeout_ms: u64) -> AppResult<(Option<i32>, String, String, bool)> {
+fn run_cli(
+    program: &str,
+    args: &[String],
+    timeout_ms: u64,
+) -> AppResult<(Option<i32>, String, String, bool)> {
     use std::io::Read;
 
     let mut cmd = Command::new(program);
@@ -877,25 +928,37 @@ impl AgentTool for ExternalCliRunTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let program = args["command"].as_str().ok_or_else(|| AppError::InvalidArgument("command is required".into()))?;
+        let program = args["command"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("command is required".into()))?;
         if !CLI_ALLOWLIST.contains(&program) {
             return Ok(ToolResult::err(
                 "COMMAND_NOT_ALLOWLISTED",
-                &format!("命令「{}」不在白名单内（可选: {}）", program, CLI_ALLOWLIST.join(", ")),
+                &format!(
+                    "命令「{}」不在白名单内（可选: {}）",
+                    program,
+                    CLI_ALLOWLIST.join(", ")
+                ),
             ));
         }
         let program_owned = program.to_string();
         let cmd_args: Vec<String> = args["args"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
-        let timeout_ms = args["timeout_ms"].as_u64().unwrap_or(30000).clamp(1000, 120000);
+        let timeout_ms = args["timeout_ms"]
+            .as_u64()
+            .unwrap_or(30000)
+            .clamp(1000, 120000);
 
-        let (code, stdout, stderr, timed_out) = tokio::task::spawn_blocking(move || {
-            run_cli(&program_owned, &cmd_args, timeout_ms)
-        })
-        .await
-        .map_err(|e| AppError::Internal(format!("执行任务失败: {}", e)))??;
+        let (code, stdout, stderr, timed_out) =
+            tokio::task::spawn_blocking(move || run_cli(&program_owned, &cmd_args, timeout_ms))
+                .await
+                .map_err(|e| AppError::Internal(format!("执行任务失败: {}", e)))??;
 
         let result = json!({
             "ok": !timed_out && code == Some(0),

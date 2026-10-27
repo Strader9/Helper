@@ -37,45 +37,67 @@ impl ErrorCategory {
         let msg = error_msg.to_lowercase();
 
         // 权限类
-        if code.contains("PERMISSION") || code.contains("ACCESS_DENIED") || code.contains("UNAUTHORIZED")
-            || msg.contains("permission denied") || msg.contains("access denied")
-            || msg.contains("拒绝访问") || msg.contains("权限不足")
+        if code.contains("PERMISSION")
+            || code.contains("ACCESS_DENIED")
+            || code.contains("UNAUTHORIZED")
+            || msg.contains("permission denied")
+            || msg.contains("access denied")
+            || msg.contains("拒绝访问")
+            || msg.contains("权限不足")
         {
             return ErrorCategory::PermissionDenied;
         }
 
         // 系统限制类
-        if code.contains("DISK_FULL") || code.contains("OUT_OF_MEMORY") || code.contains("RESOURCE_LIMIT")
-            || msg.contains("no space left") || msg.contains("disk full")
-            || msg.contains("out of memory") || msg.contains("磁盘满")
+        if code.contains("DISK_FULL")
+            || code.contains("OUT_OF_MEMORY")
+            || code.contains("RESOURCE_LIMIT")
+            || msg.contains("no space left")
+            || msg.contains("disk full")
+            || msg.contains("out of memory")
+            || msg.contains("磁盘满")
         {
             return ErrorCategory::SystemLimit;
         }
 
         // 临时错误类
-        if code.contains("TIMEOUT") || code.contains("NETWORK") || code.contains("CONNECTION")
-            || code.contains("BUSY") || code.contains("RETRY")
-            || msg.contains("timeout") || msg.contains("timed out")
-            || msg.contains("connection refused") || msg.contains("network error")
-            || msg.contains("超时") || msg.contains("网络")
+        if code.contains("TIMEOUT")
+            || code.contains("NETWORK")
+            || code.contains("CONNECTION")
+            || code.contains("BUSY")
+            || code.contains("RETRY")
+            || msg.contains("timeout")
+            || msg.contains("timed out")
+            || msg.contains("connection refused")
+            || msg.contains("network error")
+            || msg.contains("超时")
+            || msg.contains("网络")
         {
             return ErrorCategory::Transient;
         }
 
         // 参数错误类
-        if code.contains("INVALID_PARAM") || code.contains("BAD_REQUEST") || code.contains("MISSING_PARAM")
+        if code.contains("INVALID_PARAM")
+            || code.contains("BAD_REQUEST")
+            || code.contains("MISSING_PARAM")
             || code.contains("VALIDATION")
-            || msg.contains("invalid argument") || msg.contains("missing required")
-            || msg.contains("参数错误") || msg.contains("缺少参数")
+            || msg.contains("invalid argument")
+            || msg.contains("missing required")
+            || msg.contains("参数错误")
+            || msg.contains("缺少参数")
         {
             return ErrorCategory::InvalidParams;
         }
 
         // 工具不可用类
-        if code.contains("NOT_FOUND") || code.contains("PROGRAM_NOT_FOUND") || code.contains("TOOL_NOT_FOUND")
+        if code.contains("NOT_FOUND")
+            || code.contains("PROGRAM_NOT_FOUND")
+            || code.contains("TOOL_NOT_FOUND")
             || code.contains("FILE_NOT_FOUND")
-            || msg.contains("not found") || msg.contains("does not exist")
-            || msg.contains("找不到") || msg.contains("不存在")
+            || msg.contains("not found")
+            || msg.contains("does not exist")
+            || msg.contains("找不到")
+            || msg.contains("不存在")
         {
             return ErrorCategory::ToolUnavailable;
         }
@@ -91,7 +113,9 @@ pub enum RecoveryStrategy {
     /// 重试当前工具（相同参数），带退避延迟
     Retry { backoff_ms: u64 },
     /// 调整参数后重试
-    AdjustParams { adjusted_arguments: serde_json::Value },
+    AdjustParams {
+        adjusted_arguments: serde_json::Value,
+    },
     /// 换用替代工具
     SwitchTool {
         alternative_tool: String,

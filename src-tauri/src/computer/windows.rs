@@ -3,11 +3,11 @@
 //! 提供 get_active_window、list_windows、focus_window、minimize_window、close_window 等工具。
 //! 通过 PowerShell Add-Type 调用 user32.dll Windows API。
 
-use std::process::Command;
 use crate::tools::{AgentTool, RiskLevel, ToolResult};
 use async_trait::async_trait;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::process::Command;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -112,7 +112,8 @@ impl AgentTool for ListWindowsTool {
                 WIN32_API_DEF, limit
             );
             let output = run_ps_raw(&ps_script)?;
-            let windows: serde_json::Value = serde_json::from_str(&output).unwrap_or(serde_json::json!([]));
+            let windows: serde_json::Value =
+                serde_json::from_str(&output).unwrap_or(serde_json::json!([]));
             let count = windows.as_array().map(|a| a.len()).unwrap_or(0);
             Ok(ToolResult::ok(serde_json::json!({
                 "windows": windows,
@@ -457,14 +458,24 @@ fn build_window_filter(title: Option<&str>, pid: Option<i64>) -> Result<String, 
 /// 运行 PowerShell 脚本并解析 JSON 输出
 fn run_ps_json(script: &str, error_msg: &str) -> crate::error::AppResult<ToolResult> {
     let output = Command::new("powershell")
-        .args(&["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script])
+        .args(&[
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script,
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|e| crate::error::AppError::ToolExecution(format!("{}: {}", error_msg, e)))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Ok(ToolResult::err("POWERSHELL_ERROR", &format!("{}: {}", error_msg, stderr)));
+        return Ok(ToolResult::err(
+            "POWERSHELL_ERROR",
+            &format!("{}: {}", error_msg, stderr),
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -473,13 +484,16 @@ fn run_ps_json(script: &str, error_msg: &str) -> crate::error::AppResult<ToolRes
         return Ok(ToolResult::err("EMPTY_OUTPUT", error_msg));
     }
 
-    let data: serde_json::Value = serde_json::from_str(trimmed)
-        .unwrap_or_else(|_| serde_json::json!({"raw": trimmed}));
+    let data: serde_json::Value =
+        serde_json::from_str(trimmed).unwrap_or_else(|_| serde_json::json!({"raw": trimmed}));
 
     // 如果返回的对象有 success=false，返回错误
     if let Some(success) = data.get("success").and_then(|v| v.as_bool()) {
         if !success {
-            let reason = data.get("reason").and_then(|v| v.as_str()).unwrap_or("操作失败");
+            let reason = data
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("操作失败");
             return Ok(ToolResult::err("OPERATION_FAILED", reason));
         }
     }
@@ -490,14 +504,26 @@ fn run_ps_json(script: &str, error_msg: &str) -> crate::error::AppResult<ToolRes
 /// 运行 PowerShell 脚本并返回原始输出
 fn run_ps_raw(script: &str) -> crate::error::AppResult<String> {
     let output = Command::new("powershell")
-        .args(&["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script])
+        .args(&[
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script,
+        ])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
-        .map_err(|e| crate::error::AppError::ToolExecution(format!("PowerShell 执行失败: {}", e)))?;
+        .map_err(|e| {
+            crate::error::AppError::ToolExecution(format!("PowerShell 执行失败: {}", e))
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(crate::error::AppError::ToolExecution(format!("PowerShell 错误: {}", stderr)));
+        return Err(crate::error::AppError::ToolExecution(format!(
+            "PowerShell 错误: {}",
+            stderr
+        )));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())

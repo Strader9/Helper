@@ -5,7 +5,7 @@ import { Loader2 } from "lucide-react";
 import { cn } from "../../lib/cn";
 
 /**
- * 按钮（对齐 LumiCore Button）。
+ * 按钮（对齐 EAssistantCore Button）。
  *
  * primary 用近白底 + 深字，不用品牌橙——界面里同时出现两个橙色实心按钮，
  * 用户就不知道哪个是主操作。橙色留给激活条、状态点、聚焦环这些强调位。

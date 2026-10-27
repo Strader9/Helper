@@ -654,7 +654,10 @@ mod tests {
         let policy = PathPolicy::new();
         let qq = r"C:\Program Files\Tencent\QQNT\QQ.exe";
 
-        assert_eq!(policy.validate_path(qq, AccessType::Execute), PathPolicyResult::Allow);
+        assert_eq!(
+            policy.validate_path(qq, AccessType::Execute),
+            PathPolicyResult::Allow
+        );
         assert!(matches!(
             policy.validate_path(qq, AccessType::Read),
             PathPolicyResult::Deny { ref code, .. } if code == PATH_DENY_PROTECTED

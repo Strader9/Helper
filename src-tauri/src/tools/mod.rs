@@ -10,10 +10,12 @@ pub mod executors;
 pub mod receipt;
 pub mod registry;
 
-pub use contract::{contract_for, coverage, CapabilityContract, CoverageReport, SideEffect, VerificationStrategy};
-pub use executor::{ToolExecutor, ToolCallRequest, ToolExecutionResult};
+pub use contract::{
+    contract_for, coverage, CapabilityContract, CoverageReport, SideEffect, VerificationStrategy,
+};
+pub use executor::{ToolCallRequest, ToolExecutionResult, ToolExecutor};
 pub use receipt::{ToolReceipt, VerificationOutcome, VerificationStatus};
-pub use registry::{ToolRegistry, AgentTool, ToolResult, RiskLevel, ToolCategory};
+pub use registry::{AgentTool, RiskLevel, ToolCategory, ToolRegistry, ToolResult};
 
 // ============================================================
 // 当前执行上下文

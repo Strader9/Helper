@@ -161,14 +161,12 @@ fn login<T: Read + Write>(
     client: imap::Client<T>,
     cfg: &MailReadConfig,
 ) -> Result<imap::Session<T>, String> {
-    client
-        .login(&cfg.user, &cfg.password)
-        .map_err(|(e, _)| {
-            format!(
-                "登录 {} 失败：{e}（多数邮箱要求用「授权码」而不是登录密码，且需先在网页端开启 IMAP）",
-                cfg.user
-            )
-        })
+    client.login(&cfg.user, &cfg.password).map_err(|(e, _)| {
+        format!(
+            "登录 {} 失败：{e}（多数邮箱要求用「授权码」而不是登录密码，且需先在网页端开启 IMAP）",
+            cfg.user
+        )
+    })
 }
 
 fn select<T: Read + Write>(session: &mut imap::Session<T>, mailbox: &str) -> Result<u32, String> {
@@ -374,14 +372,14 @@ impl AgentTool for ReadEmailTool {
             .filter(|s| !s.is_empty())
             .unwrap_or("INBOX")
             .to_string();
-        let max_chars = (args["max_chars"].as_u64().unwrap_or(DEFAULT_MAX_CHARS as u64) as usize)
+        let max_chars = (args["max_chars"]
+            .as_u64()
+            .unwrap_or(DEFAULT_MAX_CHARS as u64) as usize)
             .clamp(500, 50_000);
 
         let outcome = with_session(cfg.clone(), mailbox.clone(), move |session| {
-            let fetches = session.uid_fetch(
-                &uid.to_string(),
-                "(UID FLAGS RFC822.SIZE BODY.PEEK[])",
-            )?;
+            let fetches =
+                session.uid_fetch(&uid.to_string(), "(UID FLAGS RFC822.SIZE BODY.PEEK[])")?;
             let item = fetches
                 .into_iter()
                 .next()
@@ -482,7 +480,7 @@ impl AgentTool for ReadEmailAttachmentsTool {
             "properties": {
                 "uid": { "type": "integer", "description": "邮件 UID" },
                 "mailbox": { "type": "string", "description": "邮箱名，默认 INBOX" },
-                "output_dir": { "type": "string", "description": "保存目录，默认 <下载目录>/PCGuardian-mail" },
+                "output_dir": { "type": "string", "description": "保存目录，默认 <下载目录>/EAssisant-mail" },
                 "names": {
                     "type": "array",
                     "items": { "type": "string" },
@@ -528,7 +526,11 @@ impl AgentTool for ReadEmailAttachmentsTool {
         });
         let overwrite = args["overwrite"].as_bool().unwrap_or(false);
 
-        let out_dir = match args["output_dir"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        let out_dir = match args["output_dir"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(raw) => {
                 let path = std::path::PathBuf::from(raw);
                 if path.is_absolute() {
@@ -650,7 +652,7 @@ fn default_mail_dir() -> std::path::PathBuf {
     dirs::download_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
         .unwrap_or_else(std::env::temp_dir)
-        .join("PCGuardian-mail")
+        .join("EAssisant-mail")
 }
 
 /// 附件名来自外部邮件，**不可信**：路径分隔符、`..`、Windows 保留字符都要处理，
@@ -674,11 +676,7 @@ pub fn sanitize_filename(raw: &str) -> String {
         cleaned = "attachment".to_string();
     }
     // Windows 保留设备名
-    let stem_upper = cleaned
-        .split('.')
-        .next()
-        .unwrap_or("")
-        .to_ascii_uppercase();
+    let stem_upper = cleaned.split('.').next().unwrap_or("").to_ascii_uppercase();
     if matches!(
         stem_upper.as_str(),
         "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "LPT1" | "LPT2" | "LPT3"

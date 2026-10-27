@@ -296,7 +296,10 @@ pub fn search(conn: &Connection, query: &str, limit: usize) -> AppResult<Vec<Chu
     for row in rows.flatten() {
         let (content, ordinal, path, title) = row;
         let lower = content.to_lowercase();
-        let score: usize = terms.iter().map(|t| lower.matches(t.as_str()).count()).sum();
+        let score: usize = terms
+            .iter()
+            .map(|t| lower.matches(t.as_str()).count())
+            .sum();
         if score == 0 {
             continue;
         }
@@ -384,7 +387,10 @@ pub fn remove_document(conn: &Connection, path: &str) -> AppResult<bool> {
     let Some(id) = id else {
         return Ok(false);
     };
-    conn.execute("DELETE FROM knowledge_chunks WHERE document_id = ?1", params![id])?;
+    conn.execute(
+        "DELETE FROM knowledge_chunks WHERE document_id = ?1",
+        params![id],
+    )?;
     conn.execute("DELETE FROM knowledge_documents WHERE id = ?1", params![id])?;
     Ok(true)
 }
@@ -392,8 +398,11 @@ pub fn remove_document(conn: &Connection, path: &str) -> AppResult<bool> {
 pub fn stats(conn: &Connection) -> AppResult<(i64, i64, i64)> {
     let docs: i64 = conn.query_row("SELECT COUNT(*) FROM knowledge_documents", [], |r| r.get(0))?;
     let chunks: i64 = conn.query_row("SELECT COUNT(*) FROM knowledge_chunks", [], |r| r.get(0))?;
-    let chars: i64 = conn
-        .query_row("SELECT COALESCE(SUM(chars), 0) FROM knowledge_chunks", [], |r| r.get(0))?;
+    let chars: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(chars), 0) FROM knowledge_chunks",
+        [],
+        |r| r.get(0),
+    )?;
     Ok((docs, chunks, chars))
 }
 
@@ -440,7 +449,10 @@ mod tests {
         let line = "字".repeat(3000);
         let chunks = chunk_text(&line);
         assert!(chunks.len() >= 2);
-        assert_eq!(chunks.iter().map(|c| c.chars().count()).sum::<usize>(), 3000);
+        assert_eq!(
+            chunks.iter().map(|c| c.chars().count()).sum::<usize>(),
+            3000
+        );
     }
 
     #[test]

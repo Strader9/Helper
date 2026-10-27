@@ -9,7 +9,7 @@
 //! 而不必把远端工具逐个动态注册成 AgentTool。
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::error::{AppError, AppResult};
 use crate::tools::{AgentTool, RiskLevel, ToolResult};
@@ -125,7 +125,10 @@ impl AgentTool for McpCallTool {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| AppError::InvalidArgument("name is required".to_string()))?;
         let arguments = args["arguments"].clone();
-        let server = args["server"].as_str().map(str::trim).filter(|s| !s.is_empty());
+        let server = args["server"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
 
         let url = format!("{}/mcp/call", sidecar_base());
         let mut payload = json!({ "name": name, "arguments": arguments });
@@ -156,9 +159,7 @@ impl AgentTool for McpCallTool {
         };
 
         if !status.is_success() {
-            let message = data["error"]
-                .as_str()
-                .unwrap_or("MCP 工具调用失败");
+            let message = data["error"].as_str().unwrap_or("MCP 工具调用失败");
             return Ok(ToolResult::err("MCP_CALL_FAILED", message));
         }
 

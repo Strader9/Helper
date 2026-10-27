@@ -17,7 +17,7 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 
 /// 注册表中的应用标识（Value 名）
-const APP_VALUE_NAME: &str = "PCGuardian";
+const APP_VALUE_NAME: &str = "EAssisant";
 
 /// 注册表路径
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
@@ -124,9 +124,7 @@ fn disable() -> AppResult<()> {
 
 #[cfg(not(target_os = "windows"))]
 fn enable() -> AppResult<()> {
-    Err(AppError::Internal(
-        "开机自启目前只支持 Windows".to_string(),
-    ))
+    Err(AppError::Internal("开机自启目前只支持 Windows".to_string()))
 }
 
 #[cfg(not(target_os = "windows"))]

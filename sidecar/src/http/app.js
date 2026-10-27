@@ -15,7 +15,7 @@ import { TokenUsage } from '../llm/usage.js';
 import { SIDECAR_VERSION } from '../config.js';
 
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
-const LOCAL_CONTROL_HEADER = 'x-pc-guardian-local';
+const LOCAL_CONTROL_HEADER = 'x-e-assisant-local';
 const LOCAL_CONTROL_VALUE = 'capability-manager-v1';
 
 class HttpError extends Error {
@@ -198,7 +198,7 @@ export function attachHttpApi(httpServer, router, mcp, { logger } = {}) {
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, X-PC-Guardian-Local',
+      'Content-Type, Authorization, X-E-Assisant-Local',
     );
     if (req.method === 'OPTIONS') {
       res.writeHead(204);

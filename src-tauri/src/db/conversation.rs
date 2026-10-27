@@ -195,9 +195,9 @@ impl<'a> ConversationManager<'a> {
     /// 摘要只压一次并缓存（见 `agent::history`），所以需要记录它覆盖到哪一条，
     /// 避免每次组装历史都把同一段话重复压缩。
     pub fn get_summary(&self, session_id: &str) -> AppResult<Option<(String, i64)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT summary, summary_upto_id FROM chat_sessions WHERE id = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT summary, summary_upto_id FROM chat_sessions WHERE id = ?1")?;
         let result = stmt
             .query_row(params![session_id], |row| {
                 let summary: Option<String> = row.get(0)?;

@@ -67,7 +67,13 @@ fn load_config() -> Result<MailConfig, Vec<&'static str>> {
         .unwrap_or(587);
     let security = setting("mail.smtp_security")
         .map(|v| v.trim().to_lowercase())
-        .unwrap_or_else(|| if port == 465 { "tls".into() } else { "starttls".into() });
+        .unwrap_or_else(|| {
+            if port == 465 {
+                "tls".into()
+            } else {
+                "starttls".into()
+            }
+        });
 
     Ok(MailConfig {
         host: host.unwrap(),
@@ -321,8 +327,10 @@ fn send_via_smtp(
                 .body(body.to_string()),
         );
         for (name, bytes) in attachments {
-            multipart =
-                multipart.singlepart(Attachment::new(name.clone()).body(bytes.clone(), "application/octet-stream".parse().unwrap()));
+            multipart = multipart.singlepart(
+                Attachment::new(name.clone())
+                    .body(bytes.clone(), "application/octet-stream".parse().unwrap()),
+            );
         }
         builder
             .multipart(multipart)
@@ -610,7 +618,7 @@ fn build_ics(
     let mut out = String::new();
     out.push_str("BEGIN:VCALENDAR\r\n");
     out.push_str("VERSION:2.0\r\n");
-    out.push_str("PRODID:-//pc-guardian//Calendar//CN\r\n");
+    out.push_str("PRODID:-//e-assisant//Calendar//CN\r\n");
     out.push_str("BEGIN:VEVENT\r\n");
     out.push_str(&format!("UID:{}\r\n", uid));
     out.push_str(&format!("DTSTAMP:{}\r\n", now));
@@ -677,10 +685,15 @@ impl AgentTool for CreateCalendarEventTool {
         let start_str = args["start_at"]
             .as_str()
             .ok_or_else(|| AppError::InvalidArgument("start_at is required".to_string()))?;
-        let start = parse_local_dt(start_str)
-            .ok_or_else(|| AppError::InvalidArgument(format!("start_at 时间格式无法解析：{}", start_str)))?;
+        let start = parse_local_dt(start_str).ok_or_else(|| {
+            AppError::InvalidArgument(format!("start_at 时间格式无法解析：{}", start_str))
+        })?;
 
-        let end = match args["end_at"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        let end = match args["end_at"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(s) => parse_local_dt(s).ok_or_else(|| {
                 AppError::InvalidArgument(format!("end_at 时间格式无法解析：{}", s))
             })?,
@@ -693,14 +706,21 @@ impl AgentTool for CreateCalendarEventTool {
             ));
         }
 
-        let reminder_minutes = args["reminder_minutes"].as_u64().unwrap_or(0).min(7 * 24 * 60) as u32;
+        let reminder_minutes = args["reminder_minutes"]
+            .as_u64()
+            .unwrap_or(0)
+            .min(7 * 24 * 60) as u32;
         let location = args["location"].as_str().map(str::trim);
         let description = args["description"].as_str().map(str::trim);
 
         let ics = build_ics(title, start, end, location, description, reminder_minutes);
 
         // 用户给了路径就用它；没给就落到临时目录，并打开默认日历导入。
-        let (path, open_after) = match args["path"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        let (path, open_after) = match args["path"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(p) => (std::path::PathBuf::from(p), false),
             None => {
                 let mut p = std::env::temp_dir();
@@ -709,9 +729,8 @@ impl AgentTool for CreateCalendarEventTool {
             }
         };
 
-        std::fs::write(&path, &ics).map_err(|e| {
-            AppError::ToolExecution(format!("写入 .ics 失败：{}", e))
-        })?;
+        std::fs::write(&path, &ics)
+            .map_err(|e| AppError::ToolExecution(format!("写入 .ics 失败：{}", e)))?;
 
         if open_after {
             let mut command = std::process::Command::new("rundll32");
@@ -995,7 +1014,10 @@ mod tests {
         assert!(ics.contains("BEGIN:VEVENT"));
         assert!(ics.contains("SUMMARY:开会"));
         assert!(ics.contains("LOCATION:会议室A"));
-        assert!(ics.contains("DTSTART:20261020"), "时间应转成 UTC 的 YYYYMMDD");
+        assert!(
+            ics.contains("DTSTART:20261020"),
+            "时间应转成 UTC 的 YYYYMMDD"
+        );
         assert!(ics.contains("BEGIN:VALARM"), "reminder>0 应带提醒");
         assert!(ics.contains("TRIGGER:-PT15M"));
         assert!(ics.contains("END:VCALENDAR"));

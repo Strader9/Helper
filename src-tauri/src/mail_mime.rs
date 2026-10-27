@@ -246,7 +246,11 @@ pub fn decode_encoded_words(input: &str) -> String {
         // 普通字符
         let ch_len = next_char_len(bytes, i);
         let chunk = &input[i..i + ch_len];
-        if last_was_encoded && chunk.chars().all(|c| c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+        if last_was_encoded
+            && chunk
+                .chars()
+                .all(|c| c == ' ' || c == '\t' || c == '\r' || c == '\n')
+        {
             // 编码词之间的空白丢掉
             i += ch_len;
             continue;
@@ -426,8 +430,7 @@ fn walk(headers: &[(String, String)], body: &[u8], out: &mut Walk, depth: usize)
     }
 
     // 其余当文本处理（text/plain 或没有 Content-Type 的老邮件）
-    out.text_parts
-        .push(charset_to_utf8(&decoded, charset));
+    out.text_parts.push(charset_to_utf8(&decoded, charset));
 }
 
 /// 按 boundary 切分。返回的是"分隔线之间"的原始段（不含分隔线本身），
@@ -450,10 +453,7 @@ fn split_by_boundary<'a>(body: &'a [u8], delimiter: &[u8]) -> Vec<&'a [u8]> {
 
     for (idx, start) in starts.iter().enumerate() {
         let content_start = start + delimiter.len();
-        let content_end = starts
-            .get(idx + 1)
-            .copied()
-            .unwrap_or(body.len());
+        let content_end = starts.get(idx + 1).copied().unwrap_or(body.len());
         if content_start >= content_end {
             continue;
         }
@@ -530,8 +530,10 @@ pub fn parse_message(raw: &[u8]) -> ParsedMail {
         date: header(&headers, "date").unwrap_or("").to_string(),
         message_id: header(&headers, "message-id").unwrap_or("").to_string(),
         text_body,
-        html_body: walk_out.html_parts.join("
-"),
+        html_body: walk_out.html_parts.join(
+            "
+",
+        ),
         attachments,
     }
 }
@@ -654,7 +656,9 @@ fn decode_html_entities(input: &str) -> String {
             if let Some(end) = out[i..].find(';') {
                 let entity = &out[i + 1..i + end];
                 if let Some(num) = entity.strip_prefix('#') {
-                    let code = if let Some(hex) = num.strip_prefix('x').or_else(|| num.strip_prefix('X')) {
+                    let code = if let Some(hex) =
+                        num.strip_prefix('x').or_else(|| num.strip_prefix('X'))
+                    {
                         u32::from_str_radix(hex, 16).ok()
                     } else {
                         num.parse::<u32>().ok()
@@ -708,7 +712,10 @@ mod tests {
 
     #[test]
     fn decodes_q_encoding_with_underscore() {
-        assert_eq!(decode_encoded_words("=?UTF-8?Q?hello_world?="), "hello world");
+        assert_eq!(
+            decode_encoded_words("=?UTF-8?Q?hello_world?="),
+            "hello world"
+        );
     }
 
     #[test]
@@ -727,9 +734,8 @@ mod tests {
 
     #[test]
     fn parses_rfc2231_filename() {
-        let (_, params) = parse_content_type(
-            "application/pdf; name*=UTF-8''%E6%8A%A5%E5%91%8A.pdf",
-        );
+        let (_, params) =
+            parse_content_type("application/pdf; name*=UTF-8''%E6%8A%A5%E5%91%8A.pdf");
         assert_eq!(params.get("name").map(String::as_str), Some("报告.pdf"));
     }
 
@@ -777,7 +783,11 @@ JVBERi0xLjQK\r\n\
 
         let parsed = parse_message(raw);
         assert_eq!(parsed.subject, "test");
-        assert!(parsed.text_body.contains("plain text"), "正文: {:?}", parsed.text_body);
+        assert!(
+            parsed.text_body.contains("plain text"),
+            "正文: {:?}",
+            parsed.text_body
+        );
         assert!(!parsed.html_body.is_empty());
         assert_eq!(parsed.attachments.len(), 1);
         assert_eq!(parsed.attachments[0].filename, "报告.pdf");

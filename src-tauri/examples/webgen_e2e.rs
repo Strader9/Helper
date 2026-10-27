@@ -14,9 +14,9 @@
 
 use std::time::Instant;
 
+use e_assisant_lib::llm::{ChatChunk, OllamaClient, OllamaMessage};
+use e_assisant_lib::webgen;
 use futures_util::StreamExt;
-use pc_guardian_lib::llm::{ChatChunk, OllamaClient, OllamaMessage};
-use pc_guardian_lib::webgen;
 
 /// 与 lib.rs 中的 `WEBGEN_CONTINUATION_TAIL_CHARS` 保持一致。
 const CONTINUATION_TAIL_CHARS: usize = 900;

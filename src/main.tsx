@@ -1,11 +1,23 @@
-import React from "react";
+import React, { useEffect } from "react";
 import ReactDOM from "react-dom/client";
+import { invoke } from "@tauri-apps/api/core";
 import { Toaster } from "sonner";
-import LumiApp from "./LumiApp";
+import EAssistantApp from "./EAssistantApp";
+
+function StartupReadySignal() {
+  useEffect(() => {
+    invoke("mark_main_window_ready").catch((error) => {
+      console.error("Failed to finish startup handoff", error);
+    });
+  }, []);
+
+  return null;
+}
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <LumiApp />
+    <EAssistantApp />
+    <StartupReadySignal />
     <Toaster
       position="top-right"
       theme="dark"

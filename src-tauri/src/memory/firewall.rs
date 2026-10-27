@@ -1,10 +1,10 @@
 //! 记忆防火墙：过滤敏感信息与噪声
 //!
-//! 借鉴 LumiCore 的 Memory Firewall 设计（读逻辑、用 Rust 重写，不逐字复制）：
+//! 借鉴早期原型的 Memory Firewall 设计（读逻辑、用 Rust 重写，不逐字复制）：
 //! 每条记忆入库前先过防火墙，判定是否接受。核心价值是**拦住密钥/口令类内容**，
 //! 不把 API key、token、密码写进长期记忆库——这与「不泄露密钥」的全局纪律一致。
 //!
-//! 单用户本地应用没有 org/shared 多租户场景，所以这里**不引入** Lumi 的
+//! 单用户本地应用没有 org/shared 多租户场景，所以这里**不引入**原型中的
 //! privacy_class / retention 多态推断，只保留真正有意义的「是否疑似密钥」判定，
 //! 避免为用不上的概念加列、加枚举。
 
@@ -36,15 +36,28 @@ const STRONG_KEY_PREFIXES: &[&str] = &[
 /// 密钥关键词：需要与「长得像值的长串」同时出现才判敏感，避免误拦
 /// 「我忘了密码」这类正常内容。
 const SECRET_KEYWORDS: &[&str] = &[
-    "api_key", "apikey", "api key", "api-key",
-    "access_token", "access token", "access-token",
-    "secret", "password", "passwd", "passphrase", "private_key", "private key",
-    "bearer", "authorization", "client_secret", "client-secret",
+    "api_key",
+    "apikey",
+    "api key",
+    "api-key",
+    "access_token",
+    "access token",
+    "access-token",
+    "secret",
+    "password",
+    "passwd",
+    "passphrase",
+    "private_key",
+    "private key",
+    "bearer",
+    "authorization",
+    "client_secret",
+    "client-secret",
 ];
 
 /// 评估防火墙
 ///
-/// `user_approved`：保留参数，与 Lumi 对齐——将来若提供「显式批准存敏感项」的能力，
+/// `user_approved`：保留参数，与早期原型对齐——将来若提供「显式批准存敏感项」的能力，
 /// 可通过它放行。当前所有调用点传 `false`，即敏感内容一律拒绝。
 pub fn evaluate_firewall(content: &str, user_approved: bool) -> FirewallDecision {
     let trimmed = content.trim();
@@ -144,7 +157,10 @@ mod tests {
 
     #[test]
     fn rejects_api_key_with_sk_prefix() {
-        let d = evaluate_firewall("我的 openai key 是 sk-abcdefghijklmnopqrstuvwxyz123456", false);
+        let d = evaluate_firewall(
+            "我的 openai key 是 sk-abcdefghijklmnopqrstuvwxyz123456",
+            false,
+        );
         assert!(!d.accepted, "应拒绝，实际原因: {}", d.reason);
         assert!(d.is_secret);
     }

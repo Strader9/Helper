@@ -25,9 +25,7 @@ pub(crate) mod win {
         MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
         MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, VIRTUAL_KEY,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
 
     /// 主屏逻辑尺寸。SendInput 的绝对坐标以主屏为基准归一化，
     /// 所以多屏环境下副屏坐标可能落在 [0,1] 之外，属正常现象。
@@ -141,8 +139,7 @@ pub(crate) mod win {
         use windows::Win32::Foundation::POINT;
         use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
         let mut p = POINT::default();
-        unsafe { GetCursorPos(&mut p) }
-            .map_err(|e| format!("读光标位置失败：{e}"))?;
+        unsafe { GetCursorPos(&mut p) }.map_err(|e| format!("读光标位置失败：{e}"))?;
         Ok((p.x, p.y))
     }
 
@@ -387,7 +384,10 @@ impl AgentTool for MouseClickTool {
             .clamp(1, 5) as u32;
 
         // 坐标可以不给：`None` 表示沿用当前光标位置
-        let coords = match (args.get("x").and_then(|v| v.as_i64()), args.get("y").and_then(|v| v.as_i64())) {
+        let coords = match (
+            args.get("x").and_then(|v| v.as_i64()),
+            args.get("y").and_then(|v| v.as_i64()),
+        ) {
             (Some(x), Some(y)) => Some((x as i32, y as i32)),
             _ => None,
         };
@@ -740,10 +740,7 @@ mod tests {
     fn split_combo_handles_plain_and_multi() {
         assert_eq!(split_combo("enter"), vec!["enter"]);
         assert_eq!(split_combo("ctrl+s"), vec!["ctrl", "s"]);
-        assert_eq!(
-            split_combo("ctrl+shift+esc"),
-            vec!["ctrl", "shift", "esc"]
-        );
+        assert_eq!(split_combo("ctrl+shift+esc"), vec!["ctrl", "shift", "esc"]);
         // 多余空格不该变成空键名
         assert_eq!(split_combo(" ctrl + s "), vec!["ctrl", "s"]);
     }

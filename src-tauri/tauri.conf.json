@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "PC Guardian",
+  "productName": "E-Assisant",
   "version": "0.1.0",
-  "identifier": "ai.pcguardian.app",
+  "identifier": "ai.eassisant.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "PC Guardian AI",
+        "title": "E-Assisant",
         "width": 1100,
         "height": 720,
         "minWidth": 800,
@@ -22,6 +22,21 @@
         "fullscreen": true,
         "decorations": false,
         "transparent": false,
+        "visible": false,
+        "backgroundColor": "#01030a",
+        "center": true
+      },
+      {
+        "label": "splashscreen",
+        "title": "E-Assisant",
+        "url": "splashscreen.html",
+        "fullscreen": true,
+        "decorations": false,
+        "resizable": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "transparent": false,
+        "backgroundColor": "#01030a",
         "center": true
       }
     ],
@@ -43,9 +58,9 @@
       "icons/icon.ico"
     ],
     "category": "Utility",
-    "shortDescription": "PC Guardian AI - Local AI Assistant",
-    "longDescription": "PC Guardian AI is a local-first Windows desktop AI agent with security-first design.",
-    "copyright": "© 2026 PC Guardian",
+    "shortDescription": "E-Assisant - Local AI Assistant",
+    "longDescription": "E-Assisant is a local-first Windows desktop AI agent with security-first design.",
+    "copyright": "© 2026 E-Assisant",
     "windows": {
       "nsis": {
         "installMode": "currentUser",

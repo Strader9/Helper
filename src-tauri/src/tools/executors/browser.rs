@@ -23,7 +23,9 @@ pub struct BrowserOpenTool;
 
 #[async_trait]
 impl AgentTool for BrowserOpenTool {
-    fn name(&self) -> &'static str { "browser_open" }
+    fn name(&self) -> &'static str {
+        "browser_open"
+    }
     fn description(&self) -> &'static str {
         "打开浏览器并访问指定 URL。自动选择系统已安装的浏览器（优先 Chrome，其次 Edge、Brave、Firefox 等），无需指定浏览器类型。如果指定的浏览器未安装，会自动回退到系统可用浏览器。"
     }
@@ -36,7 +38,9 @@ impl AgentTool for BrowserOpenTool {
             }
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Low }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         let url = args.get("url").and_then(|v| v.as_str());
@@ -45,8 +49,10 @@ impl AgentTool for BrowserOpenTool {
         // 安全检查：敏感 URL
         if let Some(u) = url {
             if is_sensitive_url(u) {
-                return Ok(ToolResult::err("SENSITIVE_URL_BLOCKED",
-                    &format!("URL 包含敏感域名，已阻止: {}", u)));
+                return Ok(ToolResult::err(
+                    "SENSITIVE_URL_BLOCKED",
+                    &format!("URL 包含敏感域名，已阻止: {}", u),
+                ));
             }
         }
 
@@ -79,7 +85,9 @@ pub struct BrowserCloseTool;
 
 #[async_trait]
 impl AgentTool for BrowserCloseTool {
-    fn name(&self) -> &'static str { "browser_close" }
+    fn name(&self) -> &'static str {
+        "browser_close"
+    }
     fn description(&self) -> &'static str {
         "关闭浏览器（结束整个浏览器进程），或关闭指定标签页。"
     }
@@ -91,17 +99,23 @@ impl AgentTool for BrowserCloseTool {
             }
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Low }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         let tab_id = args.get("tab_id").and_then(|v| v.as_str());
 
         if let Some(tid) = tab_id {
             browser().close_tab(Some(tid)).await?;
-            Ok(ToolResult::ok(json!({ "success": true, "closed_tab": tid })))
+            Ok(ToolResult::ok(
+                json!({ "success": true, "closed_tab": tid }),
+            ))
         } else {
             browser().close().await?;
-            Ok(ToolResult::ok(json!({ "success": true, "message": "浏览器已关闭" })))
+            Ok(ToolResult::ok(
+                json!({ "success": true, "message": "浏览器已关闭" }),
+            ))
         }
     }
 }
@@ -114,7 +128,9 @@ pub struct BrowserNavigateTool;
 
 #[async_trait]
 impl AgentTool for BrowserNavigateTool {
-    fn name(&self) -> &'static str { "browser_navigate" }
+    fn name(&self) -> &'static str {
+        "browser_navigate"
+    }
     fn description(&self) -> &'static str {
         "在当前标签页导航到指定 URL。需要先调用 browser_open 启动浏览器。"
     }
@@ -127,15 +143,21 @@ impl AgentTool for BrowserNavigateTool {
             "required": ["url"]
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Low }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let url = args.get("url").and_then(|v| v.as_str())
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::InvalidArgument("url is required".to_string()))?;
 
         if is_sensitive_url(url) {
-            return Ok(ToolResult::err("SENSITIVE_URL_BLOCKED",
-                &format!("URL 包含敏感域名，已阻止: {}", url)));
+            return Ok(ToolResult::err(
+                "SENSITIVE_URL_BLOCKED",
+                &format!("URL 包含敏感域名，已阻止: {}", url),
+            ));
         }
 
         browser().ensure_running().await?;
@@ -159,7 +181,9 @@ pub struct BrowserScreenshotTool;
 
 #[async_trait]
 impl AgentTool for BrowserScreenshotTool {
-    fn name(&self) -> &'static str { "browser_screenshot" }
+    fn name(&self) -> &'static str {
+        "browser_screenshot"
+    }
     fn description(&self) -> &'static str {
         "截取当前页面的全屏截图，保存为 PNG 文件到临时目录，返回文件路径。"
     }
@@ -171,16 +195,22 @@ impl AgentTool for BrowserScreenshotTool {
             }
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Low }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         browser().ensure_running().await?;
 
         let bytes = browser().screenshot().await?;
 
-        let filename = args.get("filename").and_then(|v| v.as_str())
+        let filename = args
+            .get("filename")
+            .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("browser_screenshot_{}.png", chrono::Utc::now().timestamp()));
+            .unwrap_or_else(|| {
+                format!("browser_screenshot_{}.png", chrono::Utc::now().timestamp())
+            });
         let path = std::env::temp_dir().join(&filename);
         std::fs::write(&path, &bytes)?;
 
@@ -200,7 +230,9 @@ pub struct BrowserGetContentTool;
 
 #[async_trait]
 impl AgentTool for BrowserGetContentTool {
-    fn name(&self) -> &'static str { "browser_get_content" }
+    fn name(&self) -> &'static str {
+        "browser_get_content"
+    }
     fn description(&self) -> &'static str {
         "获取当前页面的 HTML 源码或纯文本内容。用于读取网页信息。"
     }
@@ -212,12 +244,17 @@ impl AgentTool for BrowserGetContentTool {
             }
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Safe }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         browser().ensure_running().await?;
 
-        let as_text = args.get("as_text").and_then(|v| v.as_bool()).unwrap_or(false);
+        let as_text = args
+            .get("as_text")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let content = browser().get_content(as_text).await?;
 
         // 截断超长内容（最多 8000 字符）
@@ -248,20 +285,26 @@ pub struct BrowserGetTitleTool;
 
 #[async_trait]
 impl AgentTool for BrowserGetTitleTool {
-    fn name(&self) -> &'static str { "browser_get_title" }
+    fn name(&self) -> &'static str {
+        "browser_get_title"
+    }
     fn description(&self) -> &'static str {
         "获取当前页面的标题和 URL。"
     }
     fn parameters(&self) -> serde_json::Value {
         json!({ "type": "object", "properties": {} })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Safe }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
 
     async fn execute(&self, _args: serde_json::Value) -> AppResult<ToolResult> {
         browser().ensure_running().await?;
 
         let (title, url) = browser().get_title().await?;
-        Ok(ToolResult::ok(json!({ "success": true, "title": title, "url": url })))
+        Ok(ToolResult::ok(
+            json!({ "success": true, "title": title, "url": url }),
+        ))
     }
 }
 
@@ -273,7 +316,9 @@ pub struct BrowserClickTool;
 
 #[async_trait]
 impl AgentTool for BrowserClickTool {
-    fn name(&self) -> &'static str { "browser_click" }
+    fn name(&self) -> &'static str {
+        "browser_click"
+    }
     fn description(&self) -> &'static str {
         "点击页面元素。可以通过 CSS 选择器（如 'button.submit'）或坐标 (x, y) 点击。"
     }
@@ -287,7 +332,9 @@ impl AgentTool for BrowserClickTool {
             }
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Medium }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Medium
+    }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         browser().ensure_running().await?;
@@ -313,7 +360,9 @@ pub struct BrowserTypeTool;
 
 #[async_trait]
 impl AgentTool for BrowserTypeTool {
-    fn name(&self) -> &'static str { "browser_type" }
+    fn name(&self) -> &'static str {
+        "browser_type"
+    }
     fn description(&self) -> &'static str {
         "在指定输入框中输入文本。需要 CSS 选择器定位输入框。"
     }
@@ -327,14 +376,20 @@ impl AgentTool for BrowserTypeTool {
             "required": ["selector", "text"]
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Medium }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Medium
+    }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         browser().ensure_running().await?;
 
-        let selector = args.get("selector").and_then(|v| v.as_str())
+        let selector = args
+            .get("selector")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::InvalidArgument("selector is required".to_string()))?;
-        let text = args.get("text").and_then(|v| v.as_str())
+        let text = args
+            .get("text")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::InvalidArgument("text is required".to_string()))?;
 
         browser().type_text(selector, text).await?;
@@ -355,7 +410,9 @@ pub struct BrowserScrollTool;
 
 #[async_trait]
 impl AgentTool for BrowserScrollTool {
-    fn name(&self) -> &'static str { "browser_scroll" }
+    fn name(&self) -> &'static str {
+        "browser_scroll"
+    }
     fn description(&self) -> &'static str {
         "滚动页面，支持 up/down/left/right 四个方向。"
     }
@@ -368,17 +425,24 @@ impl AgentTool for BrowserScrollTool {
             }
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Low }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         browser().ensure_running().await?;
 
-        let direction = args.get("direction").and_then(|v| v.as_str()).unwrap_or("down");
+        let direction = args
+            .get("direction")
+            .and_then(|v| v.as_str())
+            .unwrap_or("down");
         let amount = args.get("amount").and_then(|v| v.as_i64());
 
         browser().scroll(direction, amount).await?;
 
-        Ok(ToolResult::ok(json!({ "success": true, "direction": direction })))
+        Ok(ToolResult::ok(
+            json!({ "success": true, "direction": direction }),
+        ))
     }
 }
 
@@ -390,7 +454,9 @@ pub struct BrowserWaitTool;
 
 #[async_trait]
 impl AgentTool for BrowserWaitTool {
-    fn name(&self) -> &'static str { "browser_wait" }
+    fn name(&self) -> &'static str {
+        "browser_wait"
+    }
     fn description(&self) -> &'static str {
         "等待元素出现（CSS 选择器）或等待指定毫秒数。用于页面加载后等待动态内容。"
     }
@@ -403,7 +469,9 @@ impl AgentTool for BrowserWaitTool {
             }
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Low }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         browser().ensure_running().await?;
@@ -429,7 +497,9 @@ pub struct BrowserExecuteJsTool;
 
 #[async_trait]
 impl AgentTool for BrowserExecuteJsTool {
-    fn name(&self) -> &'static str { "browser_execute_js" }
+    fn name(&self) -> &'static str {
+        "browser_execute_js"
+    }
     fn description(&self) -> &'static str {
         "在当前页面执行 JavaScript 代码并返回结果。高风险操作，需权限确认。"
     }
@@ -442,12 +512,16 @@ impl AgentTool for BrowserExecuteJsTool {
             "required": ["code"]
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::High }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::High
+    }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         browser().ensure_running().await?;
 
-        let code = args.get("code").and_then(|v| v.as_str())
+        let code = args
+            .get("code")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::InvalidArgument("code is required".to_string()))?;
 
         let result = browser().execute_js(code).await?;
@@ -467,26 +541,37 @@ pub struct BrowserListTabsTool;
 
 #[async_trait]
 impl AgentTool for BrowserListTabsTool {
-    fn name(&self) -> &'static str { "browser_list_tabs" }
+    fn name(&self) -> &'static str {
+        "browser_list_tabs"
+    }
     fn description(&self) -> &'static str {
         "列出浏览器所有打开的标签页（ID、标题、URL）。"
     }
     fn parameters(&self) -> serde_json::Value {
         json!({ "type": "object", "properties": {} })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Safe }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Safe
+    }
 
     async fn execute(&self, _args: serde_json::Value) -> AppResult<ToolResult> {
         browser().ensure_running().await?;
 
         let tabs = browser().list_tabs().await?;
-        let tabs_json: Vec<serde_json::Value> = tabs.iter().map(|t| json!({
-            "id": t.id,
-            "title": t.title,
-            "url": t.url
-        })).collect();
+        let tabs_json: Vec<serde_json::Value> = tabs
+            .iter()
+            .map(|t| {
+                json!({
+                    "id": t.id,
+                    "title": t.title,
+                    "url": t.url
+                })
+            })
+            .collect();
 
-        Ok(ToolResult::ok(json!({ "success": true, "tabs": tabs_json, "count": tabs_json.len() })))
+        Ok(ToolResult::ok(
+            json!({ "success": true, "tabs": tabs_json, "count": tabs_json.len() }),
+        ))
     }
 }
 
@@ -498,7 +583,9 @@ pub struct BrowserSwitchTabTool;
 
 #[async_trait]
 impl AgentTool for BrowserSwitchTabTool {
-    fn name(&self) -> &'static str { "browser_switch_tab" }
+    fn name(&self) -> &'static str {
+        "browser_switch_tab"
+    }
     fn description(&self) -> &'static str {
         "切换到指定标签页（通过 tab_id）。"
     }
@@ -511,16 +598,22 @@ impl AgentTool for BrowserSwitchTabTool {
             "required": ["tab_id"]
         })
     }
-    fn risk_level(&self) -> RiskLevel { RiskLevel::Low }
+    fn risk_level(&self) -> RiskLevel {
+        RiskLevel::Low
+    }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         browser().ensure_running().await?;
 
-        let tab_id = args.get("tab_id").and_then(|v| v.as_str())
+        let tab_id = args
+            .get("tab_id")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::InvalidArgument("tab_id is required".to_string()))?;
 
         browser().switch_tab(tab_id).await?;
 
-        Ok(ToolResult::ok(json!({ "success": true, "switched_to": tab_id })))
+        Ok(ToolResult::ok(
+            json!({ "success": true, "switched_to": tab_id }),
+        ))
     }
 }

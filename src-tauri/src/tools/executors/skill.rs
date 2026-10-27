@@ -4,7 +4,7 @@
 //! - 管理：list / get / toggle / install（从目录）/ uninstall
 //! - 市场：search（搜官方目录）/ install（装官方打包技能）
 //!
-//! 设计边界：安装与卸载只动本地技能目录（%APPDATA%/pc-guardian/skills），
+//! 设计边界：安装与卸载只动本地技能目录（%APPDATA%/e-assisant/skills），
 //! 技能本体运行时走 `SkillTool` 的权限分级，外部副作用由技能自己声明。
 
 use async_trait::async_trait;

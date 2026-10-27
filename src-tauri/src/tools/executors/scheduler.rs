@@ -8,12 +8,12 @@
 //! 作业是**跨会话、跨重启**的常驻任务，所以必须落库、必须记次数、必须能停。
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::error::{AppError, AppResult};
 use crate::scheduler::{
-    self, JobKind, ScheduledJob, delete_job, describe_schedule, find_job, insert_job,
-    list_jobs, mark_due_now, normalize_schedule, recent_runs, set_enabled,
+    self, delete_job, describe_schedule, find_job, insert_job, list_jobs, mark_due_now,
+    normalize_schedule, recent_runs, set_enabled, JobKind, ScheduledJob,
 };
 use crate::tools::{AgentTool, RiskLevel, ToolResult};
 
@@ -396,7 +396,11 @@ impl AgentTool for JobRunHistoryTool {
         let limit = args["limit"].as_i64().unwrap_or(10).clamp(1, 50);
         let conn = open_db()?;
 
-        let job_id = match args["id_or_name"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        let job_id = match args["id_or_name"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(key) => match find_job(&conn, key).map_err(|e| AppError::Internal(e))? {
                 Some(job) => Some(job.id),
                 None => {
@@ -410,7 +414,8 @@ impl AgentTool for JobRunHistoryTool {
             None => None,
         };
 
-        let runs = recent_runs(&conn, job_id.as_deref(), limit).map_err(|e| AppError::Internal(e))?;
+        let runs =
+            recent_runs(&conn, job_id.as_deref(), limit).map_err(|e| AppError::Internal(e))?;
 
         Ok(ToolResult::ok(json!({
             "count": runs.len(),
@@ -422,7 +427,7 @@ impl AgentTool for JobRunHistoryTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scheduler::{CronSpec, JobKind, next_run_after, parse_interval_secs};
+    use crate::scheduler::{next_run_after, parse_interval_secs, CronSpec, JobKind};
 
     #[test]
     fn tool_names_are_stable() {
@@ -484,7 +489,9 @@ mod tests {
     #[test]
     fn once_schedule_reports_next_run_in_future() {
         let now = chrono::Local::now();
-        let future = (now + chrono::Duration::days(2)).format("%Y-%m-%d %H:%M").to_string();
+        let future = (now + chrono::Duration::days(2))
+            .format("%Y-%m-%d %H:%M")
+            .to_string();
         let normalized = normalize_schedule(JobKind::Once, &future).unwrap();
         let next = next_run_after(JobKind::Once, &normalized, now).unwrap();
         assert!(next.is_some(), "未来时刻应当有下一次执行");

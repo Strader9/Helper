@@ -1,6 +1,6 @@
 //! JS 沙箱执行工具（code_execution）
 //!
-//! 对齐 LumiCore 的 `code_execution`：在隔离的 JS 引擎堆里做纯计算 /
+//! 对齐早期原型的 `code_execution`：在隔离的 JS 引擎堆里做纯计算 /
 //! 数据变换。**没有文件系统、网络、Node API、import 或宿主定时器**——
 //! 引擎是纯 Rust 实现（Boa，ES 规范），默认不注入任何宿主能力，
 //! 沙箱边界由构造保证，而不是靠"逐个禁用"。
@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 use crate::error::{AppError, AppResult};
 use crate::tools::{AgentTool, RiskLevel, ToolResult};
 
-const MAX_CODE_BYTES: usize = 64 * 1024; // 64 KiB，与 LumiCore 一致
+const MAX_CODE_BYTES: usize = 64 * 1024; // 64 KiB，与早期原型一致
 const MAX_INPUT_BYTES: usize = 128 * 1024;
 
 /// 在隔离堆里执行一段 JS，返回 (output 字符串, result JSON)。
@@ -109,11 +109,10 @@ impl AgentTool for CodeExecutionTool {
         // 对 tokio worker 的影响（超时后阻塞线程泄漏是已知可接受限制）。
         let code_owned = code.to_string();
         let input_owned = input.cloned();
-        let result = tokio::task::spawn_blocking(move || {
-            run_js_sandbox(&code_owned, input_owned.as_ref())
-        })
-        .await
-        .map_err(|e| AppError::Internal(format!("JS 沙箱任务失败: {}", e)))?;
+        let result =
+            tokio::task::spawn_blocking(move || run_js_sandbox(&code_owned, input_owned.as_ref()))
+                .await
+                .map_err(|e| AppError::Internal(format!("JS 沙箱任务失败: {}", e)))?;
 
         let (output, result_json) = result?;
         Ok(ToolResult::ok(json!({
@@ -139,7 +138,8 @@ mod tests {
     #[test]
     fn reads_injected_input() {
         let input = json!({"xs": [1, 2, 3, 4]});
-        let (out, res) = run_js_sandbox("input.xs.reduce((a, b) => a + b, 0)", Some(&input)).unwrap();
+        let (out, res) =
+            run_js_sandbox("input.xs.reduce((a, b) => a + b, 0)", Some(&input)).unwrap();
         assert!(out.contains("10"), "output 应含 10，实际: {out}");
         assert_eq!(res, json!(10));
     }

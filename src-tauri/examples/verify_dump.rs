@@ -7,7 +7,7 @@
 //! cargo run --release --example verify_dump -- <页面.html> [需求.md]
 //! ```
 
-use pc_guardian_lib::webgen;
+use e_assisant_lib::webgen;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

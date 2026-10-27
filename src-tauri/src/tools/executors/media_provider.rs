@@ -29,7 +29,9 @@ pub fn setting(key: &str) -> Option<String> {
             row.get(0)
         })
         .ok();
-    value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn setting_or(key: &str, fallback: &str) -> String {
@@ -169,7 +171,13 @@ pub fn load_mail_read_config() -> Result<MailReadConfig, Vec<&'static str>> {
         .unwrap_or(993);
     let security = setting("mail.imap_security")
         .map(|v| v.trim().to_lowercase())
-        .unwrap_or_else(|| if port == 143 { "starttls".into() } else { "tls".into() });
+        .unwrap_or_else(|| {
+            if port == 143 {
+                "starttls".into()
+            } else {
+                "tls".into()
+            }
+        });
 
     Ok(MailReadConfig {
         host: host.unwrap(),
@@ -253,7 +261,14 @@ pub fn update_generation(
             error = COALESCE(?6, error),
             updated_at = datetime('now')
          WHERE id = ?1",
-        params![id, status, remote_status, artifact_path, artifact_bytes, error],
+        params![
+            id,
+            status,
+            remote_status,
+            artifact_path,
+            artifact_bytes,
+            error
+        ],
     );
 }
 
@@ -397,7 +412,7 @@ async fn probe_openai_base(base_url: &str, api_key: &str) -> Value {
     let url = endpoint(base_url, "models");
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
-        .user_agent("pc-guardian/0.1")
+        .user_agent("e-assisant/0.1")
         .build()
     {
         Ok(c) => c,

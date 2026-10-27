@@ -97,7 +97,7 @@ const PICKER_SCRIPT = `
     if (!el || el.nodeType !== 1 || el.getAttribute('data-webstudio-marker')) return;
     highlight(el);
     try {
-      parent.postMessage({ source: 'pc-guardian-webstudio', kind: 'pick', payload: describe(el) }, '*');
+      parent.postMessage({ source: 'e-assisant-webstudio', kind: 'pick', payload: describe(el) }, '*');
     } catch (e) {}
   }, true);
   document.addEventListener('mouseover', function (event) {
@@ -223,7 +223,7 @@ export default function WebStudio() {
   useEffect(() => {
     function onMessage(event: MessageEvent) {
       const data = event.data;
-      if (!data || data.source !== "pc-guardian-webstudio" || data.kind !== "pick") return;
+      if (!data || data.source !== "e-assisant-webstudio" || data.kind !== "pick") return;
       if (typeof data.payload !== "string" || !data.payload.trim()) return;
       setPickedTarget(data.payload);
     }
@@ -692,7 +692,7 @@ export default function WebStudio() {
                       <span key={c} className="size-1.5 rounded-full" style={{ background: c }} />
                     ))}
                     <span className="ml-1.5 truncate text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
-                      PC Guardian Preview
+                      E-Assisant Preview
                     </span>
                   </div>
                   <iframe

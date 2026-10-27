@@ -42,7 +42,10 @@ pub async fn publish_netlify(
     }
 
     let (site, url) = match site_id.map(str::trim).filter(|id| !id.is_empty()) {
-        Some(existing) => (existing.to_string(), site_url(client, token, existing).await?),
+        Some(existing) => (
+            existing.to_string(),
+            site_url(client, token, existing).await?,
+        ),
         None => create_site(client, token, file_name).await?,
     };
 
@@ -65,7 +68,10 @@ async fn site_url(client: &reqwest::Client, token: &str, site_id: &str) -> Resul
         .map_err(|error| net_error("连接 Netlify 失败：", error))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(explain(status.as_u16(), response.text().await.unwrap_or_default()));
+        return Err(explain(
+            status.as_u16(),
+            response.text().await.unwrap_or_default(),
+        ));
     }
     let body: serde_json::Value = response
         .json()
@@ -161,7 +167,10 @@ async fn deploy_index(
         .map_err(|error| net_error("连接 Netlify 失败：", error))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(explain(status.as_u16(), response.text().await.unwrap_or_default()));
+        return Err(explain(
+            status.as_u16(),
+            response.text().await.unwrap_or_default(),
+        ));
     }
     let deploy: serde_json::Value = response
         .json()
@@ -187,7 +196,9 @@ async fn deploy_index(
     }
 
     let response = client
-        .put(format!("{NETLIFY_API}/deploys/{deploy_id}/files/index.html"))
+        .put(format!(
+            "{NETLIFY_API}/deploys/{deploy_id}/files/index.html"
+        ))
         .bearer_auth(token)
         .header("Content-Type", "application/octet-stream")
         .body(html.to_string())
@@ -196,7 +207,10 @@ async fn deploy_index(
         .map_err(|error| net_error("上传网页失败：", error))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(explain(status.as_u16(), response.text().await.unwrap_or_default()));
+        return Err(explain(
+            status.as_u16(),
+            response.text().await.unwrap_or_default(),
+        ));
     }
     Ok(())
 }
@@ -219,19 +233,23 @@ fn net_error(context: &str, error: reqwest::Error) -> String {
     }
 
     let lowered = detail.to_ascii_lowercase();
-    let hint = if lowered.contains("dns") || lowered.contains("lookup") || lowered.contains("resolve") {
-        "（域名解析失败，检查网络或 DNS）"
-    } else if lowered.contains("certificate") || lowered.contains("tls") || lowered.contains("handshake") {
-        "（加密握手失败，通常是代理软件在做证书拦截）"
-    } else if lowered.contains("proxy") {
-        "（代理不可用；开着代理软件的话，确认系统代理已开启，或在设置里填写代理地址）"
-    } else if lowered.contains("timed out") || lowered.contains("timeout") {
-        "（连接超时）"
-    } else if lowered.contains("refused") {
-        "（连接被拒绝）"
-    } else {
-        ""
-    };
+    let hint =
+        if lowered.contains("dns") || lowered.contains("lookup") || lowered.contains("resolve") {
+            "（域名解析失败，检查网络或 DNS）"
+        } else if lowered.contains("certificate")
+            || lowered.contains("tls")
+            || lowered.contains("handshake")
+        {
+            "（加密握手失败，通常是代理软件在做证书拦截）"
+        } else if lowered.contains("proxy") {
+            "（代理不可用；开着代理软件的话，确认系统代理已开启，或在设置里填写代理地址）"
+        } else if lowered.contains("timed out") || lowered.contains("timeout") {
+            "（连接超时）"
+        } else if lowered.contains("refused") {
+            "（连接被拒绝）"
+        } else {
+            ""
+        };
     format!("{context}{detail}{hint}")
 }
 
@@ -303,7 +321,7 @@ fn explain(status: u16, body: String) -> String {
 const GITHUB_API: &str = "https://api.github.com";
 
 /// 没填仓库名时用的仓库。固定一个仓库，链接就永远是同一个。
-pub const DEFAULT_GITHUB_REPO: &str = "pc-guardian-web";
+pub const DEFAULT_GITHUB_REPO: &str = "e-assisant-web";
 
 /// 发布到 GitHub Pages。
 ///
@@ -365,7 +383,7 @@ fn github_repo_name(configured: Option<&str>) -> String {
 /// GitHub 要求带 User-Agent，缺了会直接 403；`Accept` 锁定官方 JSON 媒体类型。
 fn github_request(request: reqwest::RequestBuilder, token: &str) -> reqwest::RequestBuilder {
     request
-        .header("User-Agent", "pc-guardian")
+        .header("User-Agent", "e-assisant")
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .bearer_auth(token)
@@ -379,7 +397,10 @@ async fn github_login(client: &reqwest::Client, token: &str) -> Result<String, S
         .map_err(|error| net_error("连接 GitHub 失败：", error))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(github_error(status.as_u16(), response.text().await.unwrap_or_default()));
+        return Err(github_error(
+            status.as_u16(),
+            response.text().await.unwrap_or_default(),
+        ));
     }
     let body: serde_json::Value = response
         .json()
@@ -398,10 +419,13 @@ async fn ensure_repo(
     login: &str,
     repo: &str,
 ) -> Result<(), String> {
-    let response = github_request(client.get(format!("{GITHUB_API}/repos/{login}/{repo}")), token)
-        .send()
-        .await
-        .map_err(|error| net_error("连接 GitHub 失败：", error))?;
+    let response = github_request(
+        client.get(format!("{GITHUB_API}/repos/{login}/{repo}")),
+        token,
+    )
+    .send()
+    .await
+    .map_err(|error| net_error("连接 GitHub 失败：", error))?;
     let status = response.status();
     if status.is_success() {
         return Ok(());
@@ -417,7 +441,7 @@ async fn ensure_repo(
         .json(&serde_json::json!({
             "name": repo,
             "private": false,
-            "description": "由 PC Guardian 网页工坊发布的网页",
+            "description": "由 E-Assisant 网页工坊发布的网页",
             "has_issues": false,
             "has_wiki": false,
             "has_projects": false,
@@ -443,7 +467,9 @@ async fn content_sha(
     repo: &str,
 ) -> Result<Option<String>, String> {
     let response = github_request(
-        client.get(format!("{GITHUB_API}/repos/{login}/{repo}/contents/index.html")),
+        client.get(format!(
+            "{GITHUB_API}/repos/{login}/{repo}/contents/index.html"
+        )),
         token,
     )
     .send()
@@ -486,7 +512,9 @@ async fn put_index(
     }
 
     let response = github_request(
-        client.put(format!("{GITHUB_API}/repos/{login}/{repo}/contents/index.html")),
+        client.put(format!(
+            "{GITHUB_API}/repos/{login}/{repo}/contents/index.html"
+        )),
         token,
     )
     .json(&payload)
@@ -579,7 +607,10 @@ mod tests {
 
     #[test]
     fn strips_the_trailing_slash_off_a_site_url() {
-        assert_eq!(clean_url("https://sparkly-panda.netlify.app/"), "https://sparkly-panda.netlify.app");
+        assert_eq!(
+            clean_url("https://sparkly-panda.netlify.app/"),
+            "https://sparkly-panda.netlify.app"
+        );
     }
 
     #[test]
@@ -603,8 +634,8 @@ mod tests {
 
     #[test]
     fn reuse_of_the_same_repo_keeps_the_pages_url_stable() {
-        let first = github_repo_name(Some("pc-guardian-web"));
-        let second = github_repo_name(Some("pc-guardian-web"));
+        let first = github_repo_name(Some("e-assisant-web"));
+        let second = github_repo_name(Some("e-assisant-web"));
         assert_eq!(first, second);
     }
 

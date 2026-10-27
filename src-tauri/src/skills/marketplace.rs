@@ -1,6 +1,6 @@
 //! 技能市场（本地打包目录）
 //!
-//! 与 LumiCore 的 Skill Hall 对齐：先搜索、再安装官方打包技能。
+//! 与早期原型的 Skill Hall 对齐：先搜索、再安装官方打包技能。
 //! 这里只提供**随应用打包的官方技能**（bundled），不接远程市场，
 //! 因此不存在「任意下载并执行远端代码」的路径——安装一个市场技能等于
 //! 把内置的、经过审阅的 skill.json + 入口脚本物化到本地技能目录。
@@ -42,9 +42,13 @@ fn packages() -> Vec<BundledPackage> {
                 name: "当前时间".to_string(),
                 description: "返回当前日期、时间、时区与 Unix 时间戳。".to_string(),
                 version: "1.0.0".to_string(),
-                author: "PC Guardian Official".to_string(),
+                author: "E-Assisant Official".to_string(),
                 skill_type: SkillType::Local,
-                triggers: vec!["现在几点".to_string(), "当前时间".to_string(), "时间".to_string()],
+                triggers: vec![
+                    "现在几点".to_string(),
+                    "当前时间".to_string(),
+                    "时间".to_string(),
+                ],
                 parameters: vec![SkillParameter {
                     name: "format".to_string(),
                     description: "输出格式：full（完整）或 iso（ISO 8601）".to_string(),
@@ -75,9 +79,13 @@ Write-Output $out
                 name: "随机数".to_string(),
                 description: "在指定范围内生成一个随机整数，可生成多个。".to_string(),
                 version: "1.0.0".to_string(),
-                author: "PC Guardian Official".to_string(),
+                author: "E-Assisant Official".to_string(),
                 skill_type: SkillType::Local,
-                triggers: vec!["随机数".to_string(), "抽签".to_string(), "random".to_string()],
+                triggers: vec![
+                    "随机数".to_string(),
+                    "抽签".to_string(),
+                    "random".to_string(),
+                ],
                 parameters: vec![
                     SkillParameter {
                         name: "min".to_string(),
@@ -123,9 +131,13 @@ Write-Output ("values=" + ($vals -join ",") + "|min=$min|max=$max|count=$count")
                 name: "文本统计".to_string(),
                 description: "统计一段文本的字符数、字数（按空白切分）与行数。".to_string(),
                 version: "1.0.0".to_string(),
-                author: "PC Guardian Official".to_string(),
+                author: "E-Assisant Official".to_string(),
                 skill_type: SkillType::Local,
-                triggers: vec!["字数".to_string(), "统计".to_string(), "text stats".to_string()],
+                triggers: vec![
+                    "字数".to_string(),
+                    "统计".to_string(),
+                    "text stats".to_string(),
+                ],
                 parameters: vec![SkillParameter {
                     name: "text".to_string(),
                     description: "要统计的文本".to_string(),

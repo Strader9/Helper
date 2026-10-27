@@ -18,10 +18,10 @@ use crate::llm::{ChatChunk, OllamaClient, OllamaMessage, ToolCall};
 use crate::security::PermissionManager;
 use crate::tools::executor::{PendingPermission, ToolCallRequest, ToolExecutor};
 use crate::tools::ToolRegistry;
+pub mod assistant;
 pub mod context;
 pub mod history;
 pub mod intent;
-pub mod jarvis;
 pub mod observation;
 pub mod recovery;
 pub mod task;
@@ -319,7 +319,7 @@ impl AgentRuntime {
                         .map(|result| result.categories)
                         .unwrap_or_else(intent::fallback_categories)
                 };
-                eprintln!("[Agent] 走 Jarvis 自适应路径: {}", user_content);
+                eprintln!("[Agent] 走 E-Assisant 自适应路径: {}", user_content);
                 let task = {
                     let db_guard = db.lock().await;
                     let task_mgr = TaskManager::new(db_guard.connection());
@@ -329,8 +329,8 @@ impl AgentRuntime {
                     .send(ChatEvent::TaskUpdate(TaskUpdateEvent::from_task(&task)))
                     .await;
 
-                jarvis::run(
-                    jarvis::JarvisContext {
+                assistant::run(
+                    assistant::AssistantContext {
                         session_id: &session_id,
                         user_content: &user_content,
                         db: &db,
@@ -418,6 +418,8 @@ fn all_tool_categories() -> Vec<intent::ToolCategory> {
         intent::ToolCategory::Memory,
         intent::ToolCategory::Skill,
         intent::ToolCategory::Automation,
+        intent::ToolCategory::Web,
+        intent::ToolCategory::Media,
     ]
 }
 

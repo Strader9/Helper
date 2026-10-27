@@ -115,19 +115,31 @@ impl AgentTool for AutonomyUpdatePolicyTool {
             changed = true;
         }
         if let Some(arr) = args.get("auto_confirm_risk").and_then(|v| v.as_array()) {
-            let risks: Vec<String> = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            let risks: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
             if risks.iter().any(|r| !VALID_RISKS.contains(&r.as_str())) {
-                return Ok(ToolResult::err("INVALID_RISK", &format!("风险等级只能取 {}", VALID_RISKS.join("/"))));
+                return Ok(ToolResult::err(
+                    "INVALID_RISK",
+                    &format!("风险等级只能取 {}", VALID_RISKS.join("/")),
+                ));
             }
             policy["auto_confirm_risk"] = json!(risks);
             changed = true;
         }
         if let Some(arr) = args.get("always_confirm_tools").and_then(|v| v.as_array()) {
-            let tools: Vec<String> = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            let tools: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
             policy["always_confirm_tools"] = json!(tools);
             changed = true;
         }
-        if let Some(v) = args.get("max_unattended_iterations").and_then(|v| v.as_i64()) {
+        if let Some(v) = args
+            .get("max_unattended_iterations")
+            .and_then(|v| v.as_i64())
+        {
             let v = v.clamp(1, 50);
             policy["max_unattended_iterations"] = json!(v);
             changed = true;

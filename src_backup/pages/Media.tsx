@@ -552,7 +552,7 @@ export default function Media() {
 
             <p className="flex items-center gap-1.5 text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
               <FolderOpen className="size-3" />
-              产物写入默认的图片 / 视频目录下的 PCGuardian 子目录，路径已在上方列出
+              产物写入默认的图片 / 视频目录下的 EAssisant 子目录，路径已在上方列出
             </p>
           </div>
         </div>

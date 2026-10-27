@@ -1,5 +1,5 @@
 """
-PC Guardian - 视频人像GPU抠像处理脚本
+E-Assisant - 视频人像GPU抠像处理脚本
 使用 rembg + onnxruntime-gpu 对视频帧进行AI抠像
 输出透明背景动态 WebP 动画
 """
@@ -15,7 +15,7 @@ from rembg import remove, new_session
 # 配置
 # ============================================================
 VIDEO_PATH = r"C:\Users\34359\Videos\屏幕录制\929fd03c6533edcff7b8fb713cc24878.mp4"
-OUTPUT_DIR = r"C:\大项目\helper电脑\pc-guardian\public\assets\avatar"
+OUTPUT_DIR = r"C:\大项目\helper电脑\e-assisant\public\assets\avatar"
 OUTPUT_WEBP = os.path.join(OUTPUT_DIR, "avatar_animated.webp")
 FRAME_DIR = os.path.join(OUTPUT_DIR, "frames")
 
@@ -197,7 +197,7 @@ def main():
     os.makedirs(FRAME_DIR, exist_ok=True)
 
     print("=" * 60)
-    print("PC Guardian - GPU视频人像抠像处理")
+    print("E-Assisant - GPU视频人像抠像处理")
     print("=" * 60)
 
     # 1. 初始化GPU会话

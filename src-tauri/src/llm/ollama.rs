@@ -14,8 +14,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 
-use crate::error::{AppError, AppResult};
 use super::openai::{OpenAiChatRequest, OpenAiStreamParser};
+use crate::error::{AppError, AppResult};
 
 /// Ollama 聊天消息
 ///
@@ -530,8 +530,15 @@ impl OllamaClient {
         temperature: f32,
         extra_options: serde_json::Value,
     ) -> AppResult<Pin<Box<dyn Stream<Item = ChatChunk> + Send>>> {
-        self.chat_stream_with_timeout(model, messages, None, temperature, None, Some(extra_options))
-            .await
+        self.chat_stream_with_timeout(
+            model,
+            messages,
+            None,
+            temperature,
+            None,
+            Some(extra_options),
+        )
+        .await
     }
 
     async fn chat_stream_with_timeout(
@@ -595,7 +602,9 @@ impl OllamaClient {
             let result = async {
                 let request = client.post(&url).json(&request_body);
                 let request = match timeout_ms {
-                    Some(timeout_ms) => request.timeout(std::time::Duration::from_millis(timeout_ms)),
+                    Some(timeout_ms) => {
+                        request.timeout(std::time::Duration::from_millis(timeout_ms))
+                    }
                     None => request,
                 };
                 let resp = request.send().await.map_err(AppError::Network)?;
@@ -991,11 +1000,8 @@ mod sidecar_probe_tests {
     #[tokio::test]
     #[ignore]
     async fn real_openai_sidecar_round_trip() {
-        let client = OllamaClient::openai_compat(
-            "http://127.0.0.1:4770/v1".to_string(),
-            None,
-            60_000,
-        );
+        let client =
+            OllamaClient::openai_compat("http://127.0.0.1:4770/v1".to_string(), None, 60_000);
         let (content, calls) = client
             .chat(
                 "qwen3:8b",

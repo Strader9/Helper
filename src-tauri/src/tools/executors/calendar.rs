@@ -43,7 +43,8 @@ fn row_to_event(row: &rusqlite::Row) -> rusqlite::Result<Value> {
     }))
 }
 
-const EVENT_COLS: &str = "id, title, start_at, end_at, location, description, reminder_minutes, source";
+const EVENT_COLS: &str =
+    "id, title, start_at, end_at, location, description, reminder_minutes, source";
 
 fn collect(sql: &str, params: &[&dyn rusqlite::ToSql]) -> AppResult<Vec<Value>> {
     let db = db()?;
@@ -90,24 +91,44 @@ impl AgentTool for CalendarCreateTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let title = args["title"].as_str().map(str::trim).filter(|s| !s.is_empty())
+        let title = args["title"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .ok_or_else(|| AppError::InvalidArgument("title is required".into()))?;
-        let start_raw = args["start_at"].as_str().ok_or_else(|| AppError::InvalidArgument("start_at is required".into()))?;
-        let start = normalize_dt(start_raw)
-            .ok_or_else(|| AppError::InvalidArgument(format!("start_at 时间格式无法解析：{}", start_raw)))?;
+        let start_raw = args["start_at"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("start_at is required".into()))?;
+        let start = normalize_dt(start_raw).ok_or_else(|| {
+            AppError::InvalidArgument(format!("start_at 时间格式无法解析：{}", start_raw))
+        })?;
 
-        let end = match args["end_at"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
-            Some(s) => normalize_dt(s)
-                .ok_or_else(|| AppError::InvalidArgument(format!("end_at 时间格式无法解析：{}", s)))?,
+        let end = match args["end_at"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(s) => normalize_dt(s).ok_or_else(|| {
+                AppError::InvalidArgument(format!("end_at 时间格式无法解析：{}", s))
+            })?,
             None => {
-                let st = chrono::NaiveDateTime::parse_from_str(&start, "%Y-%m-%d %H:%M:%S").unwrap();
-                (st + chrono::Duration::hours(1)).format("%Y-%m-%d %H:%M:%S").to_string()
+                let st =
+                    chrono::NaiveDateTime::parse_from_str(&start, "%Y-%m-%d %H:%M:%S").unwrap();
+                (st + chrono::Duration::hours(1))
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
             }
         };
 
         let location = args["location"].as_str().map(str::trim).map(str::to_string);
-        let description = args["description"].as_str().map(str::trim).map(str::to_string);
-        let reminder = args["reminder_minutes"].as_i64().unwrap_or(0).clamp(0, 7 * 24 * 60);
+        let description = args["description"]
+            .as_str()
+            .map(str::trim)
+            .map(str::to_string);
+        let reminder = args["reminder_minutes"]
+            .as_i64()
+            .unwrap_or(0)
+            .clamp(0, 7 * 24 * 60);
 
         let id = uuid::Uuid::new_v4().to_string();
         let db = db()?;
@@ -117,7 +138,9 @@ impl AgentTool for CalendarCreateTool {
             params![id, title, start, end, location, description, reminder],
         )?;
 
-        Ok(ToolResult::ok(json!({ "ok": true, "id": id, "title": title, "start_at": start, "end_at": end })))
+        Ok(ToolResult::ok(
+            json!({ "ok": true, "id": id, "title": title, "start_at": start, "end_at": end }),
+        ))
     }
 }
 
@@ -147,7 +170,9 @@ impl AgentTool for CalendarTodayTool {
             EVENT_COLS
         );
         let items = collect(&sql, &[])?;
-        Ok(ToolResult::ok(json!({ "count": items.len(), "items": items })))
+        Ok(ToolResult::ok(
+            json!({ "count": items.len(), "items": items }),
+        ))
     }
 }
 
@@ -185,7 +210,9 @@ impl AgentTool for UpcomingEventsTool {
             EVENT_COLS, days
         );
         let items = collect(&sql, &[])?;
-        Ok(ToolResult::ok(json!({ "days": days, "count": items.len(), "items": items })))
+        Ok(ToolResult::ok(
+            json!({ "days": days, "count": items.len(), "items": items }),
+        ))
     }
 }
 
@@ -223,21 +250,31 @@ impl AgentTool for CalendarModifyTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let id = args["id"].as_str().ok_or_else(|| AppError::InvalidArgument("id is required".into()))?;
+        let id = args["id"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("id is required".into()))?;
         let mut sets: Vec<String> = Vec::new();
         let mut vals: Vec<String> = Vec::new();
 
-        if let Some(v) = args["title"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(v) = args["title"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             sets.push("title = ?".into());
             vals.push(v.to_string());
         }
         if let Some(raw) = args["start_at"].as_str() {
-            let norm = normalize_dt(raw).ok_or_else(|| AppError::InvalidArgument(format!("start_at 时间格式无法解析：{}", raw)))?;
+            let norm = normalize_dt(raw).ok_or_else(|| {
+                AppError::InvalidArgument(format!("start_at 时间格式无法解析：{}", raw))
+            })?;
             sets.push("start_at = ?".into());
             vals.push(norm);
         }
         if let Some(raw) = args["end_at"].as_str() {
-            let norm = normalize_dt(raw).ok_or_else(|| AppError::InvalidArgument(format!("end_at 时间格式无法解析：{}", raw)))?;
+            let norm = normalize_dt(raw).ok_or_else(|| {
+                AppError::InvalidArgument(format!("end_at 时间格式无法解析：{}", raw))
+            })?;
             sets.push("end_at = ?".into());
             vals.push(norm);
         }
@@ -267,10 +304,13 @@ impl AgentTool for CalendarModifyTool {
         // 所有值都是 String（时间已归一化），id 追加在末尾对应 WHERE id = ?
         let mut vals = vals;
         vals.push(id.to_string());
-        let refs: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let refs: Vec<&dyn rusqlite::ToSql> =
+            vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
         let n = stmt.execute(refs.as_slice())?;
 
-        Ok(ToolResult::ok(json!({ "ok": n > 0, "affected": n, "id": id })))
+        Ok(ToolResult::ok(
+            json!({ "ok": n > 0, "affected": n, "id": id }),
+        ))
     }
 }
 
@@ -300,9 +340,15 @@ impl AgentTool for CalendarDeleteTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let id = args["id"].as_str().ok_or_else(|| AppError::InvalidArgument("id is required".into()))?;
+        let id = args["id"]
+            .as_str()
+            .ok_or_else(|| AppError::InvalidArgument("id is required".into()))?;
         let db = db()?;
-        let n = db.connection().execute("DELETE FROM calendar_events WHERE id = ?1", params![id])?;
-        Ok(ToolResult::ok(json!({ "ok": n > 0, "affected": n, "id": id })))
+        let n = db
+            .connection()
+            .execute("DELETE FROM calendar_events WHERE id = ?1", params![id])?;
+        Ok(ToolResult::ok(
+            json!({ "ok": n > 0, "affected": n, "id": id }),
+        ))
     }
 }

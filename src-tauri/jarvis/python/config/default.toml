@@ -1,5 +1,5 @@
 [app]
-name = "PC Guardian Jarvis"
+name = "E-Assisant Jarvis"
 environment = "development"
 log_level = "INFO"
 

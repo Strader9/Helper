@@ -1,7 +1,7 @@
 //! CAD 图纸工具（cad 域）
 //!
-//! 借鉴 LumiCore 的 cad 域（读逻辑、用 Rust 重写，不逐字复制）。
-//! Lumi 的 `cad_draw_floorplan_in_autocad` 依赖 MCP 连 AutoCAD + 视觉 OCR，
+//! 借鉴早期原型的 cad 域（读逻辑、用 Rust 重写，不逐字复制）。
+//! 早期的 `cad_draw_floorplan_in_autocad` 依赖 MCP 连 AutoCAD + 视觉 OCR，
 //! 对单机 MIT 项目不可行，这里**只做不依赖 AutoCAD 的部分**：DXF 生成与解析。
 //! DXF 是 ASCII 文本格式（R12），可以纯函数生成，被 AutoCAD / FreeCAD /
 //! LibreCAD 等直接打开——这是个人助手场景里真正有用的 CAD 能力。
@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::error::{AppError, AppResult};
 use crate::tools::{AgentTool, RiskLevel, ToolResult};
@@ -31,10 +31,29 @@ fn dxf_num(v: f64) -> String {
 /// 一个 DXF 图形元素。
 #[derive(Debug, Clone)]
 pub enum DxfShape {
-    Line { x1: f64, y1: f64, x2: f64, y2: f64 },
-    Circle { cx: f64, cy: f64, r: f64 },
-    Rect { x: f64, y: f64, w: f64, h: f64 },
-    Text { x: f64, y: f64, height: f64, text: String },
+    Line {
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+    },
+    Circle {
+        cx: f64,
+        cy: f64,
+        r: f64,
+    },
+    Rect {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    },
+    Text {
+        x: f64,
+        y: f64,
+        height: f64,
+        text: String,
+    },
 }
 
 impl DxfShape {
@@ -135,7 +154,9 @@ pub fn build_dxf(shapes: &[DxfShape]) -> String {
 /// 统计 DXF 文本里的实体数量（按类型）。
 pub fn count_dxf_entities(dxf: &str) -> HashMap<String, usize> {
     let mut counts: HashMap<String, usize> = HashMap::new();
-    let structural = ["SECTION", "ENDSEC", "HEADER", "EOF", "ENTITIES", "TABLES", "BLOCKS"];
+    let structural = [
+        "SECTION", "ENDSEC", "HEADER", "EOF", "ENTITIES", "TABLES", "BLOCKS",
+    ];
 
     let lines: Vec<&str> = dxf.lines().collect();
     let mut i = 0;
@@ -325,8 +346,17 @@ mod tests {
     #[test]
     fn build_dxf_emits_line_and_circle() {
         let dxf = build_dxf(&[
-            DxfShape::Line { x1: 0.0, y1: 0.0, x2: 100.0, y2: 100.0 },
-            DxfShape::Circle { cx: 50.0, cy: 50.0, r: 25.0 },
+            DxfShape::Line {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 100.0,
+                y2: 100.0,
+            },
+            DxfShape::Circle {
+                cx: 50.0,
+                cy: 50.0,
+                r: 25.0,
+            },
         ]);
         assert!(dxf.contains("0\nSECTION\n2\nENTITIES"));
         assert!(dxf.contains("0\nLINE"));
@@ -337,22 +367,46 @@ mod tests {
 
     #[test]
     fn build_dxf_expands_rect_to_four_lines() {
-        let dxf = build_dxf(&[DxfShape::Rect { x: 0.0, y: 0.0, w: 10.0, h: 20.0 }]);
+        let dxf = build_dxf(&[DxfShape::Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 20.0,
+        }]);
         assert_eq!(dxf.matches("0\nLINE").count(), 4, "矩形应展开成 4 条线");
     }
 
     #[test]
     fn build_dxf_sanitizes_newlines_in_text() {
-        let dxf = build_dxf(&[DxfShape::Text { x: 1.0, y: 2.0, height: 3.0, text: "a\nb".to_string() }]);
+        let dxf = build_dxf(&[DxfShape::Text {
+            x: 1.0,
+            y: 2.0,
+            height: 3.0,
+            text: "a\nb".to_string(),
+        }]);
         assert!(dxf.contains("1\na b"), "换行应替换成空格");
     }
 
     #[test]
     fn count_dxf_entities_tallies_by_type() {
         let dxf = build_dxf(&[
-            DxfShape::Line { x1: 0.0, y1: 0.0, x2: 1.0, y2: 1.0 },
-            DxfShape::Line { x1: 0.0, y1: 1.0, x2: 1.0, y2: 0.0 },
-            DxfShape::Circle { cx: 0.0, cy: 0.0, r: 5.0 },
+            DxfShape::Line {
+                x1: 0.0,
+                y1: 0.0,
+                x2: 1.0,
+                y2: 1.0,
+            },
+            DxfShape::Line {
+                x1: 0.0,
+                y1: 1.0,
+                x2: 1.0,
+                y2: 0.0,
+            },
+            DxfShape::Circle {
+                cx: 0.0,
+                cy: 0.0,
+                r: 5.0,
+            },
         ]);
         let counts = count_dxf_entities(&dxf);
         assert_eq!(counts.get("LINE"), Some(&2));
@@ -362,8 +416,17 @@ mod tests {
 
     #[test]
     fn shape_from_value_rejects_unknown_type() {
-        assert!(DxfShape::from_value(&json!({"type": "line", "x1": 0.0})).is_none(), "缺参数应拒绝");
-        assert!(DxfShape::from_value(&json!({"type": "arc"})).is_none(), "未知类型应拒绝");
-        assert!(DxfShape::from_value(&json!({"type": "circle", "cx": 1.0, "cy": 2.0, "r": 3.0})).is_some());
+        assert!(
+            DxfShape::from_value(&json!({"type": "line", "x1": 0.0})).is_none(),
+            "缺参数应拒绝"
+        );
+        assert!(
+            DxfShape::from_value(&json!({"type": "arc"})).is_none(),
+            "未知类型应拒绝"
+        );
+        assert!(
+            DxfShape::from_value(&json!({"type": "circle", "cx": 1.0, "cy": 2.0, "r": 3.0}))
+                .is_some()
+        );
     }
 }

@@ -3,7 +3,7 @@ import ReactDOM from "react-dom/client";
 import { HashRouter } from "react-router-dom";
 import { Toaster } from "sonner";
 import App from "./App";
-// 设计系统唯一入口（对齐 LumiCore）：token、基础层、工具类全在这一个文件里。
+// 设计系统唯一入口（对齐 EAssistantCore）：token、基础层、工具类全在这一个文件里。
 import "./styles/system.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(

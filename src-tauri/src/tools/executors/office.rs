@@ -180,7 +180,9 @@ fn collect_tag(segment: &str, tag: &str) -> String {
             continue;
         }
         let body_start = gt + 1;
-        let Some(end) = after[body_start..].find(&close) else { break };
+        let Some(end) = after[body_start..].find(&close) else {
+            break;
+        };
         text.push_str(&unescape_xml(&after[body_start..body_start + end]));
         rest = &after[body_start + end + close.len()..];
     }
@@ -261,7 +263,9 @@ pub fn docx_to_text(xml: &str) -> String {
             .filter_map(|(needle, kind)| rest.find(needle).map(|pos| (pos, *needle, kind)))
             .min_by_key(|(pos, _, _)| *pos);
 
-        let Some((pos, needle, kind)) = next else { break };
+        let Some((pos, needle, kind)) = next else {
+            break;
+        };
         rest = &rest[pos + needle.len()..];
 
         match kind {
@@ -296,7 +300,9 @@ pub fn docx_to_text(xml: &str) -> String {
                     continue;
                 }
                 let body = &rest[gt + 1..];
-                let Some(end) = body.find("</w:t>") else { break };
+                let Some(end) = body.find("</w:t>") else {
+                    break;
+                };
                 out.push_str(&unescape_xml(&body[..end]));
                 rest = &body[end + 6..];
             }
@@ -513,7 +519,12 @@ impl AgentTool for ReadPptxTool {
                 let number = name
                     .rsplit('/')
                     .next()
-                    .and_then(|file| file.trim_start_matches("slide").trim_end_matches(".xml").parse::<u32>().ok())
+                    .and_then(|file| {
+                        file.trim_start_matches("slide")
+                            .trim_end_matches(".xml")
+                            .parse::<u32>()
+                            .ok()
+                    })
                     .unwrap_or(0);
                 (number, pptx_slide_to_text(xml))
             })
@@ -607,7 +618,12 @@ impl AgentTool for ReadXlsxTool {
                 let number = name
                     .rsplit('/')
                     .next()
-                    .and_then(|f| f.trim_start_matches("sheet").trim_end_matches(".xml").parse::<u32>().ok())
+                    .and_then(|f| {
+                        f.trim_start_matches("sheet")
+                            .trim_end_matches(".xml")
+                            .parse::<u32>()
+                            .ok()
+                    })
                     .unwrap_or(0);
                 (number, xml.clone())
             })
@@ -625,7 +641,10 @@ impl AgentTool for ReadXlsxTool {
         if sheet_index > sheet_count {
             return Ok(ToolResult::err(
                 "SHEET_NOT_FOUND",
-                &format!("只有 {} 张工作表，请求的是第 {} 张", sheet_count, sheet_index),
+                &format!(
+                    "只有 {} 张工作表，请求的是第 {} 张",
+                    sheet_count, sheet_index
+                ),
             ));
         }
 
@@ -682,7 +701,10 @@ impl AgentTool for XlsxToCsvTool {
         let path = require_str(&args, "path")?;
         ensure_ext(path, &["xlsx"])?;
         if !Path::new(path).is_file() {
-            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在: {}", path)));
+            return Ok(ToolResult::err(
+                "FILE_NOT_FOUND",
+                &format!("文件不存在: {}", path),
+            ));
         }
         let sheet_index = args["sheet_index"].as_u64().unwrap_or(1).max(1) as usize;
         let max_rows = args["max_rows"].as_u64().unwrap_or(100_000).min(1_000_000) as usize;
@@ -706,7 +728,12 @@ impl AgentTool for XlsxToCsvTool {
                 let number = name
                     .rsplit('/')
                     .next()
-                    .and_then(|f| f.trim_start_matches("sheet").trim_end_matches(".xml").parse::<u32>().ok())
+                    .and_then(|f| {
+                        f.trim_start_matches("sheet")
+                            .trim_end_matches(".xml")
+                            .parse::<u32>()
+                            .ok()
+                    })
                     .unwrap_or(0);
                 (number, xml.clone())
             })
@@ -715,10 +742,16 @@ impl AgentTool for XlsxToCsvTool {
         entries.clear();
 
         if sheets.is_empty() {
-            return Ok(ToolResult::err("NOT_A_XLSX", "压缩包里没有工作表，可能不是 .xlsx"));
+            return Ok(ToolResult::err(
+                "NOT_A_XLSX",
+                "压缩包里没有工作表，可能不是 .xlsx",
+            ));
         }
         if sheet_index > sheets.len() {
-            return Ok(ToolResult::err("SHEET_NOT_FOUND", &format!("只有 {} 张工作表", sheets.len())));
+            return Ok(ToolResult::err(
+                "SHEET_NOT_FOUND",
+                &format!("只有 {} 张工作表", sheets.len()),
+            ));
         }
 
         let (_, xml) = &sheets[sheet_index - 1];
@@ -839,7 +872,10 @@ fn pptx_slide_xml(text: &str) -> String {
         if t.is_empty() {
             paras.push_str("<a:p/>");
         } else {
-            paras.push_str(&format!("<a:p><a:r><a:t>{}</a:t></a:r></a:p>", escape_xml(t)));
+            paras.push_str(&format!(
+                "<a:p><a:r><a:t>{}</a:t></a:r></a:p>",
+                escape_xml(t)
+            ));
         }
     }
     format!(
@@ -945,7 +981,9 @@ impl AgentTool for WriteDocxTool {
             ));
         };
         if paragraphs.is_empty() {
-            return Err(AppError::InvalidArgument("内容为空，无法生成文档".to_string()));
+            return Err(AppError::InvalidArgument(
+                "内容为空，无法生成文档".to_string(),
+            ));
         }
 
         let document_xml = docx_document_xml(&paragraphs);
@@ -1045,7 +1083,9 @@ impl AgentTool for WriteXlsxTool {
             ));
         };
         if rows.is_empty() {
-            return Err(AppError::InvalidArgument("内容为空，无法生成表格".to_string()));
+            return Err(AppError::InvalidArgument(
+                "内容为空，无法生成表格".to_string(),
+            ));
         }
 
         let sheet_name = args["sheet_name"]
@@ -1684,7 +1724,10 @@ fn cell_xml(reference: &str, value: &serde_json::Value) -> String {
         ),
         serde_json::Value::Null => format!("<c r=\"{}\"/>", reference),
         other => {
-            let text = other.as_str().map(|s| s.to_string()).unwrap_or_else(|| other.to_string());
+            let text = other
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| other.to_string());
             if text.is_empty() {
                 // 空字符串：写成空单元格而不是 inlineStr，Excel 才不会把它当"有内容"
                 format!("<c r=\"{}\"/>", reference)
@@ -1779,7 +1822,12 @@ fn cell_spans(row_xml: &str) -> Vec<(usize, usize, usize)> {
 }
 
 /// 在 row 内设置一个单元格：已存在则整格替换，不存在则按列序插入。
-fn set_cell_in_row(row_xml: &str, col: usize, reference: &str, value: &serde_json::Value) -> String {
+fn set_cell_in_row(
+    row_xml: &str,
+    col: usize,
+    reference: &str,
+    value: &serde_json::Value,
+) -> String {
     let fresh = cell_xml(reference, value);
     let spans = cell_spans(row_xml);
     if let Some((_, start, end)) = spans.iter().find(|(c, _, _)| *c == col) {
@@ -2023,7 +2071,10 @@ impl AgentTool for ModifyXlsxTool {
             let (col, row) = parse_cell_ref(&reference).ok_or_else(|| {
                 AppError::InvalidArgument(format!("单元格地址不合法: {}", reference))
             })?;
-            let value = item.get("value").cloned().unwrap_or(serde_json::Value::Null);
+            let value = item
+                .get("value")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
 
             if let Some(slot) = per_sheet.iter_mut().find(|(n, _, _)| n == &sheet_name) {
                 slot.2.push((col, row, value, reference));
@@ -2057,8 +2108,7 @@ impl AgentTool for ModifyXlsxTool {
                 updated = ensure_row(&updated, *row);
                 // ensure_row 之后重新定位行块（位置可能变了）
                 let spans = row_spans(&updated);
-                let Some((_, start, end)) = spans.iter().find(|(r, _, _)| r == row).copied()
-                else {
+                let Some((_, start, end)) = spans.iter().find(|(r, _, _)| r == row).copied() else {
                     return Err(AppError::ToolExecution(format!(
                         "无法在 {} 第 {} 行定位插入点",
                         sheet_name, row
@@ -2089,7 +2139,11 @@ impl AgentTool for ModifyXlsxTool {
                     serde_json::Value::String(s) => s.clone(),
                     serde_json::Value::Number(n) => n.to_string(),
                     serde_json::Value::Bool(b) => {
-                        if *b { "1".to_string() } else { "0".to_string() }
+                        if *b {
+                            "1".to_string()
+                        } else {
+                            "0".to_string()
+                        }
                     }
                     _ => String::new(),
                 };
@@ -2204,7 +2258,8 @@ mod tests {
 
     #[test]
     fn xlsx_maps_shared_strings_and_numbers() {
-        let shared_xml = r#"<sst><si><t>姓名</t></si><si><t>年龄</t></si><si><t>张三</t></si></sst>"#;
+        let shared_xml =
+            r#"<sst><si><t>姓名</t></si><si><t>年龄</t></si><si><t>张三</t></si></sst>"#;
         let shared = xlsx_shared_strings(shared_xml);
         assert_eq!(shared, vec!["姓名", "年龄", "张三"]);
 
@@ -2271,7 +2326,6 @@ mod tests {
         assert!(zip_path.is_file(), "临时 zip 没生成");
         fs::rename(&zip_path, &docx).expect("改名成 docx");
 
-
         let result = ReadDocxTool
             .execute(serde_json::json!({ "path": docx.to_string_lossy() }))
             .await
@@ -2314,9 +2368,19 @@ mod tests {
 
     #[test]
     fn docx_document_xml_wraps_paragraphs_and_escapes() {
-        let xml = docx_document_xml(&["第一段".to_string(), "含 & 与 < 符号".to_string(), "".to_string()]);
-        assert!(xml.contains("<w:p><w:r><w:t xml:space=\"preserve\">第一段</w:t>"), "段落应被包裹");
-        assert!(xml.contains("&amp;") && xml.contains("&lt;"), "特殊字符应转义");
+        let xml = docx_document_xml(&[
+            "第一段".to_string(),
+            "含 & 与 < 符号".to_string(),
+            "".to_string(),
+        ]);
+        assert!(
+            xml.contains("<w:p><w:r><w:t xml:space=\"preserve\">第一段</w:t>"),
+            "段落应被包裹"
+        );
+        assert!(
+            xml.contains("&amp;") && xml.contains("&lt;"),
+            "特殊字符应转义"
+        );
         assert!(xml.contains("<w:p/>"), "空段落应生成自闭合段");
     }
 
@@ -2327,8 +2391,14 @@ mod tests {
             vec!["张三".to_string(), "28".to_string()],
         ];
         let xml = xlsx_sheet_xml(&rows);
-        assert!(xml.contains(r#"<c r="A1" t="inlineStr"><is><t>姓名</t></is></c>"#), "A1 应映射正确");
-        assert!(xml.contains(r#"<c r="B2" t="inlineStr"><is><t>28</t></is></c>"#), "B2 应映射正确");
+        assert!(
+            xml.contains(r#"<c r="A1" t="inlineStr"><is><t>姓名</t></is></c>"#),
+            "A1 应映射正确"
+        );
+        assert!(
+            xml.contains(r#"<c r="B2" t="inlineStr"><is><t>28</t></is></c>"#),
+            "B2 应映射正确"
+        );
     }
 
     #[test]
@@ -2377,7 +2447,10 @@ mod tests {
         assert!(r.success, "读 docx 失败: {:?}", r.error);
         let text = r.data.unwrap()["text"].as_str().unwrap().to_string();
         assert!(text.contains("第一段：你好"), "docx 回环正文缺失: {text:?}");
-        assert!(text.contains("<标签>") && text.contains("& 实体"), "特殊字符应还原: {text:?}");
+        assert!(
+            text.contains("<标签>") && text.contains("& 实体"),
+            "特殊字符应还原: {text:?}"
+        );
 
         // --- xlsx ---
         let xlsx = tmp.join(format!("pcg-write-{tag}.xlsx"));
@@ -2451,7 +2524,10 @@ mod tests {
         let xml = r#"<w:body><w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p><w:p><w:r><w:t>B</w:t></w:r></w:p></w:body>"#;
         let spans = paragraph_spans(xml);
         assert_eq!(spans.len(), 2, "应识别出 2 个段落");
-        assert_eq!(&xml[spans[0].0..spans[0].1], r#"<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>"#);
+        assert_eq!(
+            &xml[spans[0].0..spans[0].1],
+            r#"<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>A</w:t></w:r></w:p>"#
+        );
     }
 
     #[test]
@@ -2477,7 +2553,10 @@ mod tests {
     fn rewrite_paragraph_keeps_paragraph_properties() {
         let block = r#"<w:p w:rsidR="00A1"><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>旧内容</w:t></w:r></w:p>"#;
         let fresh = rewrite_paragraph(block, "新内容");
-        assert!(fresh.contains(r#"<w:jc w:val="center"/>"#), "段落对齐方式必须保留");
+        assert!(
+            fresh.contains(r#"<w:jc w:val="center"/>"#),
+            "段落对齐方式必须保留"
+        );
         assert!(fresh.contains(r#"w:rsidR="00A1""#));
         assert!(fresh.contains("新内容"));
         assert!(!fresh.contains("旧内容"));
@@ -2515,7 +2594,10 @@ mod tests {
     fn nines_row_expands_self_closing_tag() {
         let sheet = r#"<worksheet><sheetData><row r="1"/></sheetData></worksheet>"#;
         let updated = ensure_row(sheet, 1);
-        assert!(updated.contains("<row r=\"1\"></row>"), "自闭合行要展开才能放单元格");
+        assert!(
+            updated.contains("<row r=\"1\"></row>"),
+            "自闭合行要展开才能放单元格"
+        );
         // 第二次调用必须幂等
         assert_eq!(ensure_row(&updated, 1), updated);
     }
@@ -2534,8 +2616,14 @@ mod tests {
         ];
         let map = xlsx_sheet_map(&entries);
         assert_eq!(map.len(), 2);
-        assert_eq!(map[0], ("总表".to_string(), "xl/worksheets/sheet1.xml".to_string()));
-        assert_eq!(map[1], ("明细".to_string(), "xl/worksheets/sheet2.xml".to_string()));
+        assert_eq!(
+            map[0],
+            ("总表".to_string(), "xl/worksheets/sheet1.xml".to_string())
+        );
+        assert_eq!(
+            map[1],
+            ("明细".to_string(), "xl/worksheets/sheet2.xml".to_string())
+        );
     }
 
     /// 实机回环：生成 → 追加段落 → 文本替换 → 读回核对。
@@ -2577,7 +2665,12 @@ mod tests {
         let md = modified.data.unwrap();
         assert_eq!(md["appended"].as_u64(), Some(1));
         assert_eq!(md["replaced_occurrences"].as_u64(), Some(1));
-        assert_eq!(md["paragraphs_after"].as_u64(), Some(3), "应有 3 段: {}", md);
+        assert_eq!(
+            md["paragraphs_after"].as_u64(),
+            Some(3),
+            "应有 3 段: {}",
+            md
+        );
 
         // 3) 读回核对
         let read = ReadDocxTool
@@ -2585,11 +2678,18 @@ mod tests {
             .await
             .expect("read_docx 应返回");
         assert!(read.success, "读 docx 失败: {:?}", read.error);
-        let text = read.data.unwrap()["text"].as_str().unwrap_or("").to_string();
+        let text = read.data.unwrap()["text"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         assert!(text.contains("新项目名称"), "替换后的文字应存在: {}", text);
         assert!(!text.contains("旧项目名称"), "旧文字应已被替换");
         assert!(text.contains("追加的第三段"), "追加的段落应存在: {}", text);
-        assert!(text.contains("保留内容"), "未改动的段落不能被弄丢: {}", text);
+        assert!(
+            text.contains("保留内容"),
+            "未改动的段落不能被弄丢: {}",
+            text
+        );
 
         // 4) 按序号改写第二段
         let by_index = ModifyDocxTool
@@ -2604,8 +2704,15 @@ mod tests {
             .execute(serde_json::json!({ "path": path_str }))
             .await
             .expect("read_docx 应返回");
-        let text2 = read2.data.unwrap()["text"].as_str().unwrap_or("").to_string();
-        assert!(text2.contains("第二段已整段改写"), "序号改写结果: {}", text2);
+        let text2 = read2.data.unwrap()["text"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            text2.contains("第二段已整段改写"),
+            "序号改写结果: {}",
+            text2
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -2659,7 +2766,10 @@ mod tests {
             .await
             .expect("read_xlsx 应返回");
         assert!(read.success, "读 xlsx 失败: {:?}", read.error);
-        let rows = read.data.unwrap()["rows"].as_array().cloned().unwrap_or_default();
+        let rows = read.data.unwrap()["rows"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         // 第一行表头必须还在（就地改写不能把原内容冲掉）
         assert_eq!(rows[0][0].as_str(), Some("姓名"));
         assert_eq!(rows[0][1].as_str(), Some("城市"));

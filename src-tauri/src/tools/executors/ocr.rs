@@ -5,7 +5,7 @@
 //! - Windows 10/11 自带 OCR 引擎，安装了哪个语言包就能识别哪种语言，
 //!   中文系统开箱就能认中文+英文混排。
 //!
-//! 代价是只支持 Windows——这正是本项目的定位（PC Guardian）。
+//! 代价是只支持 Windows——这正是本项目的定位（E-Assisant）。
 //!
 //! 两个工具的分工：`ocr_image_file` 认磁盘上的图片（截图、扫描件、照片），
 //! `ocr_screen` 现截现认（认屏幕上用户正在看的东西，不落永久文件）。
@@ -123,7 +123,10 @@ pub(crate) fn ocr_image_blocking(path: &str, language: Option<&str>) -> Result<O
 }
 
 #[cfg(not(windows))]
-pub(crate) fn ocr_image_blocking(_path: &str, _language: Option<&str>) -> Result<OcrOutput, String> {
+pub(crate) fn ocr_image_blocking(
+    _path: &str,
+    _language: Option<&str>,
+) -> Result<OcrOutput, String> {
     Err("OCR 目前只在 Windows 上实现（依赖系统自带的 Windows.Media.Ocr）".to_string())
 }
 
@@ -260,7 +263,11 @@ impl AgentTool for OcrImageFileTool {
         if !allowed.contains(&ext.as_str()) {
             return Err(AppError::InvalidArgument(format!(
                 "不支持的图片格式: {}（支持 {}）",
-                if ext.is_empty() { "(无扩展名)" } else { &ext },
+                if ext.is_empty() {
+                    "(无扩展名)"
+                } else {
+                    &ext
+                },
                 allowed.join("/")
             )));
         }
@@ -442,7 +449,10 @@ impl AgentTool for OcrRegionTool {
         let width = args["width"].as_i64().unwrap_or(0) as i32;
         let height = args["height"].as_i64().unwrap_or(0) as i32;
         if width <= 0 || height <= 0 {
-            return Ok(ToolResult::err("INVALID_REGION", "width 与 height 必须为正整数"));
+            return Ok(ToolResult::err(
+                "INVALID_REGION",
+                "width 与 height 必须为正整数",
+            ));
         }
         let language = args["language"].as_str().map(|s| s.to_string());
         let keep = args["keep_screenshot"].as_bool().unwrap_or(true);

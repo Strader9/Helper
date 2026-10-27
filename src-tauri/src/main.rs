@@ -1,14 +1,71 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use pc_guardian_lib::AppState;
-use std::sync::atomic::Ordering;
+use e_assisant_lib::AppState;
+use std::sync::{atomic::Ordering, Mutex};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
+#[derive(Default)]
+struct StartupHandoff {
+    animation_complete: bool,
+    main_ready: bool,
+    revealed: bool,
+}
+
+fn reveal_main_window(app: &tauri::AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+
+    if let Some(splash) = app.get_webview_window("splashscreen") {
+        let _ = splash.close();
+    }
+}
+
+fn try_finish_startup(app: &tauri::AppHandle, state: &Mutex<StartupHandoff>) {
+    let should_reveal = {
+        let Ok(mut handoff) = state.lock() else {
+            return;
+        };
+
+        if handoff.revealed || !handoff.animation_complete || !handoff.main_ready {
+            false
+        } else {
+            handoff.revealed = true;
+            true
+        }
+    };
+
+    if should_reveal {
+        reveal_main_window(app);
+    }
+}
+
+#[tauri::command]
+fn mark_splash_animation_complete(
+    app: tauri::AppHandle,
+    startup: tauri::State<'_, Mutex<StartupHandoff>>,
+) {
+    if let Ok(mut handoff) = startup.lock() {
+        handoff.animation_complete = true;
+    }
+    try_finish_startup(&app, &startup);
+}
+
+#[tauri::command]
+fn mark_main_window_ready(app: tauri::AppHandle, startup: tauri::State<'_, Mutex<StartupHandoff>>) {
+    if let Ok(mut handoff) = startup.lock() {
+        handoff.main_ready = true;
+    }
+    try_finish_startup(&app, &startup);
+}
+
 fn main() {
     tauri::Builder::default()
+        .manage(Mutex::new(StartupHandoff::default()))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         // V18: 重新启用全局快捷键，换用 Ctrl+Shift+Space
@@ -20,7 +77,7 @@ fn main() {
                         if let Err(e) = app_handle.emit("global:toggle_mini", ()) {
                             eprintln!("[GlobalShortcut] emit failed: {}", e);
                         }
-                        let _ = pc_guardian_lib::commands::toggle_mini_window_inner(&app_handle);
+                        let _ = e_assisant_lib::commands::toggle_mini_window_inner(&app_handle);
                     });
                 })
                 .build(),
@@ -38,7 +95,7 @@ fn main() {
                 // 启动失败不阻塞桌面窗口；首页与 Jarvis 设置页会显示未运行状态，
                 // 用户仍可在修复模型/显存条件后手动重试。
                 let state = jarvis_handle.state::<AppState>();
-                match pc_guardian_lib::commands::jarvis_start(state, None, None).await {
+                match e_assisant_lib::commands::jarvis_start(state, None, None).await {
                     Ok(_) => eprintln!("[Jarvis] 应用启动时已进入前台"),
                     Err(error) => eprintln!("[Jarvis] 应用启动自动拉起失败: {error}"),
                 }
@@ -74,7 +131,7 @@ fn main() {
             // V20: 初始化技能管理器（后台异步）
             {
                 tauri::async_runtime::spawn(async move {
-                    pc_guardian_lib::skills::init_global().await;
+                    e_assisant_lib::skills::init_global().await;
                     eprintln!("[Skills] 技能管理器初始化完成");
                 });
             }
@@ -89,6 +146,27 @@ fn main() {
             if let Err(e) = create_tray(app.handle()) {
                 eprintln!("[Tray] 创建托盘失败（不影响应用启动）: {}", e);
             }
+
+            // 启动页或前端脚本异常时也不能把用户永久留在启动动画上。
+            let fallback_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                let startup = fallback_handle.state::<Mutex<StartupHandoff>>();
+                let should_reveal = startup
+                    .lock()
+                    .map(|mut handoff| {
+                        if handoff.revealed {
+                            false
+                        } else {
+                            handoff.revealed = true;
+                            true
+                        }
+                    })
+                    .unwrap_or(false);
+                if should_reveal {
+                    reveal_main_window(&fallback_handle);
+                }
+            });
 
             Ok(())
         })
@@ -113,7 +191,7 @@ fn main() {
                 }
             }
             "tray_show_mini" => {
-                let _ = pc_guardian_lib::commands::toggle_mini_window_inner(app);
+                let _ = e_assisant_lib::commands::toggle_mini_window_inner(app);
             }
             "tray_settings" => {
                 if let Some(window) = app.get_webview_window("main") {
@@ -125,130 +203,132 @@ fn main() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            mark_splash_animation_complete,
+            mark_main_window_ready,
             // 对话命令
-            pc_guardian_lib::commands::create_conversation,
-            pc_guardian_lib::commands::get_conversations,
-            pc_guardian_lib::commands::get_messages,
-            pc_guardian_lib::commands::delete_conversation,
-            pc_guardian_lib::commands::send_message,
-            pc_guardian_lib::commands::send_jarvis_message,
-            pc_guardian_lib::commands::jarvis_recommend_handoff,
-            pc_guardian_lib::commands::execute_ollama_handoff,
+            e_assisant_lib::commands::create_conversation,
+            e_assisant_lib::commands::get_conversations,
+            e_assisant_lib::commands::get_messages,
+            e_assisant_lib::commands::delete_conversation,
+            e_assisant_lib::commands::send_message,
+            e_assisant_lib::commands::send_jarvis_message,
+            e_assisant_lib::commands::jarvis_recommend_handoff,
+            e_assisant_lib::commands::execute_ollama_handoff,
             // Phase 4: 权限确认
-            pc_guardian_lib::commands::respond_permission,
+            e_assisant_lib::commands::respond_permission,
             // Phase 4: 可信目录管理
-            pc_guardian_lib::commands::get_allowed_directories,
-            pc_guardian_lib::commands::add_allowed_directory,
-            pc_guardian_lib::commands::remove_allowed_directory,
+            e_assisant_lib::commands::get_allowed_directories,
+            e_assisant_lib::commands::add_allowed_directory,
+            e_assisant_lib::commands::remove_allowed_directory,
             // Phase 4: 信任工具管理
-            pc_guardian_lib::commands::get_trusted_tools,
-            pc_guardian_lib::commands::add_trusted_tool,
-            pc_guardian_lib::commands::remove_trusted_tool,
+            e_assisant_lib::commands::get_trusted_tools,
+            e_assisant_lib::commands::add_trusted_tool,
+            e_assisant_lib::commands::remove_trusted_tool,
             // Phase 4: 路径校验
-            pc_guardian_lib::commands::validate_path_security,
+            e_assisant_lib::commands::validate_path_security,
             // Ollama 命令
-            pc_guardian_lib::commands::check_ollama,
-            pc_guardian_lib::commands::get_ollama_models,
+            e_assisant_lib::commands::check_ollama,
+            e_assisant_lib::commands::get_ollama_models,
             // 模型职责路由与排他推理运行时
-            pc_guardian_lib::commands::get_model_routing,
-            pc_guardian_lib::commands::get_inference_runtime,
-            pc_guardian_lib::commands::start_webpage_generation,
-            pc_guardian_lib::commands::publish_webpage,
-            pc_guardian_lib::commands::open_external,
-            pc_guardian_lib::commands::list_webpage_versions,
-            pc_guardian_lib::commands::restore_webpage_version,
-            pc_guardian_lib::commands::webpage_chain_id,
+            e_assisant_lib::commands::get_model_routing,
+            e_assisant_lib::commands::get_inference_runtime,
+            e_assisant_lib::commands::start_webpage_generation,
+            e_assisant_lib::commands::publish_webpage,
+            e_assisant_lib::commands::open_external,
+            e_assisant_lib::commands::list_webpage_versions,
+            e_assisant_lib::commands::restore_webpage_version,
+            e_assisant_lib::commands::webpage_chain_id,
             // 窗口管理命令
-            pc_guardian_lib::commands::show_main_window,
-            pc_guardian_lib::commands::close_mini_window,
-            pc_guardian_lib::commands::is_mini_window,
-            pc_guardian_lib::commands::toggle_mini_window,
-            pc_guardian_lib::commands::get_mini_window_config,
-            pc_guardian_lib::commands::update_mini_window_config,
-            pc_guardian_lib::commands::set_mini_window_visible,
-            pc_guardian_lib::commands::list_mini_skin_assets,
-            pc_guardian_lib::commands::import_mini_skin_asset,
-            pc_guardian_lib::commands::delete_mini_skin_asset,
+            e_assisant_lib::commands::show_main_window,
+            e_assisant_lib::commands::close_mini_window,
+            e_assisant_lib::commands::is_mini_window,
+            e_assisant_lib::commands::toggle_mini_window,
+            e_assisant_lib::commands::get_mini_window_config,
+            e_assisant_lib::commands::update_mini_window_config,
+            e_assisant_lib::commands::set_mini_window_visible,
+            e_assisant_lib::commands::list_mini_skin_assets,
+            e_assisant_lib::commands::import_mini_skin_asset,
+            e_assisant_lib::commands::delete_mini_skin_asset,
             // 系统监控命令
-            pc_guardian_lib::commands::get_system_metrics,
-            pc_guardian_lib::commands::get_jarvis_vram_status,
+            e_assisant_lib::commands::get_system_metrics,
+            e_assisant_lib::commands::get_jarvis_vram_status,
             // 设置管理命令
-            pc_guardian_lib::commands::update_setting,
-            pc_guardian_lib::commands::check_autostart_status,
+            e_assisant_lib::commands::update_setting,
+            e_assisant_lib::commands::check_autostart_status,
             // 审计日志命令
-            pc_guardian_lib::commands::get_audit_logs,
+            e_assisant_lib::commands::get_audit_logs,
             // 能力契约 / 工具回执命令
-            pc_guardian_lib::commands::get_tool_receipts,
-            pc_guardian_lib::commands::get_capability_coverage,
-            pc_guardian_lib::commands::get_task_truth,
+            e_assisant_lib::commands::get_tool_receipts,
+            e_assisant_lib::commands::get_capability_coverage,
+            e_assisant_lib::commands::get_task_truth,
             // 任务管理命令
-            pc_guardian_lib::commands::get_tasks,
-            pc_guardian_lib::commands::get_active_task,
-            pc_guardian_lib::commands::get_active_tasks,
-            pc_guardian_lib::commands::cancel_task,
+            e_assisant_lib::commands::get_tasks,
+            e_assisant_lib::commands::get_active_task,
+            e_assisant_lib::commands::get_active_tasks,
+            e_assisant_lib::commands::cancel_task,
             // V17: 记忆管理命令
-            pc_guardian_lib::commands::get_memories,
-            pc_guardian_lib::commands::add_memory,
-            pc_guardian_lib::commands::delete_memory,
-            pc_guardian_lib::commands::update_memory_item,
-            pc_guardian_lib::commands::get_memory_profile,
-            pc_guardian_lib::commands::analyze_and_consolidate_memories,
-            pc_guardian_lib::commands::search_memories,
+            e_assisant_lib::commands::get_memories,
+            e_assisant_lib::commands::add_memory,
+            e_assisant_lib::commands::delete_memory,
+            e_assisant_lib::commands::update_memory_item,
+            e_assisant_lib::commands::get_memory_profile,
+            e_assisant_lib::commands::analyze_and_consolidate_memories,
+            e_assisant_lib::commands::search_memories,
             // V18: Proactive 主动助手命令
-            pc_guardian_lib::commands::get_proactive_rules,
-            pc_guardian_lib::commands::add_proactive_rule,
-            pc_guardian_lib::commands::update_proactive_rule,
-            pc_guardian_lib::commands::delete_proactive_rule,
-            pc_guardian_lib::commands::toggle_proactive_rule,
-            pc_guardian_lib::commands::get_proactive_status,
+            e_assisant_lib::commands::get_proactive_rules,
+            e_assisant_lib::commands::add_proactive_rule,
+            e_assisant_lib::commands::update_proactive_rule,
+            e_assisant_lib::commands::delete_proactive_rule,
+            e_assisant_lib::commands::toggle_proactive_rule,
+            e_assisant_lib::commands::get_proactive_status,
             // 常驻调度命令
-            pc_guardian_lib::commands::list_scheduled_jobs,
-            pc_guardian_lib::commands::create_scheduled_job,
-            pc_guardian_lib::commands::delete_scheduled_job,
-            pc_guardian_lib::commands::set_scheduled_job_enabled,
-            pc_guardian_lib::commands::run_scheduled_job_now,
-            pc_guardian_lib::commands::get_scheduled_job_runs,
-            pc_guardian_lib::commands::get_scheduler_status,
+            e_assisant_lib::commands::list_scheduled_jobs,
+            e_assisant_lib::commands::create_scheduled_job,
+            e_assisant_lib::commands::delete_scheduled_job,
+            e_assisant_lib::commands::set_scheduled_job_enabled,
+            e_assisant_lib::commands::run_scheduled_job_now,
+            e_assisant_lib::commands::get_scheduled_job_runs,
+            e_assisant_lib::commands::get_scheduler_status,
             // 多端设备命令
-            pc_guardian_lib::commands::list_paired_devices,
-            pc_guardian_lib::commands::create_pairing_code,
-            pc_guardian_lib::commands::revoke_paired_device,
-            pc_guardian_lib::commands::get_gateway_status,
+            e_assisant_lib::commands::list_paired_devices,
+            e_assisant_lib::commands::create_pairing_code,
+            e_assisant_lib::commands::revoke_paired_device,
+            e_assisant_lib::commands::get_gateway_status,
             // 模型网关状态
-            pc_guardian_lib::commands::get_model_gateway_status,
+            e_assisant_lib::commands::get_model_gateway_status,
             // 外部 MCP 工具源
-            pc_guardian_lib::commands::list_mcp_capabilities,
-            pc_guardian_lib::commands::install_mcp_server,
-            pc_guardian_lib::commands::remove_mcp_server,
+            e_assisant_lib::commands::list_mcp_capabilities,
+            e_assisant_lib::commands::install_mcp_server,
+            e_assisant_lib::commands::remove_mcp_server,
             // V20: 技能管理命令
-            pc_guardian_lib::commands::get_skills,
-            pc_guardian_lib::commands::get_skill_details,
-            pc_guardian_lib::commands::toggle_skill,
-            pc_guardian_lib::commands::install_skill,
-            pc_guardian_lib::commands::uninstall_skill,
+            e_assisant_lib::commands::get_skills,
+            e_assisant_lib::commands::get_skill_details,
+            e_assisant_lib::commands::toggle_skill,
+            e_assisant_lib::commands::install_skill,
+            e_assisant_lib::commands::uninstall_skill,
             // 界面直呼能力（能力中心 / 媒体工坊 / 收件箱）
-            pc_guardian_lib::commands::list_tool_contracts,
-            pc_guardian_lib::commands::list_media_generations,
-            pc_guardian_lib::commands::run_ui_tool,
+            e_assisant_lib::commands::list_tool_contracts,
+            e_assisant_lib::commands::list_media_generations,
+            e_assisant_lib::commands::run_ui_tool,
             // AI Jarvis：外部感知进程的托管与桥接
-            pc_guardian_lib::commands::jarvis_health,
-            pc_guardian_lib::commands::jarvis_handoff,
-            pc_guardian_lib::commands::jarvis_start,
-            pc_guardian_lib::commands::jarvis_stop,
-            pc_guardian_lib::commands::jarvis_chat,
-            pc_guardian_lib::commands::jarvis_duplex,
+            e_assisant_lib::commands::jarvis_health,
+            e_assisant_lib::commands::jarvis_handoff,
+            e_assisant_lib::commands::jarvis_start,
+            e_assisant_lib::commands::jarvis_stop,
+            e_assisant_lib::commands::jarvis_chat,
+            e_assisant_lib::commands::jarvis_duplex,
             // Phase 1 命令
-            pc_guardian_lib::commands::ping,
-            pc_guardian_lib::commands::get_settings,
-            pc_guardian_lib::commands::get_system_status,
+            e_assisant_lib::commands::ping,
+            e_assisant_lib::commands::get_settings,
+            e_assisant_lib::commands::get_system_status,
             // V10: GitHub 趋势
-            pc_guardian_lib::commands::fetch_github_trending,
+            e_assisant_lib::commands::fetch_github_trending,
         ])
         .build(tauri::generate_context!())
-        .expect("error while building PC Guardian")
+        .expect("error while building E-Assisant")
         .run(|_app_handle, event| {
             if matches!(event, tauri::RunEvent::Exit { .. }) {
-                pc_guardian_lib::commands::shutdown_managed_jarvis_children();
+                e_assisant_lib::commands::shutdown_managed_jarvis_children();
             }
         });
 }
@@ -273,8 +353,8 @@ fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>>
     menu.append(&quit)?;
 
     // 创建托盘图标
-    let mut builder = TrayIconBuilder::with_id("pc-guardian-tray")
-        .tooltip("PC Guardian AI")
+    let mut builder = TrayIconBuilder::with_id("e-assisant-tray")
+        .tooltip("E-Assisant")
         .menu(&menu)
         .show_menu_on_left_click(false);
 
@@ -323,7 +403,7 @@ fn register_global_shortcut(
     };
 
     let effective =
-        pc_guardian_lib::shortcut::register_global_shortcut_at(app_handle, &shortcut_str, None);
+        e_assisant_lib::shortcut::register_global_shortcut_at(app_handle, &shortcut_str, None);
 
     // 回退链可能选中了别的键（用户填的被占用），把实际生效值写回两处：
     // 内存里的句柄供下次热切换注销，库里供界面显示。

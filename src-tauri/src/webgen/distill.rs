@@ -168,7 +168,10 @@ pub fn distill(cleaned: &str, target_chars: usize) -> DistillResult {
 
     // 数据附录优先占位：词库/字表/取值清单排在预算竞争之外。
     let appendix = collect_data_appendix(cleaned, DATA_APPENDIX_CHARS.min(target_chars / 4));
-    let appendix_chars = appendix.as_ref().map(|text| text.chars().count()).unwrap_or(0);
+    let appendix_chars = appendix
+        .as_ref()
+        .map(|text| text.chars().count())
+        .unwrap_or(0);
 
     let mut selected = vec![false; sections.len()];
     // 预留一点开销给小节标题与分隔空行。
@@ -186,15 +189,15 @@ pub fn distill(cleaned: &str, target_chars: usize) -> DistillResult {
     }
 
     // 数据附录与开头段吃掉的预算，从小节份额里按比例扣 —— 总量仍卡在 target 之内。
-    let bucket_pool = target_chars
-        .saturating_sub(used)
-        .min(TOTAL_BUCKET_BUDGET);
+    let bucket_pool = target_chars.saturating_sub(used).min(TOTAL_BUCKET_BUDGET);
     let budget_of = |bucket: Bucket| -> usize {
         let base = bucket.budget();
         if bucket_pool >= TOTAL_BUCKET_BUDGET {
             base
         } else {
-            (base * bucket_pool / TOTAL_BUCKET_BUDGET).max(MIN_BUCKET_BUDGET).min(base)
+            (base * bucket_pool / TOTAL_BUCKET_BUDGET)
+                .max(MIN_BUCKET_BUDGET)
+                .min(base)
         }
     };
 
@@ -242,7 +245,9 @@ pub fn distill(cleaned: &str, target_chars: usize) -> DistillResult {
     // 第二轮：把小节没用完的预算补给全局分数最高的剩余章节。
     let mut rest: Vec<usize> = (0..sections.len())
         .filter(|index| {
-            !selected[*index] && sections[*index].score > 0 && classify(&sections[*index]) != Bucket::Other
+            !selected[*index]
+                && sections[*index].score > 0
+                && classify(&sections[*index]) != Bucket::Other
         })
         .collect();
     rest.sort_by(|left, right| sections[*right].score.cmp(&sections[*left].score));
@@ -380,8 +385,19 @@ pub fn distill(cleaned: &str, target_chars: usize) -> DistillResult {
 pub fn collect_data_appendix(cleaned: &str, budget: usize) -> Option<String> {
     // 线索词只收"数据形状"的词：像"词库"这种写在正文里也毫无违和感的词不能要。
     const HINTS: [&str; 13] = [
-        "前置", "后置", "单字池", "字池", "字表", "字根", "词素", "黑名单", "权重", "词库",
-        "词条", "模板库", "规则库",
+        "前置",
+        "后置",
+        "单字池",
+        "字池",
+        "字表",
+        "字根",
+        "词素",
+        "黑名单",
+        "权重",
+        "词库",
+        "词条",
+        "模板库",
+        "规则库",
     ];
 
     let mut data_lines: Vec<(usize, &str)> = Vec::new();
@@ -487,7 +503,9 @@ fn looks_like_enumerated_list(line: &str) -> bool {
                 })
                 .collect();
             let length = plain.chars().count();
-            length >= 2 && length <= 16 && plain.chars().filter(|ch| is_cjk(*ch)).count() * 2 >= length
+            length >= 2
+                && length <= 16
+                && plain.chars().filter(|ch| is_cjk(*ch)).count() * 2 >= length
         })
         .count();
     phrases >= 4
@@ -605,43 +623,104 @@ fn classify(section: &Section) -> Bucket {
         (
             Bucket::Visual,
             &[
-                "配色", "色值", "色彩", "字体", "圆角", "间距", "视觉", "响应式", "断点",
-                "设计基调", "主题", "体验规范",
+                "配色",
+                "色值",
+                "色彩",
+                "字体",
+                "圆角",
+                "间距",
+                "视觉",
+                "响应式",
+                "断点",
+                "设计基调",
+                "主题",
+                "体验规范",
             ],
         ),
         (
             Bucket::Interaction,
             &[
-                "交互", "状态", "反馈", "空状态", "错误", "键盘", "无障碍", "拖拽", "动效",
-                "二次确认", "校验提示", "操作说明",
+                "交互",
+                "状态",
+                "反馈",
+                "空状态",
+                "错误",
+                "键盘",
+                "无障碍",
+                "拖拽",
+                "动效",
+                "二次确认",
+                "校验提示",
+                "操作说明",
             ],
         ),
         (
             Bucket::Data,
             &[
-                "数据模型", "数据结构", "字段", "表结构", "存储", "localstorage", "实体",
-                "数据类型", "词库", "持久化", "schema", "键名",
+                "数据模型",
+                "数据结构",
+                "字段",
+                "表结构",
+                "存储",
+                "localstorage",
+                "实体",
+                "数据类型",
+                "词库",
+                "持久化",
+                "schema",
+                "键名",
             ],
         ),
         (
             Bucket::Page,
             &[
-                "页面结构", "布局", "路由", "信息架构", "首屏", "导航", "区块", "页面组成",
-                "界面结构", "信息层级", "站点", "页面",
+                "页面结构",
+                "布局",
+                "路由",
+                "信息架构",
+                "首屏",
+                "导航",
+                "区块",
+                "页面组成",
+                "界面结构",
+                "信息层级",
+                "站点",
+                "页面",
             ],
         ),
         (
             Bucket::Constraint,
             &[
-                "技术方案", "技术栈", "约束", "非功能", "性能", "兼容", "隐私", "安全",
-                "不做", "限制", "打包", "seo",
+                "技术方案",
+                "技术栈",
+                "约束",
+                "非功能",
+                "性能",
+                "兼容",
+                "隐私",
+                "安全",
+                "不做",
+                "限制",
+                "打包",
+                "seo",
             ],
         ),
         (
             Bucket::Feature,
             &[
-                "功能", "需求", "模块", "场景", "story", "故事", "算法", "生成", "质量控制",
-                "验收", "埋点", "词条", "流程",
+                "功能",
+                "需求",
+                "模块",
+                "场景",
+                "story",
+                "故事",
+                "算法",
+                "生成",
+                "质量控制",
+                "验收",
+                "埋点",
+                "词条",
+                "流程",
             ],
         ),
     ];
@@ -739,7 +818,9 @@ fn split_blocks(cleaned: &str) -> Vec<Section> {
         if block.is_empty() {
             continue;
         }
-        if !buffer.is_empty() && buffer.chars().count() + block.chars().count() > FALLBACK_BLOCK_CHARS {
+        if !buffer.is_empty()
+            && buffer.chars().count() + block.chars().count() > FALLBACK_BLOCK_CHARS
+        {
             let pinned = sections.is_empty();
             sections.push(Section {
                 heading: None,
@@ -781,7 +862,10 @@ fn is_heading(line: &str) -> bool {
     // "一、xxx" / "（一）xxx"
     let first = text.chars().next().unwrap_or(' ');
     if "一二三四五六七八九十".contains(first)
-        && matches!(text.chars().nth(1), Some('、') | Some('.') | Some('）') | Some(')'))
+        && matches!(
+            text.chars().nth(1),
+            Some('、') | Some('.') | Some('）') | Some(')')
+        )
     {
         return true;
     }
@@ -1009,7 +1093,9 @@ mod tests {
     use super::*;
 
     fn long_document() -> String {
-        let mut doc = String::from("# 订单系统 需求说明书\n本文档描述订单系统的功能设计，供研发团队实现。\n\n");
+        let mut doc = String::from(
+            "# 订单系统 需求说明书\n本文档描述订单系统的功能设计，供研发团队实现。\n\n",
+        );
         doc.push_str("## 修订记录\nv1.0 初稿 张三\nv1.1 修改 李四\nv1.2 补充 王五\n\n");
         doc.push_str("## 一、项目背景\n我们希望通过这个系统提升效率，本模块需要与相关方充分沟通，确保方案在长期演进中保持一致性、可维护性与良好的用户体验。\n\n");
         doc.push_str("## 二、功能需求\n- 订单列表支持按状态筛选、按时间排序\n- 新建订单填写客户、金额、备注\n- 支持导出 CSV\n- 逾期订单用红色标记\n\n");
@@ -1050,7 +1136,8 @@ mod tests {
 
     #[test]
     fn reports_sections_dropped_for_budget() {
-        let mut doc = String::from("# 甲系统需求\n面向内部团队的甲系统，用于集中管理日常业务数据。\n\n");
+        let mut doc =
+            String::from("# 甲系统需求\n面向内部团队的甲系统，用于集中管理日常业务数据。\n\n");
         for index in 1..=40 {
             doc.push_str(&format!(
                 "## 模块 {index}\n功能点：支持列表、新增、编辑、删除、关键词搜索与导出，字段包括名称、金额、备注。\n\n"
@@ -1126,8 +1213,12 @@ mod tests {
         assert!(!looks_like_data_line(
             "- 生成结果需优先包含该字，或使用含该字的词素。允许为空。"
         ));
-        assert!(!looks_like_data_line("| 情侣名 | 2–3 字 | 任意 | 必须成对输出 |"));
-        assert!(!looks_like_data_line("打开页面后 3 秒内可点击生成，无需任何说明"));
+        assert!(!looks_like_data_line(
+            "| 情侣名 | 2–3 字 | 任意 | 必须成对输出 |"
+        ));
+        assert!(!looks_like_data_line(
+            "打开页面后 3 秒内可点击生成，无需任何说明"
+        ));
     }
 
     #[test]
@@ -1153,7 +1244,9 @@ mod tests {
         assert!(!looks_like_data_line(
             "功能点：支持列表、新增、编辑、删除、关键词搜索与导出，字段包括名称、金额、备注。"
         ));
-        assert!(!looks_like_data_line("| 情侣名 | 2–3 字 | 任意 | 必须成对输出 |"));
+        assert!(!looks_like_data_line(
+            "| 情侣名 | 2–3 字 | 任意 | 必须成对输出 |"
+        ));
     }
 
     #[test]
@@ -1176,7 +1269,12 @@ mod tests {
         let cleaned = super::super::clean::clean_document(&doc);
         let result = distill(&cleaned, DISTILL_TARGET_CHARS);
 
-        for word in ["抛硬币决定", "广场舞阿姨", "凌晨三点", "把决定权交给外卖小哥"] {
+        for word in [
+            "抛硬币决定",
+            "广场舞阿姨",
+            "凌晨三点",
+            "把决定权交给外卖小哥",
+        ] {
             assert!(result.text.contains(word), "词库条目「{word}」应进入梳理稿");
         }
         assert!(result.text.contains("{obj}"), "槽位模板应进入梳理稿");
@@ -1186,7 +1284,8 @@ mod tests {
 
     #[test]
     fn keeps_the_word_bank_out_of_budget_competition() {
-        let mut doc = String::from("# 起名工具 需求说明\n面向大众的起名工具，打开就能生成名字。\n\n");
+        let mut doc =
+            String::from("# 起名工具 需求说明\n面向大众的起名工具，打开就能生成名字。\n\n");
         // 十几个更"高分"的数据类章节，足以把预算吃光 —— 词库不能再靠分数去抢。
         for index in 1..=12 {
             doc.push_str(&format!(
@@ -1241,7 +1340,8 @@ mod tests {
 
     #[test]
     fn handles_hundred_thousand_char_document() {
-        let mut doc = String::from("# 大型业务系统 需求说明书\n本文档描述一个大型业务系统的完整需求。\n\n");
+        let mut doc =
+            String::from("# 大型业务系统 需求说明书\n本文档描述一个大型业务系统的完整需求。\n\n");
         // 大量与网页实现无关的章节，用来撑到十万字以上。
         for index in 1..=900 {
             doc.push_str(&format!(
@@ -1277,7 +1377,10 @@ mod tests {
             "十万字文档的梳理稿 {} 字，超过预算",
             result.kept_chars
         );
-        assert!(result.kept_chars > 1_000, "梳理稿过短，功能章节可能被丢光了");
+        assert!(
+            result.kept_chars > 1_000,
+            "梳理稿过短，功能章节可能被丢光了"
+        );
         assert!(result.text.contains("支持列表展示"), "功能内容应被保留");
         assert!(result.text.contains("功能模块 1"), "应保留靠前的功能章节");
         assert!(

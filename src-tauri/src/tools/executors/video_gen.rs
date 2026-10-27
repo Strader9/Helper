@@ -35,7 +35,7 @@ fn default_video_dir() -> PathBuf {
     dirs::video_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join("Videos")))
         .unwrap_or_else(std::env::temp_dir)
-        .join("PCGuardian")
+        .join("EAssisant")
 }
 
 fn resolve_dir(requested: Option<&str>) -> AppResult<PathBuf> {
@@ -59,7 +59,7 @@ fn resolve_dir(requested: Option<&str>) -> AppResult<PathBuf> {
 fn build_client(timeout_secs: u64) -> AppResult<reqwest::Client> {
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(timeout_secs.max(30)))
-        .user_agent("pc-guardian/0.1")
+        .user_agent("e-assisant/0.1")
         .build()
         .map_err(|e| AppError::Internal(format!("HTTP 客户端构造失败: {e}")))
 }
@@ -316,8 +316,12 @@ async fn submit_task(
         ));
     }
 
-    let parsed: Value = serde_json::from_str(&body)
-        .map_err(|e| format!("{first_error}；JSON 提交的响应不是 JSON（{e}）：{}", truncate(&body, 300)))?;
+    let parsed: Value = serde_json::from_str(&body).map_err(|e| {
+        format!(
+            "{first_error}；JSON 提交的响应不是 JSON（{e}）：{}",
+            truncate(&body, 300)
+        )
+    })?;
 
     match extract_task(&parsed) {
         Some((id, status)) => Ok((id, status, parsed)),
@@ -396,12 +400,19 @@ async fn download_video(
 ) -> Result<(String, i64, Option<Value>), String> {
     let bytes = match &state.download_url {
         Some(url) => {
-            let resp = client.get(url).send().await.map_err(|e| format!("下载视频失败：{e}"))?;
+            let resp = client
+                .get(url)
+                .send()
+                .await
+                .map_err(|e| format!("下载视频失败：{e}"))?;
             let code = resp.status();
             if !code.is_success() {
                 return Err(format!("下载地址返回 HTTP {}", code.as_u16()));
             }
-            resp.bytes().await.map_err(|e| format!("读取视频字节失败：{e}"))?.to_vec()
+            resp.bytes()
+                .await
+                .map_err(|e| format!("读取视频字节失败：{e}"))?
+                .to_vec()
         }
         None => {
             // Ark 没有 OpenAI 那种 `/videos/{id}/content` 取流端点，成品只从
@@ -421,12 +432,12 @@ async fn download_video(
                 .map_err(|e| format!("下载视频失败：{e}"))?;
             let code = resp.status();
             if !code.is_success() {
-                return Err(format!(
-                    "下载视频返回 HTTP {}（端点 {url}）",
-                    code.as_u16()
-                ));
+                return Err(format!("下载视频返回 HTTP {}（端点 {url}）", code.as_u16()));
             }
-            resp.bytes().await.map_err(|e| format!("读取视频字节失败：{e}"))?.to_vec()
+            resp.bytes()
+                .await
+                .map_err(|e| format!("读取视频字节失败：{e}"))?
+                .to_vec()
         }
     };
 
@@ -434,7 +445,10 @@ async fn download_video(
         return Err("下载到的视频是 0 字节".to_string());
     }
     if bytes.len() > MAX_VIDEO_BYTES {
-        return Err(format!("视频超过 {} MB 上限", MAX_VIDEO_BYTES / 1024 / 1024));
+        return Err(format!(
+            "视频超过 {} MB 上限",
+            MAX_VIDEO_BYTES / 1024 / 1024
+        ));
     }
 
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
@@ -529,7 +543,7 @@ impl AgentTool for VideoGenerateTool {
                 "model": { "type": "string", "description": "可选，覆盖设置里的模型名" },
                 "wait": { "type": "boolean", "description": "是否等到生成完成，默认 true" },
                 "max_wait_sec": { "type": "integer", "description": "可选，本次最长等待秒数，覆盖设置里的 video.poll_timeout_ms" },
-                "output_dir": { "type": "string", "description": "可选，保存目录；相对路径基于默认视频目录，默认 <视频目录>/PCGuardian" }
+                "output_dir": { "type": "string", "description": "可选，保存目录；相对路径基于默认视频目录，默认 <视频目录>/EAssisant" }
             },
             "required": ["prompt"],
             "additionalProperties": false
@@ -676,7 +690,14 @@ impl AgentTool for VideoGenerateTool {
                         }
                         Err(e) => {
                             if let Some(id) = &ledger {
-                                update_generation(id, "completed", Some("completed"), None, None, Some(&e));
+                                update_generation(
+                                    id,
+                                    "completed",
+                                    Some("completed"),
+                                    None,
+                                    None,
+                                    Some(&e),
+                                );
                             }
                             return Ok(ToolResult::err(
                                 "VIDEO_DOWNLOAD_FAILED",
@@ -713,7 +734,14 @@ impl AgentTool for VideoGenerateTool {
 
         // 超时：任务还在服务商那边跑，台账里留着 task_id，别把结果丢掉。
         if let Some(id) = &ledger {
-            update_generation(id, "pending", Some(&last_status), None, None, last_error.as_deref());
+            update_generation(
+                id,
+                "pending",
+                Some(&last_status),
+                None,
+                None,
+                last_error.as_deref(),
+            );
         }
         Ok(ToolResult::err(
             "VIDEO_TIMEOUT",
@@ -796,7 +824,9 @@ impl AgentTool for VideoGenerationStatusTool {
         if state.status == "completed" {
             let save = args["save"].as_bool().unwrap_or(true);
             if !save {
-                result["note"] = json!("任务已完成；save=false 所以没有下载。需要成品时再调一次并保持 save=true。");
+                result["note"] = json!(
+                    "任务已完成；save=false 所以没有下载。需要成品时再调一次并保持 save=true。"
+                );
                 return Ok(ToolResult::ok(result));
             }
             let out_dir = resolve_dir(args["output_dir"].as_str())?;
@@ -804,7 +834,14 @@ impl AgentTool for VideoGenerationStatusTool {
             match download_video(&download_client, &cfg, task_id, &state, &out_dir).await {
                 Ok((path, bytes, probe)) => {
                     if let Some((id, _, _)) = &ledger {
-                        update_generation(id, "downloaded", Some("completed"), Some(&path), Some(bytes), None);
+                        update_generation(
+                            id,
+                            "downloaded",
+                            Some("completed"),
+                            Some(&path),
+                            Some(bytes),
+                            None,
+                        );
                     }
                     result["path"] = json!(path);
                     result["bytes"] = json!(bytes);

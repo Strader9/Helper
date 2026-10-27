@@ -6,4 +6,4 @@
 pub mod ollama;
 pub mod openai;
 
-pub use ollama::{OllamaClient, OllamaMessage, OllamaModel, ChatChunk, ToolCall, FunctionCall};
+pub use ollama::{ChatChunk, FunctionCall, OllamaClient, OllamaMessage, OllamaModel, ToolCall};

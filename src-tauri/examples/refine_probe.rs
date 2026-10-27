@@ -14,9 +14,9 @@
 use std::env;
 use std::time::Instant;
 
+use e_assisant_lib::llm::{ChatChunk, OllamaClient, OllamaMessage};
+use e_assisant_lib::webgen;
 use futures_util::StreamExt;
-use pc_guardian_lib::llm::{ChatChunk, OllamaClient, OllamaMessage};
-use pc_guardian_lib::webgen;
 
 const OLLAMA: &str = "http://localhost:11434";
 const MODEL: &str = "qwen3:8b";

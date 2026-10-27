@@ -10,7 +10,7 @@
 //! 属性——后者在 Save 失败时照样是对的。
 
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::os_extra::{literal, run_powershell_b64};
 use crate::error::{AppError, AppResult};
@@ -44,7 +44,8 @@ fn parse_ps_json(stdout: &str) -> Result<Value, String> {
     if trimmed.is_empty() {
         return Err("脚本没有输出任何结果".to_string());
     }
-    serde_json::from_str(trimmed).map_err(|e| format!("解析脚本输出失败：{}（原文：{}）", e, trimmed))
+    serde_json::from_str(trimmed)
+        .map_err(|e| format!("解析脚本输出失败：{}（原文：{}）", e, trimmed))
 }
 
 /// 输出路径：给了就用，没给就在原文件旁加后缀。
@@ -239,7 +240,10 @@ impl AgentTool for ImageResizeTool {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| AppError::InvalidArgument("path is required".to_string()))?;
         if !std::path::Path::new(path).is_file() {
-            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在：{}", path)));
+            return Ok(ToolResult::err(
+                "FILE_NOT_FOUND",
+                &format!("文件不存在：{}", path),
+            ));
         }
 
         let want_width = args["width"].as_i64().filter(|w| *w > 0);
@@ -282,7 +286,8 @@ impl AgentTool for ImageResizeTool {
             &format!("{}x{}", target_width, target_height),
             &ext,
         );
-        if let Some(rejection) = output_guard(&output, args["overwrite"].as_bool().unwrap_or(false)) {
+        if let Some(rejection) = output_guard(&output, args["overwrite"].as_bool().unwrap_or(false))
+        {
             return Ok(rejection);
         }
 
@@ -325,10 +330,7 @@ $img.Dispose()
                 "OUTPUT_DIMENSION_MISMATCH",
                 &format!(
                     "输出尺寸与预期不符：期望 {}x{}，实际 {}x{}",
-                    target_width,
-                    target_height,
-                    evidence["width"],
-                    evidence["height"]
+                    target_width, target_height, evidence["width"], evidence["height"]
                 ),
             ));
         }
@@ -384,7 +386,10 @@ impl AgentTool for ImageCropTool {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| AppError::InvalidArgument("path is required".to_string()))?;
         if !std::path::Path::new(path).is_file() {
-            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在：{}", path)));
+            return Ok(ToolResult::err(
+                "FILE_NOT_FOUND",
+                &format!("文件不存在：{}", path),
+            ));
         }
 
         let x = args["x"].as_i64().unwrap_or(0);
@@ -423,7 +428,8 @@ impl AgentTool for ImageCropTool {
             &format!("crop_{}x{}_{}_{}", width, height, x, y),
             &ext,
         );
-        if let Some(rejection) = output_guard(&output, args["overwrite"].as_bool().unwrap_or(false)) {
+        if let Some(rejection) = output_guard(&output, args["overwrite"].as_bool().unwrap_or(false))
+        {
             return Ok(rejection);
         }
 
@@ -520,9 +526,13 @@ impl AgentTool for ImageConvertTool {
             .ok_or_else(|| AppError::InvalidArgument("output is required".to_string()))?;
 
         if !std::path::Path::new(path).is_file() {
-            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在：{}", path)));
+            return Ok(ToolResult::err(
+                "FILE_NOT_FOUND",
+                &format!("文件不存在：{}", path),
+            ));
         }
-        if let Some(rejection) = output_guard(output, args["overwrite"].as_bool().unwrap_or(false)) {
+        if let Some(rejection) = output_guard(output, args["overwrite"].as_bool().unwrap_or(false))
+        {
             return Ok(rejection);
         }
 
@@ -629,7 +639,10 @@ impl AgentTool for ImageRotateTool {
         };
 
         if !std::path::Path::new(path).is_file() {
-            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在：{}", path)));
+            return Ok(ToolResult::err(
+                "FILE_NOT_FOUND",
+                &format!("文件不存在：{}", path),
+            ));
         }
 
         let (src_width, src_height) = match read_image_size(path) {
@@ -648,7 +661,8 @@ impl AgentTool for ImageRotateTool {
             .map(|e| e.to_string_lossy().to_lowercase())
             .unwrap_or_else(|| "png".to_string());
         let output = resolve_output(path, args["output"].as_str(), operation, &ext);
-        if let Some(rejection) = output_guard(&output, args["overwrite"].as_bool().unwrap_or(false)) {
+        if let Some(rejection) = output_guard(&output, args["overwrite"].as_bool().unwrap_or(false))
+        {
             return Ok(rejection);
         }
 
@@ -890,11 +904,20 @@ impl AgentTool for VideoInfoTool {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| AppError::InvalidArgument("path is required".to_string()))?;
         if !std::path::Path::new(path).is_file() {
-            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在：{}", path)));
+            return Ok(ToolResult::err(
+                "FILE_NOT_FOUND",
+                &format!("文件不存在：{}", path),
+            ));
         }
 
         let probe = match run_ffprobe_json(&[
-            "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            path,
         ]) {
             Ok(j) => j,
             Err(e) => {
@@ -974,11 +997,20 @@ impl AgentTool for AudioInfoTool {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| AppError::InvalidArgument("path is required".to_string()))?;
         if !std::path::Path::new(path).is_file() {
-            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在：{}", path)));
+            return Ok(ToolResult::err(
+                "FILE_NOT_FOUND",
+                &format!("文件不存在：{}", path),
+            ));
         }
 
         let probe = match run_ffprobe_json(&[
-            "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            path,
         ]) {
             Ok(j) => j,
             Err(e) => {
@@ -1056,9 +1088,13 @@ impl AgentTool for ExtractAudioTool {
             .ok_or_else(|| AppError::InvalidArgument("output is required".to_string()))?;
 
         if !std::path::Path::new(path).is_file() {
-            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在：{}", path)));
+            return Ok(ToolResult::err(
+                "FILE_NOT_FOUND",
+                &format!("文件不存在：{}", path),
+            ));
         }
-        if let Some(rejection) = output_guard(output, args["overwrite"].as_bool().unwrap_or(false)) {
+        if let Some(rejection) = output_guard(output, args["overwrite"].as_bool().unwrap_or(false))
+        {
             return Ok(rejection);
         }
 
@@ -1079,15 +1115,16 @@ impl AgentTool for ExtractAudioTool {
             other => {
                 return Ok(ToolResult::err(
                     "UNSUPPORTED_AUDIO_FORMAT",
-                    &format!("不支持的音频输出格式：{}（支持 mp3/m4a/aac/wav/ogg）", other),
+                    &format!(
+                        "不支持的音频输出格式：{}（支持 mp3/m4a/aac/wav/ogg）",
+                        other
+                    ),
                 ))
             }
         };
 
-        let (ok, stderr) = run_ffmpeg(&[
-            "-y", "-i", path, "-vn", "-c:a", codec, output,
-        ])
-        .map_err(AppError::ToolExecution)?;
+        let (ok, stderr) = run_ffmpeg(&["-y", "-i", path, "-vn", "-c:a", codec, output])
+            .map_err(AppError::ToolExecution)?;
 
         // 判据：重开输出文件，确认落盘且非空，而不是只看进程退出码
         let size = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
@@ -1159,9 +1196,13 @@ impl AgentTool for VideoTrimTool {
             .ok_or_else(|| AppError::InvalidArgument("output is required".to_string()))?;
 
         if !std::path::Path::new(path).is_file() {
-            return Ok(ToolResult::err("FILE_NOT_FOUND", &format!("文件不存在：{}", path)));
+            return Ok(ToolResult::err(
+                "FILE_NOT_FOUND",
+                &format!("文件不存在：{}", path),
+            ));
         }
-        if let Some(rejection) = output_guard(output, args["overwrite"].as_bool().unwrap_or(false)) {
+        if let Some(rejection) = output_guard(output, args["overwrite"].as_bool().unwrap_or(false))
+        {
             return Ok(rejection);
         }
         if resolve_ffmpeg().is_none() {
@@ -1169,7 +1210,11 @@ impl AgentTool for VideoTrimTool {
         }
 
         let mut args_vec = vec!["-y", "-i", path, "-ss", start, "-c", "copy"];
-        if let Some(end) = args["end"].as_str().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(end) = args["end"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             args_vec.push("-to");
             args_vec.push(end);
         }
@@ -1353,9 +1398,19 @@ $bmp.Dispose()
 
         // 用 ffmpeg 造 2 秒、320x240、带 440Hz 音轨的测试视频
         let (ok, stderr) = run_ffmpeg(&[
-            "-y", "-f", "lavfi", "-i", "color=c=blue:s=320x240:d=2",
-            "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
-            "-c:v", "libx264", "-c:a", "aac",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=blue:s=320x240:d=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=2",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
             mp4.to_str().unwrap(),
         ])
         .expect("生成测试视频");
@@ -1369,7 +1424,10 @@ $bmp.Dispose()
             .expect("video_info");
         assert!(info.success, "video_info 失败：{:?}", info.error);
         let data = info.data.expect("video_info 数据");
-        assert!(data["duration_seconds"].as_f64().unwrap() > 1.5, "时长应约 2 秒");
+        assert!(
+            data["duration_seconds"].as_f64().unwrap() > 1.5,
+            "时长应约 2 秒"
+        );
         assert_eq!(data["video"]["width"], 320);
         assert_eq!(data["video"]["height"], 240);
         assert!(!data["audio"].is_null(), "应检测到音轨");

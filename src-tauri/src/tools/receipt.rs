@@ -97,7 +97,11 @@ pub fn verify(
     result: &ToolResult,
     probe: Option<&ProbeVerdict>,
 ) -> VerificationOutcome {
-    let required: Vec<String> = contract.required_fields.iter().map(|s| s.to_string()).collect();
+    let required: Vec<String> = contract
+        .required_fields
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let strategy = contract.verification.as_str().to_string();
 
     if contract.verification == VerificationStrategy::None {
@@ -245,12 +249,14 @@ impl ToolReceipt {
             verification_evidence: outcome.evidence.clone(),
             missing_fields: serde_json::to_string(&outcome.missing_fields)
                 .unwrap_or_else(|_| "[]".to_string()),
-            idempotency_key: idempotency_key(contract.side_effect, session_id, contract.tool, arguments),
+            idempotency_key: idempotency_key(
+                contract.side_effect,
+                session_id,
+                contract.tool,
+                arguments,
+            ),
             request_digest: sha256_hex(&canonical_args),
-            result_digest: result
-                .data
-                .as_ref()
-                .map(|d| sha256_hex(&canonical_json(d))),
+            result_digest: result.data.as_ref().map(|d| sha256_hex(&canonical_json(d))),
             permission_result: permission_result.to_string(),
             success: result.success,
             error_code: result.error_code.clone(),
@@ -409,8 +415,10 @@ mod tests {
 
     #[test]
     fn idempotency_key_is_stable_for_material_effects() {
-        let args_a: serde_json::Value = serde_json::from_str(r#"{"path":"C:\\a.txt","x":1}"#).unwrap();
-        let args_b: serde_json::Value = serde_json::from_str(r#"{"x":1,"path":"C:\\a.txt"}"#).unwrap();
+        let args_a: serde_json::Value =
+            serde_json::from_str(r#"{"path":"C:\\a.txt","x":1}"#).unwrap();
+        let args_b: serde_json::Value =
+            serde_json::from_str(r#"{"x":1,"path":"C:\\a.txt"}"#).unwrap();
         let k1 = idempotency_key(SideEffect::LocalWrite, "s1", "write_file", &args_a);
         let k2 = idempotency_key(SideEffect::LocalWrite, "s1", "write_file", &args_b);
         assert_eq!(k1, k2);
@@ -420,7 +428,12 @@ mod tests {
     #[test]
     fn read_only_calls_have_no_idempotency_key() {
         assert_eq!(
-            idempotency_key(SideEffect::LocalRead, "s1", "read_file", &serde_json::json!({"path":"a"})),
+            idempotency_key(
+                SideEffect::LocalRead,
+                "s1",
+                "read_file",
+                &serde_json::json!({"path":"a"})
+            ),
             None
         );
     }
@@ -482,7 +495,10 @@ mod tests {
 
         assert_eq!(outcome.status, VerificationStatus::Contradicted);
         assert!(!outcome.is_proven(), "被探查否证时不允许声称完成");
-        assert_eq!(outcome.evidence.as_deref(), Some("文件不存在: C:\\qa\\ghost.txt"));
+        assert_eq!(
+            outcome.evidence.as_deref(),
+            Some("文件不存在: C:\\qa\\ghost.txt")
+        );
     }
 
     #[test]
@@ -514,7 +530,11 @@ mod tests {
 
     fn fresh_db(tag: &str) -> (crate::db::Database, std::path::PathBuf) {
         let mut dir = std::env::temp_dir();
-        dir.push(format!("pcg_receipt_{}_{}", tag, uuid::Uuid::new_v4().simple()));
+        dir.push(format!(
+            "pcg_receipt_{}_{}",
+            tag,
+            uuid::Uuid::new_v4().simple()
+        ));
         std::fs::create_dir_all(&dir).expect("创建临时目录");
         let db = crate::db::Database::new(&dir.join("test.db")).expect("打开数据库");
         db.init_schema().expect("初始化 schema");
@@ -532,8 +552,17 @@ mod tests {
         }));
 
         let (outcome, receipt_id) = record(
-            &db, Some(contract), "write_file", "qa-session", Some("qa-run"),
-            &args, &result, "ALLOWED", 12, "MEDIUM", None,
+            &db,
+            Some(contract),
+            "write_file",
+            "qa-session",
+            Some("qa-run"),
+            &args,
+            &result,
+            "ALLOWED",
+            12,
+            "MEDIUM",
+            None,
         );
 
         assert_eq!(outcome.status, VerificationStatus::Verified);
@@ -545,12 +574,14 @@ mod tests {
         assert_eq!(rows[0].side_effect, "local_write");
         assert!(rows[0].result_digest.is_some());
 
-        let key = rows[0].idempotency_key.clone().expect("实质副作用必须有幂等键");
-        assert!(
-            db.find_successful_receipt_by_idempotency(&key)
-                .expect("按幂等键查询")
-                .is_some()
-        );
+        let key = rows[0]
+            .idempotency_key
+            .clone()
+            .expect("实质副作用必须有幂等键");
+        assert!(db
+            .find_successful_receipt_by_idempotency(&key)
+            .expect("按幂等键查询")
+            .is_some());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -563,14 +594,25 @@ mod tests {
         let result = ToolResult::err("PATH_DENIED", "路径不在可信目录内");
 
         let (outcome, receipt_id) = record(
-            &db, Some(contract), "write_file", "qa-session", None,
-            &args, &result, "DENIED: PATH_DENIED", 0, "MEDIUM", None,
+            &db,
+            Some(contract),
+            "write_file",
+            "qa-session",
+            None,
+            &args,
+            &result,
+            "DENIED: PATH_DENIED",
+            0,
+            "MEDIUM",
+            None,
         );
 
         assert_eq!(outcome.status, VerificationStatus::Failed);
         assert!(!receipt_id.is_empty());
 
-        let rows = db.list_tool_receipts(10, Some("write_file")).expect("读取回执");
+        let rows = db
+            .list_tool_receipts(10, Some("write_file"))
+            .expect("读取回执");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].verification_status, "FAILED");
         assert!(!rows[0].success);
@@ -585,14 +627,26 @@ mod tests {
         let result = ToolResult::ok(serde_json::json!({"ok": true}));
 
         let (outcome, receipt_id) = record(
-            &db, None, "unknown_tool", "qa-session", None,
-            &serde_json::json!({}), &result, "ALLOWED", 1, "LOW", None,
+            &db,
+            None,
+            "unknown_tool",
+            "qa-session",
+            None,
+            &serde_json::json!({}),
+            &result,
+            "ALLOWED",
+            1,
+            "LOW",
+            None,
         );
 
         assert_eq!(outcome.status, VerificationStatus::NotRequired);
         assert_eq!(outcome.strategy, "undeclared");
         assert!(receipt_id.is_empty());
-        assert!(db.list_tool_receipts(10, None).expect("读取回执").is_empty());
+        assert!(db
+            .list_tool_receipts(10, None)
+            .expect("读取回执")
+            .is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -609,12 +663,23 @@ mod tests {
         let probe = ProbeVerdict::Fail("文件不存在".to_string());
 
         let (outcome, _) = record(
-            &db, Some(contract), "write_file", "qa-session", Some("run-1"),
-            &args, &result, "ALLOWED", 5, "MEDIUM", Some(&probe),
+            &db,
+            Some(contract),
+            "write_file",
+            "qa-session",
+            Some("run-1"),
+            &args,
+            &result,
+            "ALLOWED",
+            5,
+            "MEDIUM",
+            Some(&probe),
         );
         assert_eq!(outcome.status, VerificationStatus::Contradicted);
 
-        let rows = db.list_tool_receipts(10, Some("write_file")).expect("读取回执");
+        let rows = db
+            .list_tool_receipts(10, Some("write_file"))
+            .expect("读取回执");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].verification_status, "CONTRADICTED");
         assert_eq!(rows[0].verification_evidence.as_deref(), Some("文件不存在"));

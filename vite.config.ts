@@ -30,6 +30,10 @@ export default defineConfig({
     // 产出到 dist，Tauri 从这里加载前端资源
     outDir: "dist",
     rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        splashscreen: path.resolve(__dirname, "splashscreen.html"),
+      },
       output: {
         // 手动分包，优化缓存命中率
         manualChunks: {

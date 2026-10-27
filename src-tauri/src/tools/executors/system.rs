@@ -12,8 +12,8 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 use crate::error::{AppError, AppResult};
-use crate::tools::{AgentTool, RiskLevel, ToolResult};
 use crate::security::command_policy::CommandPolicy;
+use crate::tools::{AgentTool, RiskLevel, ToolResult};
 
 // ============================================================
 // 执行命令工具
@@ -59,10 +59,16 @@ impl AgentTool for ExecuteCommandTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
-        let command = args["command"].as_str()
+        let command = args["command"]
+            .as_str()
             .ok_or_else(|| AppError::InvalidArgument("command is required".to_string()))?;
-        let cmd_args: Vec<String> = args["args"].as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        let cmd_args: Vec<String> = args["args"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
         let cwd = args["cwd"].as_str();
 
@@ -102,12 +108,20 @@ impl AgentTool for ExecuteCommandTool {
         // 限制输出大小，防止超大输出
         let max_len = 5000;
         let final_stdout = if stdout.len() > max_len {
-            format!("{}\n... (stdout 已截断，共 {} 字符)", &stdout[..max_len], stdout.len())
+            format!(
+                "{}\n... (stdout 已截断，共 {} 字符)",
+                &stdout[..max_len],
+                stdout.len()
+            )
         } else {
             stdout.to_string()
         };
         let final_stderr = if stderr.len() > max_len {
-            format!("{}\n... (stderr 已截断，共 {} 字符)", &stderr[..max_len], stderr.len())
+            format!(
+                "{}\n... (stderr 已截断，共 {} 字符)",
+                &stderr[..max_len],
+                stderr.len()
+            )
         } else {
             stderr.to_string()
         };
@@ -173,7 +187,16 @@ $graphics.Dispose()
             );
 
             let output = Command::new("powershell")
-                .args(&["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-Command", &ps_script])
+                .args(&[
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    &ps_script,
+                ])
                 .creation_flags(CREATE_NO_WINDOW)
                 .output()?;
 
@@ -184,13 +207,19 @@ $graphics.Dispose()
                 })))
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                Ok(ToolResult::err("SCREENSHOT_FAILED", &format!("截图失败: {}", stderr)))
+                Ok(ToolResult::err(
+                    "SCREENSHOT_FAILED",
+                    &format!("截图失败: {}", stderr),
+                ))
             }
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            Ok(ToolResult::err("UNSUPPORTED_PLATFORM", "截图功能仅在 Windows 上可用"))
+            Ok(ToolResult::err(
+                "UNSUPPORTED_PLATFORM",
+                "截图功能仅在 Windows 上可用",
+            ))
         }
     }
 }

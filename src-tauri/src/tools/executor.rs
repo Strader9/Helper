@@ -5,18 +5,18 @@
 //!
 //! Phase 4 新增：权限确认弹窗支持，通过 Tauri Event 与前端交互。
 
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
-use crate::security::{PermissionManager, PermissionResult, DENY_USER_DENIED};
 use crate::security::{PermissionDecision, PermissionRequestPayload};
+use crate::security::{PermissionManager, PermissionResult, DENY_USER_DENIED};
 use crate::tools::contract::{contract_for, CapabilityContract, VerificationStrategy};
 use crate::tools::receipt::{ProbeVerdict, VerificationOutcome, VerificationStatus};
-use crate::tools::{ToolRegistry, ToolResult, RiskLevel};
+use crate::tools::{RiskLevel, ToolRegistry, ToolResult};
 
 /// 权限确认事件发射器。
 ///
@@ -129,11 +129,11 @@ impl ToolExecutor {
     /// 5. 执行工具（带超时）
     /// 6. 记录审计日志
     /// 7. 返回结果
-    pub async fn execute(
-        &self,
-        request: ToolCallRequest,
-    ) -> AppResult<ToolExecutionResult> {
-        let session_id = request.session_id.clone().unwrap_or_else(|| "unknown".to_string());
+    pub async fn execute(&self, request: ToolCallRequest) -> AppResult<ToolExecutionResult> {
+        let session_id = request
+            .session_id
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
         let run_id = request.run_id.clone();
 
         // 工具只能拿到 args，拿不到会话。任务编排类工具必须知道当前指令
@@ -141,15 +141,9 @@ impl ToolExecutor {
         crate::tools::set_current_session(&session_id);
 
         // 1. 查找工具
-        let tool = self
-            .tool_registry
-            .get(&request.tool_name)
-            .ok_or_else(|| {
-                AppError::ToolNotFound(format!(
-                    "Tool '{}' is not registered",
-                    request.tool_name
-                ))
-            })?;
+        let tool = self.tool_registry.get(&request.tool_name).ok_or_else(|| {
+            AppError::ToolNotFound(format!("Tool '{}' is not registered", request.tool_name))
+        })?;
 
         let risk_level = tool.risk_level();
         let risk_str = risk_level.as_str().to_string();
@@ -185,16 +179,29 @@ impl ToolExecutor {
                 let permission_str = format!("DENIED: {}", code);
                 // 记录审计日志（被权限系统拒绝）
                 self.write_audit(
-                    &session_id, &request.tool_name, &risk_str,
+                    &session_id,
+                    &request.tool_name,
+                    &risk_str,
                     Some(&request.arguments.to_string()),
-                    &permission_str, false,
-                    Some(&code), Some(&reason), 0,
+                    &permission_str,
+                    false,
+                    Some(&code),
+                    Some(&reason),
+                    0,
                     Some(&format!("权限拒绝: {}", code)),
-                ).await;
+                )
+                .await;
                 let (verification, receipt_id) = self
                     .persist_receipt(
-                        contract, &request.tool_name, &session_id, run_id.as_deref(),
-                        &request.arguments, &denied_result, &permission_str, 0, &risk_str,
+                        contract,
+                        &request.tool_name,
+                        &session_id,
+                        run_id.as_deref(),
+                        &request.arguments,
+                        &denied_result,
+                        &permission_str,
+                        0,
+                        &risk_str,
                         None,
                     )
                     .await;
@@ -220,19 +227,33 @@ impl ToolExecutor {
                         "无人值守模式下「{}」需要用户确认，已跳过。请改用不需要确认的方式完成任务。",
                         request.tool_name
                     );
-                    let denied_result = ToolResult::err("UNATTENDED_REQUIRES_CONFIRMATION", &reason);
+                    let denied_result =
+                        ToolResult::err("UNATTENDED_REQUIRES_CONFIRMATION", &reason);
                     let permission_str = "DENIED: UNATTENDED".to_string();
                     self.write_audit(
-                        &session_id, &request.tool_name, &risk_str,
+                        &session_id,
+                        &request.tool_name,
+                        &risk_str,
                         Some(&request.arguments.to_string()),
-                        &permission_str, false,
-                        Some("UNATTENDED_REQUIRES_CONFIRMATION"), Some(&reason), 0,
+                        &permission_str,
+                        false,
+                        Some("UNATTENDED_REQUIRES_CONFIRMATION"),
+                        Some(&reason),
+                        0,
                         Some(&format!("无人值守跳过: {}", reason)),
-                    ).await;
+                    )
+                    .await;
                     let (verification, receipt_id) = self
                         .persist_receipt(
-                            contract, &request.tool_name, &session_id, run_id.as_deref(),
-                            &request.arguments, &denied_result, &permission_str, 0, &risk_str,
+                            contract,
+                            &request.tool_name,
+                            &session_id,
+                            run_id.as_deref(),
+                            &request.arguments,
+                            &denied_result,
+                            &permission_str,
+                            0,
+                            &risk_str,
                             None,
                         )
                         .await;
@@ -247,14 +268,17 @@ impl ToolExecutor {
                     });
                 }
 
-                let decision = match self.request_permission_confirmation(
-                    &request.tool_name,
-                    &request.arguments,
-                    risk_level,
-                    path_arg.as_deref(),
-                    &session_id,
-                    run_id.as_deref(),
-                ).await {
+                let decision = match self
+                    .request_permission_confirmation(
+                        &request.tool_name,
+                        &request.arguments,
+                        risk_level,
+                        path_arg.as_deref(),
+                        &session_id,
+                        run_id.as_deref(),
+                    )
+                    .await
+                {
                     Ok(d) => d,
                     Err(e) => {
                         eprintln!("权限确认失败: {}, 默认拒绝", e);
@@ -273,16 +297,29 @@ impl ToolExecutor {
                         let denied_result = ToolResult::err(DENY_USER_DENIED, "用户拒绝了此操作");
                         let permission_str = "DENIED: USER_DENIED".to_string();
                         self.write_audit(
-                            &session_id, &request.tool_name, &risk_str,
+                            &session_id,
+                            &request.tool_name,
+                            &risk_str,
                             Some(&request.arguments.to_string()),
-                            &permission_str, false,
-                            Some(DENY_USER_DENIED), Some("用户拒绝了此操作"), 0,
+                            &permission_str,
+                            false,
+                            Some(DENY_USER_DENIED),
+                            Some("用户拒绝了此操作"),
+                            0,
                             Some("用户拒绝操作"),
-                        ).await;
+                        )
+                        .await;
                         let (verification, receipt_id) = self
                             .persist_receipt(
-                                contract, &request.tool_name, &session_id, run_id.as_deref(),
-                                &request.arguments, &denied_result, &permission_str, 0, &risk_str,
+                                contract,
+                                &request.tool_name,
+                                &session_id,
+                                run_id.as_deref(),
+                                &request.arguments,
+                                &denied_result,
+                                &permission_str,
+                                0,
+                                &risk_str,
                                 None,
                             )
                             .await;
@@ -301,11 +338,7 @@ impl ToolExecutor {
         }
 
         // 4. 执行工具（带超时）
-        let tool_timeout = Duration::from_secs(if risk_level == RiskLevel::Safe {
-            2
-        } else {
-            10
-        });
+        let tool_timeout = Duration::from_secs(if risk_level == RiskLevel::Safe { 2 } else { 10 });
 
         let start = std::time::Instant::now();
 
@@ -316,12 +349,8 @@ impl ToolExecutor {
 
         let result = match timeout(tool_timeout, tool.execute(request.arguments)).await {
             Ok(Ok(result)) => result,
-            Ok(Err(e)) => {
-                ToolResult::err("EXECUTION_ERROR", &e.to_string())
-            }
-            Err(_) => {
-                ToolResult::err("TIMEOUT", "Tool execution timed out")
-            }
+            Ok(Err(e)) => ToolResult::err("EXECUTION_ERROR", &e.to_string()),
+            Err(_) => ToolResult::err("TIMEOUT", "Tool execution timed out"),
         };
 
         let duration_ms = start.elapsed().as_millis() as i64;
@@ -329,7 +358,9 @@ impl ToolExecutor {
 
         // 生成结果摘要
         let result_summary = if success {
-            result.data.as_ref()
+            result
+                .data
+                .as_ref()
                 .map(|d| {
                     // 截取前 200 字符作为摘要
                     let s = d.to_string();
@@ -346,13 +377,18 @@ impl ToolExecutor {
 
         // 5. 记录审计日志
         self.write_audit(
-            &session_id, &request.tool_name, &risk_str,
+            &session_id,
+            &request.tool_name,
+            &risk_str,
             Some(&args_json),
-            &permission_result_str, success,
-            result.error_code.as_deref(), result.error.as_deref(),
+            &permission_result_str,
+            success,
+            result.error_code.as_deref(),
+            result.error.as_deref(),
             duration_ms,
             result_summary.as_deref(),
-        ).await;
+        )
+        .await;
 
         // 6. 独立探查：工具说成功了，去现实世界里看一眼是不是真成功。
         //    只对声明了机器可判据、且确实执行成功的能力做——探查要起子进程
@@ -492,9 +528,16 @@ impl ToolExecutor {
     ) {
         let db = self.db.lock().await;
         if let Err(e) = db.write_audit_log(
-            session_id, tool_name, risk_level, arguments,
-            permission_result, success, error_code, error_message,
-            Some(duration_ms), result_summary,
+            session_id,
+            tool_name,
+            risk_level,
+            arguments,
+            permission_result,
+            success,
+            error_code,
+            error_message,
+            Some(duration_ms),
+            result_summary,
         ) {
             eprintln!("[Audit] 写入审计日志失败: {}", e);
         }
@@ -599,7 +642,9 @@ impl ToolExecutor {
             }
             _ => {
                 // 没有权限发射器或 pending map，权限确认不可用 → 默认拒绝（安全优先）
-                eprintln!("Warning: 权限发射器或 pending_permissions 未设置，权限确认不可用。默认拒绝。");
+                eprintln!(
+                    "Warning: 权限发射器或 pending_permissions 未设置，权限确认不可用。默认拒绝。"
+                );
                 Ok(PermissionDecision::Deny)
             }
         }
@@ -665,13 +710,20 @@ fn is_unattended_session(session_id: &str) -> bool {
 /// 从工具参数中提取路径参数，并解析环境变量（如 %USERPROFILE%）
 fn extract_path_from_args(args: &serde_json::Value, tool_name: &str) -> Option<String> {
     let raw = match tool_name {
-        "read_file" | "write_file" | "delete_file" | "open_file" | "list_directory" | "create_directory" => {
-            args.get("path").and_then(|v| v.as_str()).map(|s| s.to_string())
-        }
-        "move_file" => {
-            args.get("src").and_then(|v| v.as_str()).map(|s| s.to_string())
-                .or_else(|| args.get("destination").and_then(|v| v.as_str()).map(|s| s.to_string()))
-        }
+        "read_file" | "write_file" | "delete_file" | "open_file" | "list_directory"
+        | "create_directory" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        "move_file" => args
+            .get("src")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                args.get("destination")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            }),
         // 普通应用名（如 `qq`、`notepad`）不是文件路径，应先交给程序解析器。
         // 只有用户明确提供路径时，才进入路径策略并使用 Execute 权限校验。
         "launch_program" => args
@@ -679,9 +731,10 @@ fn extract_path_from_args(args: &serde_json::Value, tool_name: &str) -> Option<S
             .and_then(|v| v.as_str())
             .filter(|value| is_explicit_program_path(value))
             .map(|s| s.to_string()),
-        "execute_command" => {
-            args.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string())
-        }
+        "execute_command" => args
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         _ => None,
     };
     raw.map(|p| expand_windows_env_vars(&p))
@@ -719,7 +772,11 @@ fn expand_windows_env_vars(path: &str) -> String {
 }
 
 /// 生成工具描述（用于弹窗展示）
-fn format_tool_description(tool_name: &str, args: &serde_json::Value, path: Option<&str>) -> String {
+fn format_tool_description(
+    tool_name: &str,
+    args: &serde_json::Value,
+    path: Option<&str>,
+) -> String {
     match tool_name {
         "read_file" => {
             if let Some(p) = path {
@@ -876,5 +933,4 @@ mod tests {
             Some(r"C:\Program Files\Tencent\QQNT\QQ.exe".to_string())
         );
     }
-
 }

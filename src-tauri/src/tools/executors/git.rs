@@ -369,9 +369,7 @@ impl AgentTool for GitLogTool {
         let (ok, stdout, stderr) = run_git(&repo, &refs)?;
         if !ok {
             // 空仓库（还没有任何提交）时 git log 会失败，这不是错误。
-            if stderr.contains("does not have any commits")
-                || stderr.contains("unknown revision")
-            {
+            if stderr.contains("does not have any commits") || stderr.contains("unknown revision") {
                 return Ok(ToolResult::ok(json!({
                     "repo": repo.display().to_string(),
                     "count": 0,
@@ -465,9 +463,7 @@ impl AgentTool for GitStageTool {
         }
         // 路径不得以 - 开头，否则会被当成选项（如 --force）
         if paths.iter().any(|p| p.starts_with('-')) {
-            return Err(AppError::InvalidArgument(
-                "paths 不能以 - 开头".to_string(),
-            ));
+            return Err(AppError::InvalidArgument("paths 不能以 - 开头".to_string()));
         }
 
         let argv: Vec<String> = if all {
@@ -564,9 +560,7 @@ impl AgentTool for GitCommitTool {
                 .map(|s| s.to_string())
                 .collect();
             if paths.iter().any(|p| p.starts_with('-')) {
-                return Err(AppError::InvalidArgument(
-                    "paths 不能以 - 开头".to_string(),
-                ));
+                return Err(AppError::InvalidArgument("paths 不能以 - 开头".to_string()));
             }
             if !paths.is_empty() {
                 let mut argv: Vec<String> = vec!["add".into(), "--".into()];
@@ -619,9 +613,9 @@ impl AgentTool for GitCommitTool {
         {
             use std::io::Write;
             if let Some(mut stdin) = child.stdin.take() {
-                stdin.write_all(message.as_bytes()).map_err(|e| {
-                    AppError::ToolExecution(format!("写入提交信息失败: {}", e))
-                })?;
+                stdin
+                    .write_all(message.as_bytes())
+                    .map_err(|e| AppError::ToolExecution(format!("写入提交信息失败: {}", e)))?;
             }
         }
         let output = child

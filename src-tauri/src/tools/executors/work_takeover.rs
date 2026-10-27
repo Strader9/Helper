@@ -4,7 +4,7 @@
 //! 证据工作流（开始/更新/查状态/提升/列）。全部是 `crate::work_takeover`
 //! 的薄壳——核心逻辑（台账 CRUD、证据步骤、任务包导出）在那边。
 //!
-//! 设计边界（对齐 LumiCore 的 work_takeover）：这些工具**只动本地台账与
+//! 设计边界（对齐早期原型的 work_takeover）：这些工具**只动本地台账与
 //! 本地产物**，不发消息、不发布、不提交、不付款、不签名、不操作外部软件。
 //! 外部动作永远走其它工具的三层闸门，由用户确认。
 
@@ -111,7 +111,10 @@ impl AgentTool for WorkTakeoverTaskCreateTool {
     }
 
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
-        let category = args["category"].as_str().unwrap_or("general_work").to_string();
+        let category = args["category"]
+            .as_str()
+            .unwrap_or("general_work")
+            .to_string();
         let artifacts = str_array(&args, "artifacts_to_prepare")
             .into_iter()
             .map(|label| wt::Artifact {
@@ -130,7 +133,10 @@ impl AgentTool for WorkTakeoverTaskCreateTool {
             summary: args["summary"].as_str().unwrap_or("").to_string(),
             urgency: args["urgency"].as_str().unwrap_or("normal").to_string(),
             priority: args["priority"].as_i64().unwrap_or(50).clamp(0, 100),
-            recommended_workflow: args["recommended_workflow"].as_str().unwrap_or("").to_string(),
+            recommended_workflow: args["recommended_workflow"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
             next_actions: str_array(&args, "next_actions"),
             current_action_index: 0,
             draft_reply: args["draft_reply"].as_str().unwrap_or("").to_string(),
@@ -284,13 +290,21 @@ impl AgentTool for WorkTakeoverTaskUpdateTool {
             urgency: args["urgency"].as_str().map(|s| s.to_string()),
             priority: args["priority"].as_i64(),
             recommended_workflow: None,
-            next_actions: args["next_actions"].is_array().then(|| str_array(&args, "next_actions")),
+            next_actions: args["next_actions"]
+                .is_array()
+                .then(|| str_array(&args, "next_actions")),
             current_action_index: args["current_action_index"].as_i64(),
             draft_reply: args["draft_reply"].as_str().map(|s| s.to_string()),
             artifacts: None,
-            allowed_now: args["allowed_now"].is_array().then(|| str_array(&args, "allowed_now")),
-            confirmation_required: args["confirmation_required"].is_array().then(|| str_array(&args, "confirmation_required")),
-            blocked_by: args["blocked_by"].is_array().then(|| str_array(&args, "blocked_by")),
+            allowed_now: args["allowed_now"]
+                .is_array()
+                .then(|| str_array(&args, "allowed_now")),
+            confirmation_required: args["confirmation_required"]
+                .is_array()
+                .then(|| str_array(&args, "confirmation_required")),
+            blocked_by: args["blocked_by"]
+                .is_array()
+                .then(|| str_array(&args, "blocked_by")),
             risks: args["risks"].is_array().then(|| str_array(&args, "risks")),
             result: args["result"].as_str().map(|s| s.to_string()),
             note: args["note"].as_str().map(|s| s.to_string()),
@@ -471,7 +485,9 @@ impl AgentTool for WorkTakeoverCapabilityReuseProbeTool {
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
         let tool = require_str(&args, "tool")?;
         match wt::probe_capability(tool) {
-            Some(info) => Ok(ToolResult::ok(json!({ "available": true, "capability": info }))),
+            Some(info) => Ok(ToolResult::ok(
+                json!({ "available": true, "capability": info }),
+            )),
             None => Ok(ToolResult::err(
                 "CAPABILITY_UNKNOWN",
                 &format!("工具「{}」未注册或没有契约，无法复用", tool),
@@ -563,8 +579,9 @@ impl AgentTool for WorkTakeoverEvidenceUpdateTool {
         let workflow_id = require_str(&args, "workflow_id")?;
         let status = require_str(&args, "status")?;
         let evidence = args["evidence"].clone();
-        let entry = wt::evidence_update(workflow_id, status, evidence)?
-            .ok_or_else(|| AppError::InvalidArgument(format!("证据工作流不存在: {}", workflow_id)))?;
+        let entry = wt::evidence_update(workflow_id, status, evidence)?.ok_or_else(|| {
+            AppError::InvalidArgument(format!("证据工作流不存在: {}", workflow_id))
+        })?;
         Ok(ToolResult::ok(json!({
             "ok": true,
             "workflow_id": entry.workflow_id,
@@ -603,8 +620,9 @@ impl AgentTool for WorkTakeoverEvidenceStatusTool {
 
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
         let workflow_id = require_str(&args, "workflow_id")?;
-        let entry = wt::evidence_status(workflow_id)?
-            .ok_or_else(|| AppError::InvalidArgument(format!("证据工作流不存在: {}", workflow_id)))?;
+        let entry = wt::evidence_status(workflow_id)?.ok_or_else(|| {
+            AppError::InvalidArgument(format!("证据工作流不存在: {}", workflow_id))
+        })?;
         Ok(ToolResult::ok(json!({
             "workflow_id": entry.workflow_id,
             "task_id": entry.task_id,
@@ -646,8 +664,9 @@ impl AgentTool for WorkTakeoverEvidencePromoteTool {
 
     async fn execute(&self, args: Value) -> AppResult<ToolResult> {
         let workflow_id = require_str(&args, "workflow_id")?;
-        let entry = wt::evidence_promote(workflow_id)?
-            .ok_or_else(|| AppError::InvalidArgument(format!("证据工作流不存在: {}", workflow_id)))?;
+        let entry = wt::evidence_promote(workflow_id)?.ok_or_else(|| {
+            AppError::InvalidArgument(format!("证据工作流不存在: {}", workflow_id))
+        })?;
         Ok(ToolResult::ok(json!({
             "ok": true,
             "workflow_id": entry.workflow_id,

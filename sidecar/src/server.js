@@ -1,4 +1,4 @@
-// PC Guardian 常驻侧车入口。
+// E-Assisant 常驻侧车入口。
 //
 // 职责：
 // 1. 加载模型 provider 配置，起多 provider 模型网关（OpenAI 兼容 + Ollama）；

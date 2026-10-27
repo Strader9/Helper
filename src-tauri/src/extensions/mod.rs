@@ -1,7 +1,7 @@
 //! 扩展注册表（extension registry）
 //!
-//! 一个**本地扩展清单 + 生命周期回执账本**。与 LumiCore 的 extension registry
-//! 对齐的只是"注册表 + 回执"这一层语义；pc-guardian 的扩展不是"远程签名
+//! 一个**本地扩展清单 + 生命周期回执账本**。与早期原型的 extension registry
+//! 对齐的只是"注册表 + 回执"这一层语义；e-assisant 的扩展不是"远程签名
 //! provider 包"，而是**把一组官方技能打包成一个可整体启停的单元**。
 //!
 //! 安装一个扩展 = 记一条扩展清单 + 记一条 install 回执，并把它声明的
@@ -41,8 +41,7 @@ pub struct ExtensionReceipt {
 }
 
 fn conn() -> AppResult<rusqlite::Connection> {
-    crate::memory::open_connection()
-        .ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))
+    crate::memory::open_connection().ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))
 }
 
 fn parse_str_array(v: &str) -> Vec<String> {

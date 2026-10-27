@@ -94,11 +94,7 @@ impl Observation {
     }
 
     /// 从进程状态创建观察记录
-    pub fn from_process_state(
-        task_id: &str,
-        data: serde_json::Value,
-        summary: String,
-    ) -> Self {
+    pub fn from_process_state(task_id: &str, data: serde_json::Value, summary: String) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             task_id: task_id.to_string(),
@@ -113,11 +109,7 @@ impl Observation {
     }
 
     /// 从窗口状态创建观察记录
-    pub fn from_window_state(
-        task_id: &str,
-        data: serde_json::Value,
-        summary: String,
-    ) -> Self {
+    pub fn from_window_state(task_id: &str, data: serde_json::Value, summary: String) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             task_id: task_id.to_string(),

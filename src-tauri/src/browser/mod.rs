@@ -94,44 +94,76 @@ pub fn detect_all_browsers() -> Vec<BrowserInfo> {
 
     // 定义各浏览器的常见安装路径（按优先级）
     let browser_defs: Vec<(&str, &str, Vec<&str>)> = vec![
-        ("chrome", "Google Chrome", vec![
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-            r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
-        ]),
-        ("edge", "Microsoft Edge", vec![
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-            r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe",
-        ]),
-        ("brave", "Brave Browser", vec![
-            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
-            r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
-            r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe",
-        ]),
-        ("firefox", "Mozilla Firefox", vec![
-            r"C:\Program Files\Mozilla Firefox\firefox.exe",
-            r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
-        ]),
-        ("chromium", "Chromium", vec![
-            r"C:\Program Files\Chromium\chrome.exe",
-            r"C:\Program Files (x86)\Chromium\chrome.exe",
-            r"%LOCALAPPDATA%\Chromium\chrome.exe",
-        ]),
-        ("arc", "Arc Browser", vec![
-            r"%LOCALAPPDATA%\Programs\arc\Arc.exe",
-            r"C:\Program Files\Arc\Arc.exe",
-        ]),
-        ("vivaldi", "Vivaldi", vec![
-            r"C:\Program Files\Vivaldi\Application\vivaldi.exe",
-            r"C:\Program Files (x86)\Vivaldi\Application\vivaldi.exe",
-            r"%LOCALAPPDATA%\Vivaldi\Application\vivaldi.exe",
-        ]),
-        ("opera", "Opera", vec![
-            r"C:\Program Files\Opera\opera.exe",
-            r"C:\Program Files (x86)\Opera\opera.exe",
-            r"%LOCALAPPDATA%\Programs\Opera\opera.exe",
-        ]),
+        (
+            "chrome",
+            "Google Chrome",
+            vec![
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
+            ],
+        ),
+        (
+            "edge",
+            "Microsoft Edge",
+            vec![
+                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+                r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe",
+            ],
+        ),
+        (
+            "brave",
+            "Brave Browser",
+            vec![
+                r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+                r"C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe",
+                r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\Application\brave.exe",
+            ],
+        ),
+        (
+            "firefox",
+            "Mozilla Firefox",
+            vec![
+                r"C:\Program Files\Mozilla Firefox\firefox.exe",
+                r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
+            ],
+        ),
+        (
+            "chromium",
+            "Chromium",
+            vec![
+                r"C:\Program Files\Chromium\chrome.exe",
+                r"C:\Program Files (x86)\Chromium\chrome.exe",
+                r"%LOCALAPPDATA%\Chromium\chrome.exe",
+            ],
+        ),
+        (
+            "arc",
+            "Arc Browser",
+            vec![
+                r"%LOCALAPPDATA%\Programs\arc\Arc.exe",
+                r"C:\Program Files\Arc\Arc.exe",
+            ],
+        ),
+        (
+            "vivaldi",
+            "Vivaldi",
+            vec![
+                r"C:\Program Files\Vivaldi\Application\vivaldi.exe",
+                r"C:\Program Files (x86)\Vivaldi\Application\vivaldi.exe",
+                r"%LOCALAPPDATA%\Vivaldi\Application\vivaldi.exe",
+            ],
+        ),
+        (
+            "opera",
+            "Opera",
+            vec![
+                r"C:\Program Files\Opera\opera.exe",
+                r"C:\Program Files (x86)\Opera\opera.exe",
+                r"%LOCALAPPDATA%\Programs\Opera\opera.exe",
+            ],
+        ),
     ];
 
     for (btype, display_name, paths) in &browser_defs {
@@ -384,7 +416,11 @@ impl BrowserManager {
     /// * `url` - 可选的初始 URL
     /// * `browser_type_override` - 可选的浏览器类型覆盖（chrome/edge/firefox 等）
     ///   如果指定的浏览器未安装，自动回退到系统可用浏览器，并记录回退消息
-    pub async fn open(&self, url: Option<&str>, browser_type_override: Option<&str>) -> AppResult<String> {
+    pub async fn open(
+        &self,
+        url: Option<&str>,
+        browser_type_override: Option<&str>,
+    ) -> AppResult<String> {
         let mut inner = self.inner.lock().await;
 
         // 如果已在运行，直接导航
@@ -402,26 +438,31 @@ impl BrowserManager {
         // 检查是否有可用浏览器
         if inner.available_browsers.is_empty() {
             return Err(AppError::Internal(
-                "未检测到任何可用浏览器，请安装 Chrome、Edge、Firefox 或其他 Chromium 内核浏览器".to_string()
+                "未检测到任何可用浏览器，请安装 Chrome、Edge、Firefox 或其他 Chromium 内核浏览器"
+                    .to_string(),
             ));
         }
 
         // 确定浏览器路径：优先使用指定的类型，不可用时自动回退
         let (btype, bpath, fallback_msg) = if let Some(bt) = browser_type_override {
             // 尝试查找指定类型的浏览器
-            let specified = inner.available_browsers.iter().find(|b| b.browser_type == bt);
+            let specified = inner
+                .available_browsers
+                .iter()
+                .find(|b| b.browser_type == bt);
             if let Some(found) = specified {
                 // 指定的浏览器可用
                 (found.browser_type.clone(), found.path.clone(), None)
             } else {
                 // 指定的浏览器不可用，回退到默认（优先级最高的）
                 let default = &inner.available_browsers[0];
-                let msg = format!(
-                    "未找到 {}，已自动使用 {}",
-                    bt, default.display_name
-                );
+                let msg = format!("未找到 {}，已自动使用 {}", bt, default.display_name);
                 eprintln!("[Browser] {}", msg);
-                (default.browser_type.clone(), default.path.clone(), Some(msg))
+                (
+                    default.browser_type.clone(),
+                    default.path.clone(),
+                    Some(msg),
+                )
             }
         } else {
             // 未指定，使用默认浏览器
@@ -434,8 +475,10 @@ impl BrowserManager {
         inner.fallback_message = fallback_msg;
 
         // 临时用户数据目录（避免与用户正常浏览器冲突）
-        let temp_dir = std::env::temp_dir().join(format!("pc-guardian-browser-{}", std::process::id()));
-        std::fs::create_dir_all(&temp_dir).map_err(|e| AppError::Internal(format!("创建临时目录失败: {}", e)))?;
+        let temp_dir =
+            std::env::temp_dir().join(format!("e-assisant-browser-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir)
+            .map_err(|e| AppError::Internal(format!("创建临时目录失败: {}", e)))?;
 
         let port = inner.debug_port;
         let initial_url = url.unwrap_or("about:blank");
@@ -450,9 +493,9 @@ impl BrowserManager {
             .arg("--window-size=1280,800")
             .arg(initial_url);
 
-        let child = cmd.spawn().map_err(|e| {
-            AppError::Internal(format!("启动浏览器失败 ({}): {}", bpath, e))
-        })?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| AppError::Internal(format!("启动浏览器失败 ({}): {}", bpath, e)))?;
 
         inner.process = Some(child);
 
@@ -504,7 +547,8 @@ impl BrowserManager {
 
     /// 导航到 URL
     pub async fn navigate(&self, url: &str) -> AppResult<()> {
-        self.send_cdp("Page.navigate", Some(serde_json::json!({ "url": url }))).await?;
+        self.send_cdp("Page.navigate", Some(serde_json::json!({ "url": url })))
+            .await?;
         // 等待页面加载完成
         tokio::time::sleep(Duration::from_millis(500)).await;
         Ok(())
@@ -512,11 +556,21 @@ impl BrowserManager {
 
     /// 获取页面标题和 URL
     pub async fn get_title(&self) -> AppResult<(String, String)> {
-        let result = self.evaluate_js("JSON.stringify({title: document.title, url: location.href})").await?;
+        let result = self
+            .evaluate_js("JSON.stringify({title: document.title, url: location.href})")
+            .await?;
         let val: serde_json::Value = serde_json::from_str(&result)
             .map_err(|e| AppError::Internal(format!("解析标题结果失败: {}", e)))?;
-        let title = val.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let url = val.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let title = val
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let url = val
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         Ok((title, url))
     }
 
@@ -532,9 +586,14 @@ impl BrowserManager {
 
     /// 截取页面截图
     pub async fn screenshot(&self) -> AppResult<Vec<u8>> {
-        let result = self.send_cdp("Page.captureScreenshot", Some(serde_json::json!({
-            "format": "png"
-        }))).await?;
+        let result = self
+            .send_cdp(
+                "Page.captureScreenshot",
+                Some(serde_json::json!({
+                    "format": "png"
+                })),
+            )
+            .await?;
 
         let data_b64 = result
             .get("data")
@@ -550,7 +609,12 @@ impl BrowserManager {
     }
 
     /// 点击页面元素
-    pub async fn click(&self, selector: Option<&str>, x: Option<f64>, y: Option<f64>) -> AppResult<()> {
+    pub async fn click(
+        &self,
+        selector: Option<&str>,
+        x: Option<f64>,
+        y: Option<f64>,
+    ) -> AppResult<()> {
         if let Some(sel) = selector {
             // 通过 CSS 选择器点击
             let js = format!(
@@ -570,24 +634,34 @@ impl BrowserManager {
             Ok(())
         } else if let (Some(px), Some(py)) = (x, y) {
             // 通过坐标点击
-            self.send_cdp("Input.dispatchMouseEvent", Some(serde_json::json!({
-                "type": "mousePressed",
-                "x": px,
-                "y": py,
-                "button": "left",
-                "clickCount": 1
-            }))).await?;
+            self.send_cdp(
+                "Input.dispatchMouseEvent",
+                Some(serde_json::json!({
+                    "type": "mousePressed",
+                    "x": px,
+                    "y": py,
+                    "button": "left",
+                    "clickCount": 1
+                })),
+            )
+            .await?;
             tokio::time::sleep(Duration::from_millis(50)).await;
-            self.send_cdp("Input.dispatchMouseEvent", Some(serde_json::json!({
-                "type": "mouseReleased",
-                "x": px,
-                "y": py,
-                "button": "left",
-                "clickCount": 1
-            }))).await?;
+            self.send_cdp(
+                "Input.dispatchMouseEvent",
+                Some(serde_json::json!({
+                    "type": "mouseReleased",
+                    "x": px,
+                    "y": py,
+                    "button": "left",
+                    "clickCount": 1
+                })),
+            )
+            .await?;
             Ok(())
         } else {
-            Err(AppError::InvalidArgument("click 需要 selector 或 x/y 参数".to_string()))
+            Err(AppError::InvalidArgument(
+                "click 需要 selector 或 x/y 参数".to_string(),
+            ))
         }
     }
 
@@ -611,9 +685,13 @@ impl BrowserManager {
 
         // 通过 CDP 输入事件逐字符输入
         for ch in text.chars() {
-            self.send_cdp("Input.insertText", Some(serde_json::json!({
-                "text": ch.to_string()
-            }))).await?;
+            self.send_cdp(
+                "Input.insertText",
+                Some(serde_json::json!({
+                    "text": ch.to_string()
+                })),
+            )
+            .await?;
         }
 
         Ok(())
@@ -630,13 +708,17 @@ impl BrowserManager {
             _ => (0, delta),
         };
 
-        self.send_cdp("Input.dispatchMouseEvent", Some(serde_json::json!({
-            "type": "mouseWheel",
-            "x": 640,
-            "y": 400,
-            "deltaX": dx,
-            "deltaY": dy
-        }))).await?;
+        self.send_cdp(
+            "Input.dispatchMouseEvent",
+            Some(serde_json::json!({
+                "type": "mouseWheel",
+                "x": 640,
+                "y": 400,
+                "deltaX": dx,
+                "deltaY": dy
+            })),
+        )
+        .await?;
         Ok(())
     }
 
@@ -739,7 +821,11 @@ impl BrowserManager {
     async fn wait_for_cdp_ready(&self, port: u16, max_retries: u32) -> AppResult<()> {
         let client = reqwest::Client::new();
         for i in 0..max_retries {
-            match client.get(format!("http://localhost:{}/json/version", port)).send().await {
+            match client
+                .get(format!("http://localhost:{}/json/version", port))
+                .send()
+                .await
+            {
                 Ok(resp) if resp.status().is_success() => return Ok(()),
                 _ => {
                     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -764,7 +850,10 @@ impl BrowserManager {
             .await
             .map_err(|e| AppError::Internal(format!("解析标签页列表失败: {}", e)))?;
 
-        Ok(tabs.into_iter().filter(|t| t.target_type == "page").collect())
+        Ok(tabs
+            .into_iter()
+            .filter(|t| t.target_type == "page")
+            .collect())
     }
 
     /// HTTP: 创建新标签页
@@ -788,7 +877,10 @@ impl BrowserManager {
     async fn spawn_ws_task(
         &self,
         ws_url: &str,
-    ) -> AppResult<(mpsc::UnboundedSender<WsCommand>, tokio::task::JoinHandle<()>)> {
+    ) -> AppResult<(
+        mpsc::UnboundedSender<WsCommand>,
+        tokio::task::JoinHandle<()>,
+    )> {
         use futures_util::{SinkExt, StreamExt};
         use tokio_tungstenite::tungstenite::Message;
 
@@ -800,7 +892,10 @@ impl BrowserManager {
         let (tx, mut rx) = mpsc::unbounded_channel::<WsCommand>();
 
         // 响应路由：id -> oneshot sender
-        let pending = Arc::new(Mutex::new(std::collections::HashMap::<u64, oneshot::Sender<Result<serde_json::Value, String>>>::new()));
+        let pending = Arc::new(Mutex::new(std::collections::HashMap::<
+            u64,
+            oneshot::Sender<Result<serde_json::Value, String>>,
+        >::new()));
 
         let pending_clone = pending.clone();
 
@@ -841,7 +936,9 @@ impl BrowserManager {
                                     if let Some(err) = resp.error {
                                         let _ = tx.send(Err(err.message));
                                     } else {
-                                        let _ = tx.send(Ok(resp.result.unwrap_or(serde_json::Value::Null)));
+                                        let _ = tx.send(Ok(resp
+                                            .result
+                                            .unwrap_or(serde_json::Value::Null)));
                                     }
                                 }
                             }
@@ -872,11 +969,17 @@ impl BrowserManager {
     }
 
     /// 发送 CDP 命令并等待响应
-    async fn send_cdp(&self, method: &str, params: Option<serde_json::Value>) -> AppResult<serde_json::Value> {
+    async fn send_cdp(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> AppResult<serde_json::Value> {
         let (cmd_id, ws_tx_opt) = {
             let inner = self.inner.lock().await;
             if inner.ws_tx.is_none() {
-                return Err(AppError::Internal("浏览器未启动或 WebSocket 未连接".to_string()));
+                return Err(AppError::Internal(
+                    "浏览器未启动或 WebSocket 未连接".to_string(),
+                ));
             }
             let id = inner.cmd_id.fetch_add(1, Ordering::SeqCst);
             (id, inner.ws_tx.clone())
@@ -912,11 +1015,16 @@ impl BrowserManager {
 
     /// 执行 JavaScript 并返回结果字符串
     async fn evaluate_js(&self, expression: &str) -> AppResult<String> {
-        let result = self.send_cdp("Runtime.evaluate", Some(serde_json::json!({
-            "expression": expression,
-            "returnByValue": true,
-            "awaitPromise": true
-        }))).await?;
+        let result = self
+            .send_cdp(
+                "Runtime.evaluate",
+                Some(serde_json::json!({
+                    "expression": expression,
+                    "returnByValue": true,
+                    "awaitPromise": true
+                })),
+            )
+            .await?;
 
         // 解析返回值
         if let Some(obj) = result.get("result") {
@@ -931,7 +1039,10 @@ impl BrowserManager {
             }
         }
         if let Some(exc) = result.get("exceptionDetails") {
-            let text = exc.get("text").and_then(|v| v.as_str()).unwrap_or("JS 异常");
+            let text = exc
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("JS 异常");
             return Err(AppError::ToolExecution(format!("JS 执行异常: {}", text)));
         }
 
@@ -953,11 +1064,23 @@ impl Default for BrowserManager {
 pub fn is_sensitive_url(url: &str) -> bool {
     let lower = url.to_lowercase();
     let sensitive_keywords = [
-        "bank", "pay", "alipay", "weixin", "wx.qq",
-        "creditcard", "loan", "finance", "money",
-        "taobao.com", "jd.com", "pinduoduo",
-        "account", "login", "signin",
-        "github.com/login", "google.com/accounts",
+        "bank",
+        "pay",
+        "alipay",
+        "weixin",
+        "wx.qq",
+        "creditcard",
+        "loan",
+        "finance",
+        "money",
+        "taobao.com",
+        "jd.com",
+        "pinduoduo",
+        "account",
+        "login",
+        "signin",
+        "github.com/login",
+        "google.com/accounts",
     ];
     sensitive_keywords.iter().any(|k| lower.contains(k))
 }

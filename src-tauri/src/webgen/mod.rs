@@ -61,20 +61,20 @@ pub use clean::{
     clean_document, merge_patch, take_excerpt, take_excerpt_with_span, take_head, take_tail,
     ExcerptSpan, MergeOutcome,
 };
-pub use distill::DISTILL_TARGET_CHARS;pub use dom::{
+pub use distill::DISTILL_TARGET_CHARS;
+pub use dom::{
     append_to_script, element_outline, merged_script, replace_functions, script_block,
-    splice_script, splice_script_body, stray_backticks, strip_script_fences, tidy_function_appendix,
-    tidy_function_patch, tidy_script_block,
+    splice_script, splice_script_body, stray_backticks, strip_script_fences,
+    tidy_function_appendix, tidy_function_patch, tidy_script_block,
 };
 pub use verify::{
     appendix_conflicts, dead_links, delimiter_problem, fix_dead_links, fix_narrow_word_class,
     fix_null_storage_reads, fix_placeholder_alerts, fix_regex_properties, function_appendix_plan,
-    function_patch_plan,
-    function_spans,
-    functional_repair_worthwhile, has_critical, has_functional_defect, health, health_with_html,
-    is_functional_defect, issue_weight, looks_degraded, missing_function_names,
-    needs_function_appendix, repair_instruction, restore_script, salvage_truncated_script,
-    script_token_estimate, unused_data_pools, verify_page, Issue, Severity, FUNCTIONAL_CODES,
+    function_patch_plan, function_spans, functional_repair_worthwhile, has_critical,
+    has_functional_defect, health, health_with_html, is_functional_defect, issue_weight,
+    looks_degraded, missing_function_names, needs_function_appendix, repair_instruction,
+    restore_script, salvage_truncated_script, script_token_estimate, unused_data_pools,
+    verify_page, Issue, Severity, FUNCTIONAL_CODES,
 };
 
 /// 合并续写轮次的输出。
@@ -344,7 +344,11 @@ pub struct GenerationBudget {
 /// 一旦被滑出，模型就只看到一段没写完的内容，进而退化成长列表复读。
 /// 优先保住 100% 跑在 GPU 上的标准窗口，通过压低单轮输出来适配；
 /// 压到下限仍装不下时才动用会溢出到 CPU 的重窗口。
-pub fn generation_budget(spec_chars: usize, tail_chars: usize, extra_chars: usize) -> GenerationBudget {
+pub fn generation_budget(
+    spec_chars: usize,
+    tail_chars: usize,
+    extra_chars: usize,
+) -> GenerationBudget {
     let prompt_chars =
         WEBPAGE_SYSTEM_PROMPT.chars().count() + spec_chars + tail_chars + extra_chars + 400;
     let prompt_tokens = estimate_prompt_tokens(prompt_chars);
@@ -446,7 +450,8 @@ pub fn budget_for_prompt(prompt: &str) -> GenerationBudget {
 }
 
 /// 数据契约的字符预算。
-pub const DATA_CONTRACT_CHAR_LIMIT: usize = 1_600;/// 从标准格式需求里抽出「必须原样使用」的数据，随生成提示词一起发给模型。
+pub const DATA_CONTRACT_CHAR_LIMIT: usize = 1_600;
+/// 从标准格式需求里抽出「必须原样使用」的数据，随生成提示词一起发给模型。
 ///
 /// 为什么不靠模型自己在长规格里找：8B 模型读长提示词时会"抓大放小"，把词库这类列表当成
 /// 背景信息略过，然后在代码里现编一份占位数据 —— "生成名字瞎生成"就是这么来的。把数据
@@ -747,7 +752,9 @@ where
     // ② 规格化：整个预处理阶段唯一的一次模型调用。
     emit("正在把梳理稿加工成标准格式…");
     match complete(client, model, &structure_prompt(), &digest, NUM_CTX).await {
-        Ok(text) => structured_or_fallback(text, digest, produced, NormalizeStage::Structured, &emit),
+        Ok(text) => {
+            structured_or_fallback(text, digest, produced, NormalizeStage::Structured, &emit)
+        }
         Err(error) => {
             emit(&format!("规格化失败，直接使用梳理稿：{error}"));
             NormalizeResult {
@@ -788,13 +795,7 @@ where
 
     emit("正在把梳理稿加工成标准格式…");
     match complete(client, model, &structure_prompt(), &digest, NUM_CTX).await {
-        Ok(text) => structured_or_fallback(
-            text,
-            digest,
-            None,
-            NormalizeStage::DigestReused,
-            &emit,
-        ),
+        Ok(text) => structured_or_fallback(text, digest, None, NormalizeStage::DigestReused, &emit),
         Err(error) => {
             emit(&format!("规格化失败，直接使用梳理稿：{error}"));
             NormalizeResult {
@@ -827,8 +828,15 @@ where
                 "规格里补回 {added} 字的字表/词库原文（模型在规格化时丢掉了，生成阶段必须拿到）。"
             ));
         }
-        emit(&format!("已加工为标准格式（{} 字）。", spec.chars().count()));
-        NormalizeResult { spec, digest, stage }
+        emit(&format!(
+            "已加工为标准格式（{} 字）。",
+            spec.chars().count()
+        ));
+        NormalizeResult {
+            spec,
+            digest,
+            stage,
+        }
     } else {
         emit("模型产出不符合标准格式，已退回梳理稿。");
         NormalizeResult {
@@ -888,9 +896,7 @@ pub fn ensure_data_appendix(spec: &str, digest: &str) -> (String, usize) {
         .iter()
         .map(|line| {
             // 梳理稿里的数据行本身常带列表符号（`- 前置：墨 云 …`），别叠加成 `- - 前置`。
-            let body = line
-                .trim_start_matches(['-', '*', '•', '·'])
-                .trim_start();
+            let body = line.trim_start_matches(['-', '*', '•', '·']).trim_start();
             format!("- {body}")
         })
         .collect::<Vec<_>>()
@@ -1129,7 +1135,11 @@ mod tests {
     fn keeps_closed_style_and_fixes_script() {
         let broken = "<html><head><style>a{color:red}</style></head><body><script>const a = 1;\n</body></html>";
         let fixed = repair_html(broken);
-        assert_eq!(fixed.matches("</style>").count(), 1, "已闭合的标签不能被重复插入");
+        assert_eq!(
+            fixed.matches("</style>").count(),
+            1,
+            "已闭合的标签不能被重复插入"
+        );
         assert_eq!(fixed.matches("</script>").count(), 1);
         assert!(fixed.find("</script>").unwrap() < fixed.find("</body>").unwrap());
         assert!(fixed.find("</body>").unwrap() < fixed.find("</html>").unwrap());
@@ -1216,7 +1226,8 @@ mod tests {
              加规则前请先压缩已有表述，或同步调低 DISTILL_TARGET_CHARS。"
         );
         // 反向守住：加固过的约束不能被悄悄删掉。
-        for required in ["每个按钮都绑定事件", "函数名只出现在 HTML 属性里不算被调用"] {
+        for required in ["每个按钮都绑定事件", "函数名只出现在 HTML 属性里不算被调用"]
+        {
             assert!(
                 WEBPAGE_SYSTEM_PROMPT.contains(required),
                 "加固过的约束被删了：{required}"
@@ -1253,7 +1264,8 @@ mod tests {
     #[test]
     fn adds_a_data_section_when_the_spec_has_none() {
         let digest = "前置：墨 云 霜 月 青 白 疏 空 浅 薄 寒 澄 江 竹 松 鹤";
-        let (merged, added) = ensure_data_appendix("# 需求\n\n## 功能需求\n1. [P0] 生成名字", digest);
+        let (merged, added) =
+            ensure_data_appendix("# 需求\n\n## 功能需求\n1. [P0] 生成名字", digest);
         assert!(added > 0);
         assert!(merged.contains("## 数据与字段"), "{merged}");
         assert!(merged.contains("墨 云 霜"), "{merged}");

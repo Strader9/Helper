@@ -1,0 +1,557 @@
+/* EAssistantCore 指挥中心视觉体系 - 从 EAssistantCore 提取并适配 */
+
+.eassistant-core-command-field {
+  isolation: isolate;
+  background: radial-gradient(circle at 50% 47%, rgba(44, 52, 112, .32), transparent 30%), linear-gradient(145deg, #070a18 0%, #030611 53%, #010208 100%);
+}
+
+.eassistant-core-command-field::before {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  content: "";
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 35%, rgba(0, 0, 0, .42) 100%);
+}
+
+.eassistant-core-command-field__backdrop,
+.eassistant-core-command-field__nebula,
+.eassistant-core-command-field__horizon,
+.eassistant-core-command-field__stars,
+.eassistant-core-command-field__grid,
+.eassistant-core-command-field__routes {
+  pointer-events: none;
+}
+
+.eassistant-core-command-field__backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.eassistant-core-command-field__backdrop::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background-image: radial-gradient(rgba(255, 255, 255, .12) .45px, transparent .6px);
+  background-size: 4px 4px;
+  opacity: .08;
+  mix-blend-mode: screen;
+}
+
+.eassistant-core-command-field__nebula {
+  position: absolute;
+  width: 46%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  filter: blur(46px);
+  opacity: .3;
+  transform: translate3d(0, 0, 0);
+  animation: eassistant-core-nebula-drift 18s ease-in-out infinite;
+}
+
+.eassistant-core-command-field__nebula--violet {
+  top: -19%;
+  left: -13%;
+  background: rgba(124, 92, 246, .22);
+}
+
+.eassistant-core-command-field__nebula--cyan {
+  right: -17%;
+  bottom: -24%;
+  background: rgba(34, 211, 238, .17);
+  animation-delay: -8s;
+  animation-direction: reverse;
+}
+
+.eassistant-core-command-field__nebula--rose {
+  top: 31%;
+  right: 20%;
+  width: 24%;
+  opacity: .14;
+  background: rgba(251, 113, 133, .22);
+  animation-duration: 23s;
+  animation-delay: -13s;
+}
+
+.eassistant-core-command-field__horizon {
+  position: absolute;
+  right: -18%;
+  bottom: -21%;
+  left: -18%;
+  height: 47%;
+  border-top: 1px solid rgba(129, 140, 248, .2);
+  border-radius: 50% 50% 0 0;
+  box-shadow: 0 -22px 80px rgba(67, 56, 202, .12), 0 -1px 0 rgba(103, 232, 249, .16);
+  opacity: .65;
+  transform: perspective(520px) rotateX(58deg);
+  transform-origin: center bottom;
+}
+
+.eassistant-core-command-field__stars {
+  position: absolute;
+  inset: -8%;
+}
+
+.eassistant-core-command-field__stars--far {
+  opacity: .75;
+  transform: scale(1.04);
+}
+
+.eassistant-core-command-field__stars--near {
+  opacity: .95;
+  transform: scale(1.08);
+}
+
+.eassistant-core-command-field__star {
+  position: absolute;
+  display: block;
+  border-radius: 999px;
+  background: #d9f8ff;
+  box-shadow: 0 0 7px rgba(165, 243, 252, .85);
+  animation: eassistant-core-star-twinkle 5.6s ease-in-out infinite;
+}
+
+.eassistant-core-command-field__star--near {
+  background: #ede9fe;
+  box-shadow: 0 0 10px rgba(196, 181, 253, .9);
+  animation-duration: 4.2s;
+}
+
+.eassistant-core-command-field__hud {
+  position: absolute;
+  top: 18px;
+  left: 20px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: rgba(226, 232, 240, .54);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .22em;
+  text-transform: uppercase;
+}
+
+.eassistant-core-command-field__hud-title {
+  color: rgba(255, 255, 255, .72);
+}
+
+.eassistant-core-command-field__hud-divider {
+  width: 22px;
+  height: 1px;
+  background: linear-gradient(to right, rgba(255, 255, 255, .3), transparent);
+}
+
+.eassistant-core-command-field__hud-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(165, 243, 252, .72);
+}
+
+.eassistant-core-command-field__hud-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+
+.eassistant-core-command-field__hud-count {
+  position: absolute;
+  top: 15px;
+  right: 20px;
+  z-index: 20;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  color: rgba(255, 255, 255, .72);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: .08em;
+}
+
+.eassistant-core-command-field__hud-count-mark {
+  width: 8px;
+  height: 8px;
+  border: 1px solid rgba(165, 243, 252, .46);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(165, 243, 252, .06), 0 0 12px rgba(165, 243, 252, .26);
+}
+
+.eassistant-core-command-field__grid {
+  position: absolute;
+  inset: 8%;
+  z-index: 1;
+  border: 1px solid rgba(165, 180, 252, .08);
+  border-radius: 50%;
+  background:
+    repeating-radial-gradient(circle at center, transparent 0 10%, rgba(165, 180, 252, .045) 10.2% 10.35%, transparent 10.5% 19.8%),
+    linear-gradient(90deg, transparent 49.8%, rgba(103, 232, 249, .08) 50%, transparent 50.2%),
+    linear-gradient(0deg, transparent 49.8%, rgba(103, 232, 249, .06) 50%, transparent 50.2%);
+  opacity: .7;
+  -webkit-mask-image: radial-gradient(circle, black 20%, transparent 76%);
+  mask-image: radial-gradient(circle, black 20%, transparent 76%);
+}
+
+.eassistant-core-command-field__routes {
+  position: absolute;
+  inset: 4%;
+  z-index: 2;
+  overflow: visible;
+  fill: none;
+  stroke: rgba(165, 243, 252, .2);
+  stroke-width: .22;
+  stroke-dasharray: 1.2 4.8;
+  animation: eassistant-core-route-flow 18s linear infinite;
+}
+
+.eassistant-core-command-field__routes path {
+  stroke: rgba(196, 181, 253, .18);
+}
+
+[data-eassistant-core-field-state="working"] .eassistant-core-command-field__routes {
+  stroke: rgba(103, 232, 249, .3);
+}
+
+[data-eassistant-core-field-state="attention"] .eassistant-core-command-field__routes,
+[data-eassistant-core-field-state="attention"] .eassistant-core-command-field__routes path {
+  stroke: rgba(251, 113, 133, .32);
+}
+
+[data-eassistant-core-field-state="attention"] .eassistant-core-command-field__horizon {
+  border-top-color: rgba(251, 113, 133, .28);
+  box-shadow: 0 -22px 80px rgba(190, 24, 93, .14), 0 -1px 0 rgba(251, 113, 133, .2);
+}
+
+.eassistant-core-command-field__orbit {
+  z-index: 3;
+  opacity: .78;
+  transform-style: preserve-3d;
+}
+
+.eassistant-core-command-field__orbit--0 {
+  border-style: solid;
+  opacity: .92;
+}
+
+.eassistant-core-command-field__orbit--1 {
+  border-style: dashed;
+  opacity: .68;
+}
+
+.eassistant-core-command-field__orbit--2 {
+  border-style: dotted;
+  opacity: .5;
+}
+
+.eassistant-core-command-field__orbit-marker {
+  animation: eassistant-core-marker-pulse 2.8s ease-in-out infinite;
+}
+
+.eassistant-core-command-field__core {
+  position: absolute;
+  filter: drop-shadow(0 18px 40px rgba(4, 7, 20, .74));
+}
+
+.eassistant-core-command-field__core-aura {
+  position: absolute;
+  inset: -18%;
+  z-index: -1;
+  border-radius: 50%;
+  filter: blur(10px);
+  opacity: .9;
+  animation: eassistant-core-aura-breathe 5.5s ease-in-out infinite;
+}
+
+.eassistant-core-command-field__core-label {
+  min-width: 104px;
+  border-color: rgba(196, 181, 253, .16);
+  background: linear-gradient(145deg, rgba(9, 13, 31, .86), rgba(3, 6, 16, .72));
+}
+
+.eassistant-core-command-field__beacon {
+  background: linear-gradient(145deg, rgba(10, 16, 34, .88), rgba(4, 7, 18, .7));
+  box-shadow: 0 8px 28px rgba(1, 2, 8, .4), 0 0 18px rgba(165, 243, 252, .08);
+  transition: background-color .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+
+.eassistant-core-command-field__beacon::before {
+  position: absolute;
+  inset: 3px;
+  content: "";
+  pointer-events: none;
+  border: 1px solid rgba(165, 243, 252, .12);
+  border-radius: 9px;
+  opacity: .45;
+}
+
+.eassistant-core-command-field__beacon-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
+.eassistant-core-command-field__empty {
+  border-color: rgba(196, 181, 253, .12);
+  background: rgba(5, 8, 21, .42);
+  color: rgba(255, 255, 255, .34);
+}
+
+@keyframes eassistant-core-nebula-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(4%, -3%, 0) scale(1.08); }
+}
+
+@keyframes eassistant-core-star-twinkle {
+  0%, 100% { opacity: .48; transform: scale(.8); }
+  48% { opacity: 1; transform: scale(1.18); }
+}
+
+@keyframes eassistant-core-route-flow {
+  to { stroke-dashoffset: -48; }
+}
+
+@keyframes eassistant-core-marker-pulse {
+  0%, 100% { transform: scale(.8); opacity: .58; }
+  50% { transform: scale(1.28); opacity: 1; }
+}
+
+@keyframes eassistant-core-aura-breathe {
+  0%, 100% { opacity: .62; transform: scale(.94); }
+  50% { opacity: 1; transform: scale(1.06); }
+}
+
+/* 指挥中心布局 */
+.command-center-root {
+  position: relative;
+  height: 100vh;
+  width: 100%;
+  overflow: hidden;
+  background: #010208;
+}
+
+.command-center-left-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 80px 20px 20px;
+}
+
+.command-center-right-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 80px 20px 20px;
+  width: 280px;
+}
+
+.command-center-bottom-bar {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  z-index: 30;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 24px;
+}
+
+.command-center-voice-area {
+  position: absolute;
+  bottom: 100px;
+  left: 50%;
+  z-index: 25;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+/* 功能入口图标 */
+.cc-app-icon {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 72px;
+  cursor: pointer;
+  transition: transform .2s ease;
+}
+
+.cc-app-icon:hover {
+  transform: translateY(-2px);
+}
+
+.cc-app-icon-box {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  box-shadow: 0 4px 16px rgba(0,0,0,.3);
+}
+
+.cc-app-icon-label {
+  font-size: 11px;
+  color: rgba(255,255,255,.7);
+  font-weight: 500;
+}
+
+/* 人格卡片 */
+.cc-persona-card {
+  border-radius: 16px;
+  padding: 14px;
+  color: white;
+  cursor: pointer;
+  transition: transform .2s ease, box-shadow .2s ease;
+  border: 1px solid rgba(255,255,255,.1);
+}
+
+.cc-persona-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+}
+
+.cc-persona-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.cc-persona-card-name {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cc-persona-card-role {
+  font-size: 10px;
+  opacity: .7;
+}
+
+.cc-persona-card-perm {
+  font-size: 10px;
+  opacity: .6;
+  margin-top: 4px;
+}
+
+.cc-persona-card-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255,255,255,.2);
+  margin-top: 8px;
+  overflow: hidden;
+}
+
+.cc-persona-card-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: rgba(255,255,255,.6);
+}
+
+/* 学习流面板 */
+.cc-learning-panel {
+  border-radius: 16px;
+  padding: 16px;
+  background: rgba(10, 14, 30, .8);
+  border: 1px solid rgba(255,255,255,.08);
+  backdrop-filter: blur(12px);
+}
+
+.cc-learning-panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.cc-learning-panel-title-text {
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255,255,255,.8);
+}
+
+.cc-learning-panel-badge {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: rgba(255,255,255,.1);
+  color: rgba(255,255,255,.6);
+}
+
+.cc-learning-panel-body {
+  font-size: 11px;
+  color: rgba(255,255,255,.5);
+  line-height: 1.5;
+}
+
+/* 底部导航 */
+.cc-nav-item {
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255,255,255,.5);
+  cursor: pointer;
+  transition: all .2s ease;
+}
+
+.cc-nav-item:hover {
+  color: rgba(255,255,255,.9);
+  background: rgba(255,255,255,.08);
+}
+
+.cc-nav-item.active {
+  color: #67e8f9;
+  background: rgba(103, 232, 249, .12);
+}
+
+.cc-nav-divider {
+  width: 1px;
+  height: 24px;
+  background: rgba(255,255,255,.1);
+  margin: 0 4px;
+}
+
+/* 语音按钮 */
+.cc-voice-button {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255,255,255,.7);
+  cursor: pointer;
+  transition: all .2s ease;
+  backdrop-filter: blur(8px);
+}
+
+.cc-voice-button:hover {
+  background: rgba(255,255,255,.12);
+  color: white;
+}
+
+.cc-voice-hint {
+  font-size: 11px;
+  color: rgba(255,255,255,.4);
+}

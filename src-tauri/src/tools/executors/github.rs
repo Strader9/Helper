@@ -40,7 +40,7 @@ pub async fn fetch_github_repos(
     limit: usize,
 ) -> AppResult<Vec<Value>> {
     let client = reqwest::Client::builder()
-        .user_agent("pc-guardian/0.1")
+        .user_agent("e-assisant/0.1")
         .build()?;
 
     let mut q = match query {
@@ -198,18 +198,14 @@ impl AgentTool for GithubTrendingTool {
             .and_then(|v| v.as_str())
             .unwrap_or("daily");
         let language = args.get("language").and_then(|v| v.as_str());
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(20) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
         let repos = fetch_github_repos(range, language, None, limit).await?;
 
         // 保存快照（失败不影响返回结果）
         {
             let db_guard = self.db.lock().await;
-            if let Err(e) =
-                save_github_snapshot(&db_guard, &self.app_dir, range, language, &repos)
+            if let Err(e) = save_github_snapshot(&db_guard, &self.app_dir, range, language, &repos)
             {
                 eprintln!("[GitHub] 保存快照失败: {}", e);
             }
@@ -277,10 +273,7 @@ impl AgentTool for GithubSearchTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| AppError::InvalidArgument("query is required".to_string()))?;
         let language = args.get("language").and_then(|v| v.as_str());
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(20) as usize;
+        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
         let repos = fetch_github_repos("daily", language, Some(query), limit).await?;
 

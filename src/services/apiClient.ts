@@ -1,4 +1,4 @@
-// Tauri 适配层：替换 LumiCore 的 apiClient，改用 Tauri invoke
+// Tauri 适配层：替换 EAssistantCore 的 apiClient，改用 Tauri invoke
 import { invoke } from '@tauri-apps/api/core';
 
 const LOCAL_BACKEND_ORIGIN = 'http://127.0.0.1:3000';

@@ -548,7 +548,7 @@ async fn dispatch(app_handle: &AppHandle, request: &HttpRequest) -> (u16, Value)
                 200,
                 json!({
                     "ok": true,
-                    "app": "pc-guardian",
+                    "app": "e-assisant",
                     "version": env!("CARGO_PKG_VERSION"),
                     "devices_total": devices.len(),
                     "devices_active": devices.iter().filter(|d| !d.revoked).count(),

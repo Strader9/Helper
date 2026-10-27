@@ -120,7 +120,7 @@ export default function Sidebar({
         {!collapsed && (
           <div className="min-w-0 flex-1">
             <div className="truncate text-[var(--text-sm)] font-semibold tracking-[-0.01em]">
-              PC Guardian
+              E-Assisant
             </div>
             <div className="truncate text-[var(--text-2xs)] text-[var(--color-subtle-foreground)]">
               本地 AI 助手

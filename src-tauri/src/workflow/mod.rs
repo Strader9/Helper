@@ -100,9 +100,9 @@ pub struct Problem {
 
 /// 解析 steps JSON 数组。
 pub fn parse_steps(raw: &Value) -> AppResult<Vec<Step>> {
-    let arr = raw.as_array().ok_or_else(|| {
-        AppError::InvalidArgument("steps 必须是数组".to_string())
-    })?;
+    let arr = raw
+        .as_array()
+        .ok_or_else(|| AppError::InvalidArgument("steps 必须是数组".to_string()))?;
     if arr.is_empty() {
         return Err(AppError::InvalidArgument("steps 不能为空".to_string()));
     }
@@ -350,7 +350,9 @@ impl RunContext {
             return None;
         }
         match parts[0] {
-            "run" if parts.len() > 1 && parts[1] == "id" => Some(Value::String(self.run_id.clone())),
+            "run" if parts.len() > 1 && parts[1] == "id" => {
+                Some(Value::String(self.run_id.clone()))
+            }
             "now" => Some(Value::String(
                 chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             )),
@@ -390,7 +392,10 @@ pub fn resolve_value(value: &Value, ctx: &RunContext) -> Value {
     match value {
         Value::String(text) => {
             let trimmed = text.trim();
-            if trimmed.starts_with("{{") && trimmed.ends_with("}}") && trimmed.matches("{{").count() == 1 {
+            if trimmed.starts_with("{{")
+                && trimmed.ends_with("}}")
+                && trimmed.matches("{{").count() == 1
+            {
                 let expr = &trimmed[2..trimmed.len() - 2];
                 return ctx.lookup(expr.trim()).unwrap_or(Value::Null);
             }
@@ -471,9 +476,11 @@ pub fn find_by_name(name: &str) -> AppResult<Option<Definition>> {
     let conn = crate::memory::open_connection()
         .ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))?;
     let id: Option<String> = conn
-        .query_row("SELECT id FROM workflow_defs WHERE name = ?1", [name], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT id FROM workflow_defs WHERE name = ?1",
+            [name],
+            |r| r.get(0),
+        )
         .ok();
     match id {
         Some(id) => load_definition(&id),
@@ -579,12 +586,7 @@ pub struct StepOutcome {
 }
 
 /// 执行一个步骤的"动作"部分（不含拓扑与记录）。
-async fn execute_step(
-    step: &Step,
-    args: Value,
-    session_id: &str,
-    run_id: &str,
-) -> StepOutcome {
+async fn execute_step(step: &Step, args: Value, session_id: &str, run_id: &str) -> StepOutcome {
     match step.kind.as_str() {
         "delay" => {
             let ms = step.delay_ms.unwrap_or(1000).min(MAX_DELAY_MS);
@@ -642,9 +644,7 @@ async fn execute_step(
                 return StepOutcome {
                     ok: false,
                     data: Value::Null,
-                    error: Some(
-                        "工具执行器未初始化：工作流需要在应用运行时执行".to_string(),
-                    ),
+                    error: Some("工具执行器未初始化：工作流需要在应用运行时执行".to_string()),
                 };
             };
 
@@ -738,13 +738,7 @@ pub async fn run_definition(
     let order = topo_order(&def.steps)
         .map_err(|e| AppError::InvalidArgument(format!("无法确定执行顺序: {}", e)))?;
 
-    let run_id = create_run(
-        &def.id,
-        &def.name,
-        session_id,
-        trigger,
-        def.steps.len(),
-    )?;
+    let run_id = create_run(&def.id, &def.name, session_id, trigger, def.steps.len())?;
 
     let mut ctx = RunContext {
         run_id: run_id.clone(),
@@ -773,7 +767,14 @@ pub async fn run_definition(
 
         // 前序失败且该步没有 continue_on_error → 跳过
         if aborted {
-            record_step(&run_id, step, seq, "skipped", None, Some("前序步骤失败，已中止"))?;
+            record_step(
+                &run_id,
+                step,
+                seq,
+                "skipped",
+                None,
+                Some("前序步骤失败，已中止"),
+            )?;
             step_results.push(json!({
                 "step": step.id,
                 "name": step.name,
@@ -784,9 +785,10 @@ pub async fn run_definition(
         }
 
         // 依赖里有失败的步骤，且本步没被标记继续 → 跳过
-        let dep_failed = step.depends_on.iter().any(|d| {
-            ctx.ok.get(d).map(|ok| !ok).unwrap_or(true)
-        });
+        let dep_failed = step
+            .depends_on
+            .iter()
+            .any(|d| ctx.ok.get(d).map(|ok| !ok).unwrap_or(true));
 
         if dep_failed && !step.continue_on_error {
             fail_count += 1;
@@ -834,7 +836,10 @@ pub async fn run_definition(
         } else {
             fail_count += 1;
             ctx.ok.insert(step.id.clone(), false);
-            let message = outcome.error.clone().unwrap_or_else(|| "未知错误".to_string());
+            let message = outcome
+                .error
+                .clone()
+                .unwrap_or_else(|| "未知错误".to_string());
             if first_error.is_none() {
                 first_error = Some(format!("{}: {}", step.id, message));
             }
@@ -843,7 +848,11 @@ pub async fn run_definition(
                 step,
                 seq,
                 "failed",
-                if outcome.data.is_null() { None } else { Some(&outcome.data) },
+                if outcome.data.is_null() {
+                    None
+                } else {
+                    Some(&outcome.data)
+                },
                 Some(&message),
             )?;
             step_results.push(json!({
@@ -1064,7 +1073,10 @@ mod tests {
         let ctx = RunContext::default();
         // 留 `{{...}}` 原文会让下游工具拿到一串占位符当参数，
         // 变成"路径不存在"这种莫名其妙的错误
-        assert_eq!(resolve_value(&json!("x{{steps.nope.data.a}}y"), &ctx), json!("xy"));
+        assert_eq!(
+            resolve_value(&json!("x{{steps.nope.data.a}}y"), &ctx),
+            json!("xy")
+        );
     }
 
     #[test]

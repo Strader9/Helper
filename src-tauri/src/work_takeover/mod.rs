@@ -18,7 +18,7 @@ use crate::error::{AppError, AppResult};
 
 /// 一条工作接管任务。
 ///
-/// 字段名与 LumiCore 的 work_takeover task 对齐，便于语义互认；数组字段
+/// 字段名与早期原型的 work_takeover task 对齐，便于语义互认；数组字段
 /// 在库里存 JSON 字符串，读出时解析。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkTakeoverTask {
@@ -75,8 +75,7 @@ impl Default for Artifact {
 }
 
 fn conn() -> AppResult<rusqlite::Connection> {
-    crate::memory::open_connection()
-        .ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))
+    crate::memory::open_connection().ok_or_else(|| AppError::Internal("数据库未初始化".to_string()))
 }
 
 fn parse_str_array(v: &str) -> Vec<String> {
@@ -249,7 +248,11 @@ pub fn get_task(id: &str) -> AppResult<Option<WorkTakeoverTask>> {
 }
 
 /// 列任务（可选按状态 / 类别过滤）。
-pub fn list_tasks(status: Option<&str>, category: Option<&str>, limit: usize) -> AppResult<Vec<WorkTakeoverTask>> {
+pub fn list_tasks(
+    status: Option<&str>,
+    category: Option<&str>,
+    limit: usize,
+) -> AppResult<Vec<WorkTakeoverTask>> {
     let c = conn()?;
     let mut sql = format!(
         "SELECT {} FROM work_takeover_tasks WHERE 1=1",
@@ -296,7 +299,9 @@ pub fn update_task(id: &str, patch: UpdateTaskPatch) -> AppResult<Option<WorkTak
         ($field:expr, $opt:expr) => {
             if let Some(v) = $opt {
                 sets.push(format!("{} = ?", $field));
-                params.push(Box::new(serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string())));
+                params.push(Box::new(
+                    serde_json::to_string(&v).unwrap_or_else(|_| "[]".to_string()),
+                ));
             }
         };
     }
@@ -376,9 +381,14 @@ pub fn current_action(task: &WorkTakeoverTask) -> Option<String> {
 
 /// 推进一个动作：current_action_index +1，状态保持 in_progress。
 pub fn advance_task(id: &str) -> AppResult<Option<WorkTakeoverTask>> {
-    let task = get_task(id)?.ok_or_else(|| AppError::InvalidArgument(format!("任务不存在: {}", id)))?;
+    let task =
+        get_task(id)?.ok_or_else(|| AppError::InvalidArgument(format!("任务不存在: {}", id)))?;
     let next_index = (task.current_action_index + 1).min(task.next_actions.len().max(1) as i64 - 1);
-    let status = if task.status == "queued" { "in_progress".to_string() } else { task.status.clone() };
+    let status = if task.status == "queued" {
+        "in_progress".to_string()
+    } else {
+        task.status.clone()
+    };
     update_task(
         id,
         UpdateTaskPatch {
@@ -411,7 +421,12 @@ pub fn evidence_start(task_id: &str, step_id: &str, evidence: Value) -> AppResul
     c.execute(
         "INSERT INTO work_takeover_evidence (task_id, workflow_id, step_id, status, evidence_json)
          VALUES (?1, ?2, ?3, 'active', ?4)",
-        rusqlite::params![task_id, workflow_id, step_id, serde_json::to_string(&evidence)?],
+        rusqlite::params![
+            task_id,
+            workflow_id,
+            step_id,
+            serde_json::to_string(&evidence)?
+        ],
     )?;
     Ok(EvidenceEntry {
         workflow_id,
@@ -424,7 +439,11 @@ pub fn evidence_start(task_id: &str, step_id: &str, evidence: Value) -> AppResul
 }
 
 /// 推进 / 更新证据步骤状态。
-pub fn evidence_update(workflow_id: &str, status: &str, evidence: Value) -> AppResult<Option<EvidenceEntry>> {
+pub fn evidence_update(
+    workflow_id: &str,
+    status: &str,
+    evidence: Value,
+) -> AppResult<Option<EvidenceEntry>> {
     let c = conn()?;
     c.execute(
         "UPDATE work_takeover_evidence SET status = ?1, evidence_json = ?2, updated_at = datetime('now')
@@ -519,13 +538,19 @@ pub fn export_packet(task: &WorkTakeoverTask, output_dir: &str) -> AppResult<Str
     let short = &task.id[..task.id.len().min(8)];
     let folder = std::path::Path::new(output_dir).join(format!("work_takeover_{}", short));
     std::fs::create_dir_all(&folder)?;
-    std::fs::write(folder.join("task.json"), serde_json::to_string_pretty(task)?)?;
+    std::fs::write(
+        folder.join("task.json"),
+        serde_json::to_string_pretty(task)?,
+    )?;
 
     let mut md = String::new();
     md.push_str(&format!("# 工作接管任务：{}\n\n", task.title));
     md.push_str(&format!("- 类别：{}\n", task.category));
     md.push_str(&format!("- 状态：{}\n", task.status));
-    md.push_str(&format!("- 紧急度：{} / 优先级：{}\n", task.urgency, task.priority));
+    md.push_str(&format!(
+        "- 紧急度：{} / 优先级：{}\n",
+        task.urgency, task.priority
+    ));
     md.push_str(&format!("- 来源：{}（{}）\n\n", task.source, task.contact));
     if !task.summary.is_empty() {
         md.push_str(&format!("## 摘要\n{}\n\n", task.summary));
@@ -533,13 +558,20 @@ pub fn export_packet(task: &WorkTakeoverTask, output_dir: &str) -> AppResult<Str
     if !task.next_actions.is_empty() {
         md.push_str("## 下一步动作\n");
         for (i, a) in task.next_actions.iter().enumerate() {
-            let mark = if i as i64 == task.current_action_index { " →" } else { "" };
+            let mark = if i as i64 == task.current_action_index {
+                " →"
+            } else {
+                ""
+            };
             md.push_str(&format!("{}. {}{}\n", i + 1, a, mark));
         }
         md.push('\n');
     }
     if !task.confirmation_required.is_empty() {
-        md.push_str(&format!("## 需要确认\n{}\n\n", task.confirmation_required.join("、")));
+        md.push_str(&format!(
+            "## 需要确认\n{}\n\n",
+            task.confirmation_required.join("、")
+        ));
     }
     if !task.blocked_by.is_empty() {
         md.push_str(&format!("## 阻塞\n{}\n\n", task.blocked_by.join("、")));

@@ -72,7 +72,10 @@ pub struct AssembledHistory {
 /// 从最新往回装，装满为止；装不下的部分标记为待压缩，而不是直接丢弃。
 ///
 /// 注意 `messages` 必须按时间正序（旧 → 新）。
-pub fn assemble_history(messages: &[ConversationMessage], available_tokens: usize) -> AssembledHistory {
+pub fn assemble_history(
+    messages: &[ConversationMessage],
+    available_tokens: usize,
+) -> AssembledHistory {
     if messages.is_empty() {
         return AssembledHistory {
             messages: Vec::new(),
@@ -195,7 +198,11 @@ mod tests {
         assert!(result.pending_summary_count > 0, "应当有远期条目");
         // 最后一条必须还在
         let last = result.messages.last().expect("至少要留一条");
-        assert!(last.content.contains("第19条"), "最新一条必须保留，实际: {}", last.content);
+        assert!(
+            last.content.contains("第19条"),
+            "最新一条必须保留，实际: {}",
+            last.content
+        );
     }
 
     #[test]

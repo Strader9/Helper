@@ -1,8 +1,8 @@
 //! 记忆固化器：把短期 episodic 记忆合并为长期 growth 记忆
 //!
-//! 借鉴 LumiCore 的 Consolidator 设计（读逻辑、用 Rust 重写）：
+//! 借鉴早期原型的 Consolidator 设计（读逻辑、用 Rust 重写）：
 //! 周期性把「未固化的原始对话/任务记忆」按语义聚类，每簇达到阈值后合并成
-//! 一条更凝练的长期记忆，并回链原记忆。与 Lumi 的差异：Lumi 用 LLM 生成
+//! 一条更凝练的长期记忆，并回链原记忆。与早期原型的差异：原型用 LLM 生成
 //! 第一人称叙事，这里用**确定性模板合并**——不依赖模型，可离线、可单测、
 //! 结果可复现。LLM 增强留待 sidecar 模型网关接入后再叠加。
 
@@ -32,7 +32,10 @@ pub fn consolidate(
 ) -> rusqlite::Result<ConsolidateSummary> {
     let episodic = load_unconsolidated_episodic(conn)?;
     if episodic.is_empty() {
-        return Ok(ConsolidateSummary { merged_into: 0, consumed: 0 });
+        return Ok(ConsolidateSummary {
+            merged_into: 0,
+            consumed: 0,
+        });
     }
 
     // 贪心聚类：每条记忆归入相似度最高且超阈值的簇，否则新建簇
@@ -65,13 +68,14 @@ pub fn consolidate(
         consumed += cluster.len();
     }
 
-    Ok(ConsolidateSummary { merged_into, consumed })
+    Ok(ConsolidateSummary {
+        merged_into,
+        consumed,
+    })
 }
 
 /// 从数据库拉取未固化的 episodic 记忆。
-fn load_unconsolidated_episodic(
-    conn: &rusqlite::Connection,
-) -> rusqlite::Result<Vec<MemoryItem>> {
+fn load_unconsolidated_episodic(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<MemoryItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, memory_type, content, keywords, importance, access_count, created_at,
                 last_accessed_at, expires_at, source, tier, consolidated_into
@@ -162,11 +166,7 @@ fn build_merged_item(cluster: &[MemoryItem]) -> MemoryItem {
         }
     }
 
-    let content = format!(
-        "用户近期 {} 次提及：{}",
-        cluster.len(),
-        parts.join("；")
-    );
+    let content = format!("用户近期 {} 次提及：{}", cluster.len(), parts.join("；"));
     // 截断到 500 字，避免超长
     let content = truncate_chars(&content, 500);
 

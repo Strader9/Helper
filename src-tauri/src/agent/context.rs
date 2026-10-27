@@ -80,10 +80,7 @@ impl SystemStateSnapshot {
                 .join(" ")
         };
 
-        let window_str = self
-            .active_window
-            .as_deref()
-            .unwrap_or("未知");
+        let window_str = self.active_window.as_deref().unwrap_or("未知");
 
         format!(
             "CPU:{:.0}% 内存:{:.0}%({:.1}/{:.1}GB) 磁盘:[{}] 窗口:{} 网络:{}",
@@ -203,11 +200,7 @@ impl ContextEngine {
     }
 
     /// 构建上下文摘要（给 LLM 看的精简版）
-    pub fn build_context_summary(
-        &self,
-        task: &Task,
-        observations: &[Observation],
-    ) -> String {
+    pub fn build_context_summary(&self, task: &Task, observations: &[Observation]) -> String {
         let mut parts = Vec::new();
 
         // 系统状态
@@ -274,10 +267,7 @@ impl ContextEngine {
     /// 构建简单任务的上下文注入（精简版）
     pub fn build_simple_context_injection(&self) -> String {
         if let Some(ref state) = self.system_state {
-            format!(
-                "## 系统状态\n{}\n",
-                state.summary()
-            )
+            format!("## 系统状态\n{}\n", state.summary())
         } else {
             String::new()
         }
@@ -312,7 +302,12 @@ impl ContextEngine {
 
         let head: String = chars[..head_count].iter().collect();
         let tail: String = chars[tail_start..].iter().collect();
-        format!("{}...[内容已截断，省略约 {} 字符]...{}", head, chars.len() - keep_count, tail)
+        format!(
+            "{}...[内容已截断，省略约 {} 字符]...{}",
+            head,
+            chars.len() - keep_count,
+            tail
+        )
     }
 }
 

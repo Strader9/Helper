@@ -88,7 +88,10 @@ pub fn issue_weight(code: &str) -> usize {
         // SCRIPT_FENCE / UNCLOSED_TEMPLATE / REGEX_PROPERTY_INVALID 也归这一档：一个混进来的
         // ``` 或一个不存在的 Unicode 属性名就让整段脚本抛 SyntaxError，与"没有脚本"等价
         // （括号配平检查根本看不出来）。
-        "NO_SCRIPT" | "SCRIPT_UNBALANCED" | "SCRIPT_FENCE" | "UNCLOSED_TEMPLATE"
+        "NO_SCRIPT"
+        | "SCRIPT_UNBALANCED"
+        | "SCRIPT_FENCE"
+        | "UNCLOSED_TEMPLATE"
         | "REGEX_PROPERTY_INVALID" => 10,
         // 交互全废：按钮点下去抛 ReferenceError / 运行期必抛 DOM 异常，页面上什么都不会发生。
         "UNDEFINED_REFERENCE" | "FRAGILE_DOM_SWAP" => 9,
@@ -188,9 +191,7 @@ pub fn looks_degraded(original: &str, candidate: &str) -> Option<String> {
         let had = original.to_ascii_lowercase().contains(tag);
         let has = candidate.to_ascii_lowercase().contains(tag);
         if had && !has {
-            return Some(format!(
-                "原页面包含 {tag} 而改写后没有了（页面结构被破坏）"
-            ));
+            return Some(format!("原页面包含 {tag} 而改写后没有了（页面结构被破坏）"));
         }
     }
 
@@ -250,7 +251,9 @@ pub fn verify_page(html: &str, spec: &str) -> Vec<Issue> {
 
 /// 是否拦下了致命问题（决定要不要进修复轮次）。
 pub fn has_critical(issues: &[Issue]) -> bool {
-    issues.iter().any(|issue| issue.severity == Severity::Critical)
+    issues
+        .iter()
+        .any(|issue| issue.severity == Severity::Critical)
 }
 
 /// "页面看着齐全、其实点不动"的功能性缺陷。
@@ -299,7 +302,10 @@ pub fn has_functional_defect(issues: &[Issue]) -> bool {
 /// - 其余功能性缺陷 → 按加权和 ≥ 6 判：两条 `UNUSED_DATA_POOL`(3+3) 够，
 ///   一条单独的 `FEATURE_MISSING`(1) 或 `DEAD_FUNCTION`(1) 不够。
 pub fn functional_repair_worthwhile(issues: &[Issue]) -> bool {
-    let defects: Vec<&Issue> = issues.iter().filter(|issue| is_functional_defect(issue)).collect();
+    let defects: Vec<&Issue> = issues
+        .iter()
+        .filter(|issue| is_functional_defect(issue))
+        .collect();
     if defects.is_empty() {
         return false;
     }
@@ -404,10 +410,7 @@ fn check_data_source(script: &str, issues: &mut Vec<Issue>) {
     // 参数传进去的，函数体里当然看不到数组名（那是形参）。所以这里沿调用关系往下追一层
     // —— 只要随机函数拿到的是"吃过数据"的函数递过来的东西，就算数据真的用上了。
     let fed = data_fed_functions(&arrays, &functions);
-    if random_functions
-        .iter()
-        .any(|(name, _)| fed.contains(name))
-    {
+    if random_functions.iter().any(|(name, _)| fed.contains(name)) {
         return;
     }
 
@@ -1159,7 +1162,24 @@ fn regex_position(chars: &[char], at: usize) -> bool {
         }
         return matches!(
             ch,
-            '=' | '(' | '[' | '{' | ',' | ':' | ';' | '!' | '&' | '|' | '?' | '+' | '-' | '*' | '%' | '<' | '>' | '~' | '^'
+            '=' | '('
+                | '['
+                | '{'
+                | ','
+                | ':'
+                | ';'
+                | '!'
+                | '&'
+                | '|'
+                | '?'
+                | '+'
+                | '-'
+                | '*'
+                | '%'
+                | '<'
+                | '>'
+                | '~'
+                | '^'
         );
     }
     true
@@ -1361,47 +1381,225 @@ pub fn mask_non_code(script: &str) -> String {
 
 /// JS 保留字：不能当标识符用，也就不该出现在"被调用名字"里。
 const RESERVED: &[&str] = &[
-    "if", "for", "while", "switch", "catch", "function", "return", "typeof", "new", "class",
-    "const", "let", "var", "do", "else", "try", "finally", "delete", "void", "in", "of",
-    "instanceof", "case", "default", "break", "continue", "throw", "yield", "await", "async",
-    "static", "get", "set", "extends", "super", "this", "null", "true", "false", "undefined",
-    "NaN", "Infinity", "debugger", "with", "export", "import", "from", "as", "arguments",
+    "if",
+    "for",
+    "while",
+    "switch",
+    "catch",
+    "function",
+    "return",
+    "typeof",
+    "new",
+    "class",
+    "const",
+    "let",
+    "var",
+    "do",
+    "else",
+    "try",
+    "finally",
+    "delete",
+    "void",
+    "in",
+    "of",
+    "instanceof",
+    "case",
+    "default",
+    "break",
+    "continue",
+    "throw",
+    "yield",
+    "await",
+    "async",
+    "static",
+    "get",
+    "set",
+    "extends",
+    "super",
+    "this",
+    "null",
+    "true",
+    "false",
+    "undefined",
+    "NaN",
+    "Infinity",
+    "debugger",
+    "with",
+    "export",
+    "import",
+    "from",
+    "as",
+    "arguments",
 ];
 
 /// 浏览器/语言内置的全局对象与方法。出现这些名字是正常的，不算未定义。
 const GLOBALS: &[&str] = &[
-    "window", "document", "console", "Math", "JSON", "Date", "Array", "Object", "String",
-    "Number", "Boolean", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError", "Promise",
-    "Set", "Map", "WeakMap", "WeakSet", "Symbol", "BigInt", "Intl", "Proxy", "Reflect",
-    "globalThis", "event", "localStorage", "sessionStorage", "navigator", "location", "history",
-    "screen", "performance", "crypto", "caches", "Blob", "File", "FileReader", "FileList", "URL",
-    "URLSearchParams", "FormData", "Headers", "Request", "Response", "XMLHttpRequest", "fetch",
-    "WebSocket", "Worker", "Event", "CustomEvent", "MouseEvent", "KeyboardEvent", "TouchEvent",
-    "Node", "Element", "HTMLElement", "Image", "Audio", "Video", "MutationObserver",
-    "IntersectionObserver", "ResizeObserver", "TextEncoder", "TextDecoder", "setTimeout",
-    "clearTimeout", "setInterval", "clearInterval", "requestAnimationFrame",
-    "cancelAnimationFrame", "queueMicrotask", "structuredClone", "alert", "confirm", "prompt",
-    "print", "atob", "btoa", "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI",
-    "escape", "unescape", "isNaN", "isFinite", "parseFloat", "parseInt",
+    "window",
+    "document",
+    "console",
+    "Math",
+    "JSON",
+    "Date",
+    "Array",
+    "Object",
+    "String",
+    "Number",
+    "Boolean",
+    "RegExp",
+    "Error",
+    "TypeError",
+    "RangeError",
+    "SyntaxError",
+    "Promise",
+    "Set",
+    "Map",
+    "WeakMap",
+    "WeakSet",
+    "Symbol",
+    "BigInt",
+    "Intl",
+    "Proxy",
+    "Reflect",
+    "globalThis",
+    "event",
+    "localStorage",
+    "sessionStorage",
+    "navigator",
+    "location",
+    "history",
+    "screen",
+    "performance",
+    "crypto",
+    "caches",
+    "Blob",
+    "File",
+    "FileReader",
+    "FileList",
+    "URL",
+    "URLSearchParams",
+    "FormData",
+    "Headers",
+    "Request",
+    "Response",
+    "XMLHttpRequest",
+    "fetch",
+    "WebSocket",
+    "Worker",
+    "Event",
+    "CustomEvent",
+    "MouseEvent",
+    "KeyboardEvent",
+    "TouchEvent",
+    "Node",
+    "Element",
+    "HTMLElement",
+    "Image",
+    "Audio",
+    "Video",
+    "MutationObserver",
+    "IntersectionObserver",
+    "ResizeObserver",
+    "TextEncoder",
+    "TextDecoder",
+    "setTimeout",
+    "clearTimeout",
+    "setInterval",
+    "clearInterval",
+    "requestAnimationFrame",
+    "cancelAnimationFrame",
+    "queueMicrotask",
+    "structuredClone",
+    "alert",
+    "confirm",
+    "prompt",
+    "print",
+    "atob",
+    "btoa",
+    "encodeURIComponent",
+    "decodeURIComponent",
+    "encodeURI",
+    "decodeURI",
+    "escape",
+    "unescape",
+    "isNaN",
+    "isFinite",
+    "parseFloat",
+    "parseInt",
     // 剪贴板 / 文件 / 媒体 / 存储等浏览器内置构造器。
     //
     // 实测漏掉 `ClipboardItem` 的代价很大：产物里 `new ClipboardItem({...})` 被当成"调用了
     // 从未定义的函数"，于是整段重写脚本、又整段重写一次，两轮共 160 秒全花在一个并不存在的
     // 缺陷上（真正的缺陷被挤到后面才轮到）。这类"全局构造器"必须认全。
-    "ClipboardItem", "Clipboard", "ImageData", "ImageBitmap", "OffscreenCanvas",
-    "AbortController", "AbortSignal", "DOMException", "DOMParser", "XMLSerializer",
-    "MediaRecorder", "MediaStream", "AudioContext", "SpeechSynthesisUtterance",
-    "Notification", "ServiceWorker", "BroadcastChannel", "MessageChannel", "SharedWorker",
-    "FontFace", "CSS", "CSSStyleSheet", "CustomElementRegistry", "Range", "Selection",
-    "TreeWalker", "NodeIterator", "DocumentFragment", "ShadowRoot", "HTMLCanvasElement",
-    "HTMLImageElement", "HTMLInputElement", "IDBKeyRange", "indexedDB", "openDatabase",
-    "Audio", "Path2D", "DOMMatrix", "TextMetrics", "PointerEvent", "WheelEvent",
-    "DragEvent", "InputEvent", "FocusEvent", "AnimationEvent", "TransitionEvent",
-    "StorageEvent", "MessageEvent", "ErrorEvent", "ProgressEvent", "CloseEvent",
-    "WebGLRenderingContext", "AudioBuffer", "ImageCapture", "EyeDropper", "CompressionStream",
-    "DecompressionStream", "ReadableStream", "WritableStream", "TransformStream",
-    "crypto", "subtle", "queueMicrotask", "reportError", "matchMedia",
-    "getComputedStyle", "requestIdleCallback", "cancelIdleCallback", "scrollTo", "scrollBy",
+    "ClipboardItem",
+    "Clipboard",
+    "ImageData",
+    "ImageBitmap",
+    "OffscreenCanvas",
+    "AbortController",
+    "AbortSignal",
+    "DOMException",
+    "DOMParser",
+    "XMLSerializer",
+    "MediaRecorder",
+    "MediaStream",
+    "AudioContext",
+    "SpeechSynthesisUtterance",
+    "Notification",
+    "ServiceWorker",
+    "BroadcastChannel",
+    "MessageChannel",
+    "SharedWorker",
+    "FontFace",
+    "CSS",
+    "CSSStyleSheet",
+    "CustomElementRegistry",
+    "Range",
+    "Selection",
+    "TreeWalker",
+    "NodeIterator",
+    "DocumentFragment",
+    "ShadowRoot",
+    "HTMLCanvasElement",
+    "HTMLImageElement",
+    "HTMLInputElement",
+    "IDBKeyRange",
+    "indexedDB",
+    "openDatabase",
+    "Audio",
+    "Path2D",
+    "DOMMatrix",
+    "TextMetrics",
+    "PointerEvent",
+    "WheelEvent",
+    "DragEvent",
+    "InputEvent",
+    "FocusEvent",
+    "AnimationEvent",
+    "TransitionEvent",
+    "StorageEvent",
+    "MessageEvent",
+    "ErrorEvent",
+    "ProgressEvent",
+    "CloseEvent",
+    "WebGLRenderingContext",
+    "AudioBuffer",
+    "ImageCapture",
+    "EyeDropper",
+    "CompressionStream",
+    "DecompressionStream",
+    "ReadableStream",
+    "WritableStream",
+    "TransformStream",
+    "crypto",
+    "subtle",
+    "queueMicrotask",
+    "reportError",
+    "matchMedia",
+    "getComputedStyle",
+    "requestIdleCallback",
+    "cancelIdleCallback",
+    "scrollTo",
+    "scrollBy",
 ];
 
 fn is_reserved(name: &str) -> bool {
@@ -1558,16 +1756,18 @@ fn defined_names(code: &str) -> Vec<String> {
 }
 
 /// 把 `open` 处 `(...)` 里的名字收成形参并返回右括号下标；`open` 不是左括号则返回 `None`。
-fn collect_params(tokens: &[(String, bool)], open: usize, names: &mut Vec<String>) -> Option<usize> {
+fn collect_params(
+    tokens: &[(String, bool)],
+    open: usize,
+    names: &mut Vec<String>,
+) -> Option<usize> {
     let (text, is_ident) = tokens.get(open)?;
     if *is_ident || text != "(" {
         return None;
     }
     let close = matching(tokens, open)?;
     for (inner, inner_is_ident) in &tokens[open + 1..close] {
-        if *inner_is_ident
-            && !is_reserved(inner)
-            && !names.iter().any(|existing| existing == inner)
+        if *inner_is_ident && !is_reserved(inner) && !names.iter().any(|existing| existing == inner)
         {
             names.push(inner.clone());
         }
@@ -1687,7 +1887,9 @@ pub fn appendix_conflicts(html: &str, appendix: &str) -> Vec<String> {
             continue;
         }
         if let Some((name, name_is_ident)) = tokens.get(index + 1) {
-            if *name_is_ident && existing.iter().any(|item| item == name) && !conflicts.contains(name)
+            if *name_is_ident
+                && existing.iter().any(|item| item == name)
+                && !conflicts.contains(name)
             {
                 conflicts.push(name.clone());
             }
@@ -1951,8 +2153,16 @@ fn restart_cuts(script: &str) -> Vec<usize> {
 }
 
 /// 自认是桩的痕迹。
-fn check_placeholder(script: &str, issues: &mut Vec<Issue>) {    let lower = script.to_ascii_lowercase();
-    let markers = ["模拟数据", "示例数据", "假数据", "待实现", "暂未实现", "此处应有"];
+fn check_placeholder(script: &str, issues: &mut Vec<Issue>) {
+    let lower = script.to_ascii_lowercase();
+    let markers = [
+        "模拟数据",
+        "示例数据",
+        "假数据",
+        "待实现",
+        "暂未实现",
+        "此处应有",
+    ];
     let mut hit: Vec<&str> = markers
         .iter()
         .copied()
@@ -2045,7 +2255,10 @@ fn check_fragile_dom_swap(script: &str, issues: &mut Vec<Issue>) {
 /// 反引号在 JS 里开启模板字符串，于是浏览器报 `SyntaxError: Unexpected template string`，
 /// **整段脚本一行都不执行** —— 所有按钮集体失灵，而括号配平检查报的是"正常"。
 fn check_script_fences(script: &str, issues: &mut Vec<Issue>) {
-    let hits = script.lines().filter(|line| line.trim_start().starts_with("```")).count();
+    let hits = script
+        .lines()
+        .filter(|line| line.trim_start().starts_with("```"))
+        .count();
     if hits == 0 {
         return;
     }
@@ -2377,7 +2590,9 @@ pub fn external_dependencies(html: &str) -> Vec<String> {
             let at = from + relative + attribute.len();
             let rest = &html[at..];
             let value: String = match rest.chars().next() {
-                Some(quote @ ('"' | '\'')) => rest[1..].chars().take_while(|ch| *ch != quote).collect(),
+                Some(quote @ ('"' | '\'')) => {
+                    rest[1..].chars().take_while(|ch| *ch != quote).collect()
+                }
                 _ => rest
                     .chars()
                     .take_while(|ch| !ch.is_whitespace() && *ch != '>')
@@ -2397,13 +2612,17 @@ pub fn external_dependencies(html: &str) -> Vec<String> {
     let mut from = 0usize;
     while let Some(relative) = lower[from..].find("<link") {
         let open = from + relative;
-        let Some(gt) = lower[open..].find('>') else { break };
+        let Some(gt) = lower[open..].find('>') else {
+            break;
+        };
         let tag = &html[open..open + gt];
         let tag_lower = &lower[open..open + gt];
         if let Some(position) = tag_lower.find("href=") {
             let rest = &tag[position + 5..];
             let value: String = match rest.chars().next() {
-                Some(quote @ ('"' | '\'')) => rest[1..].chars().take_while(|ch| *ch != quote).collect(),
+                Some(quote @ ('"' | '\'')) => {
+                    rest[1..].chars().take_while(|ch| *ch != quote).collect()
+                }
                 _ => rest
                     .chars()
                     .take_while(|ch| !ch.is_whitespace() && *ch != '>')
@@ -2516,7 +2735,11 @@ fn replace_identifier_calls(script: &str, from: &str, to: &str) -> String {
         }
         // 前面必须不是标识符字符；`.alert(` 要区分是 `obj.alert(` 还是 `window.alert(`
         // —— 后者仍然是原生弹窗，也要改写。
-        let prev = if index == 0 { None } else { Some(chars[index - 1]) };
+        let prev = if index == 0 {
+            None
+        } else {
+            Some(chars[index - 1])
+        };
         let is_prefixed = prev
             .map(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
             .unwrap_or(false);
@@ -2538,7 +2761,11 @@ fn member_base_is_global(chars: &[char], dot: usize) -> bool {
         return false;
     }
     let mut start = dot;
-    while start > 0 && (chars[start - 1].is_ascii_alphanumeric() || chars[start - 1] == '_' || chars[start - 1] == '$') {
+    while start > 0
+        && (chars[start - 1].is_ascii_alphanumeric()
+            || chars[start - 1] == '_'
+            || chars[start - 1] == '$')
+    {
         start -= 1;
     }
     let base: String = chars[start..dot].iter().collect();
@@ -2595,16 +2822,73 @@ fn check_regex_property(script: &str, issues: &mut Vec<Issue>) {
 /// 以及 `\p{L}`、`\p{Letter}`、`\p{Alphabetic}` 这类属性名本身。其余一律算错。
 fn invalid_regex_properties(script: &str) -> Vec<String> {
     const BINARY: &[&str] = &[
-        "Alphabetic", "Any", "ASCII", "Assigned", "Cased", "Case_Ignorable",
-        "Changes_When_Lowercased", "Changes_When_Uppercased", "Default_Ignorable_Code_Point",
-        "ID_Continue", "ID_Start", "Lowercase", "Uppercase", "White_Space",
+        "Alphabetic",
+        "Any",
+        "ASCII",
+        "Assigned",
+        "Cased",
+        "Case_Ignorable",
+        "Changes_When_Lowercased",
+        "Changes_When_Uppercased",
+        "Default_Ignorable_Code_Point",
+        "ID_Continue",
+        "ID_Start",
+        "Lowercase",
+        "Uppercase",
+        "White_Space",
         // 广义类别名（长写与缩写）
-        "Letter", "Lowercase_Letter", "Uppercase_Letter", "Titlecase_Letter",
-        "Modifier_Letter", "Other_Letter", "Number", "Decimal_Number", "Letter_Number",
-        "Other_Number", "Mark", "Punctuation", "Separator", "Symbol", "Other",
-        "L", "Lu", "Ll", "Lt", "Lm", "Lo", "M", "Mn", "Mc", "Me", "N", "Nd", "Nl", "No",
-        "P", "Pc", "Pd", "Ps", "Pe", "Pi", "Pf", "Po", "S", "Sm", "Sc", "Sk", "So",
-        "Z", "Zs", "Zl", "Zp", "C", "Cc", "Cf", "Cs", "Co", "Cn",
+        "Letter",
+        "Lowercase_Letter",
+        "Uppercase_Letter",
+        "Titlecase_Letter",
+        "Modifier_Letter",
+        "Other_Letter",
+        "Number",
+        "Decimal_Number",
+        "Letter_Number",
+        "Other_Number",
+        "Mark",
+        "Punctuation",
+        "Separator",
+        "Symbol",
+        "Other",
+        "L",
+        "Lu",
+        "Ll",
+        "Lt",
+        "Lm",
+        "Lo",
+        "M",
+        "Mn",
+        "Mc",
+        "Me",
+        "N",
+        "Nd",
+        "Nl",
+        "No",
+        "P",
+        "Pc",
+        "Pd",
+        "Ps",
+        "Pe",
+        "Pi",
+        "Pf",
+        "Po",
+        "S",
+        "Sm",
+        "Sc",
+        "Sk",
+        "So",
+        "Z",
+        "Zs",
+        "Zl",
+        "Zp",
+        "C",
+        "Cc",
+        "Cf",
+        "Cs",
+        "Co",
+        "Cn",
     ];
     let mut out: Vec<String> = Vec::new();
     let chars: Vec<char> = script.chars().collect();
@@ -2642,8 +2926,21 @@ fn invalid_regex_properties(script: &str) -> Vec<String> {
 /// 其余不动（会由 `REGEX_PROPERTY_INVALID` 报给模型处理）。
 pub fn fix_regex_properties(script: &str) -> Option<String> {
     const SCRIPTS: &[&str] = &[
-        "Han", "Latin", "Greek", "Cyrillic", "Arabic", "Hebrew", "Thai", "Hiragana",
-        "Katakana", "Hangul", "Devanagari", "Armenian", "Georgian", "Bengali", "Tamil",
+        "Han",
+        "Latin",
+        "Greek",
+        "Cyrillic",
+        "Arabic",
+        "Hebrew",
+        "Thai",
+        "Hiragana",
+        "Katakana",
+        "Hangul",
+        "Devanagari",
+        "Armenian",
+        "Georgian",
+        "Bengali",
+        "Tamil",
     ];
     let mut out = script.to_string();
     let mut changed = false;
@@ -2718,9 +3015,12 @@ fn check_buttons(html: &str, script: &str, issues: &mut Vec<Issue>) {
             // 与"没有脚本"（NO_SCRIPT）是同一件事，不该只当提示。过去它只是 Major，
             // 于是"页面画得完整、按钮全不响应"的成品会被直接交付给用户。
             severity: Severity::Critical,
-            detail: format!("页面有 {buttons} 处按钮，但脚本里没有任何事件绑定，点下去不会有反应。"),
-            fix: "给每个按钮绑定点击事件，事件里要做真实的状态变化（生成、复制、收藏、切换主题等）。"
-                .to_string(),
+            detail: format!(
+                "页面有 {buttons} 处按钮，但脚本里没有任何事件绑定，点下去不会有反应。"
+            ),
+            fix:
+                "给每个按钮绑定点击事件，事件里要做真实的状态变化（生成、复制、收藏、切换主题等）。"
+                    .to_string(),
         });
     }
 }
@@ -2901,9 +3201,9 @@ pub fn function_spans(script: &str) -> Vec<(String, usize, usize)> {
 /// 有悬空调用 / 按钮没绑事件时，先走就地补写路线（那会让整页点不动，优先级更高）。
 /// 也没有严重级的 `UNUSED_DATA_POOL` 时返回 `None` —— 那就没这个可修的。
 pub fn function_patch_plan(html: &str, issues: &[Issue]) -> Option<Vec<String>> {
-    let has_worse = issues.iter().any(|issue| {
-        issue.code == "UNDEFINED_REFERENCE" || issue.code == "BUTTON_NO_HANDLER"
-    });
+    let has_worse = issues
+        .iter()
+        .any(|issue| issue.code == "UNDEFINED_REFERENCE" || issue.code == "BUTTON_NO_HANDLER");
     if has_worse {
         return None;
     }
@@ -2989,7 +3289,9 @@ fn select_option_values(html: &str) -> Vec<String> {
             .unwrap_or_else(|| text.clone());
         let value = value.trim().to_string();
 
-        let has_cjk = value.chars().any(|ch| matches!(ch, '\u{4E00}'..='\u{9FFF}'));
+        let has_cjk = value
+            .chars()
+            .any(|ch| matches!(ch, '\u{4E00}'..='\u{9FFF}'));
         if has_cjk && !values.contains(&value) {
             values.push(value);
         }
@@ -3104,7 +3406,8 @@ fn check_feature_coverage(html: &str, spec: &str, issues: &mut Vec<Issue>) {
         if !in_features || trimmed.is_empty() {
             continue;
         }
-        let text = trimmed.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '、');
+        let text =
+            trimmed.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == '、');
         let text = text.trim_start();
         let text = if text.starts_with('[') {
             match text.find(']') {
@@ -3320,7 +3623,8 @@ fn contains_sequence(haystack: &[char], needle: &[char]) -> bool {
     if needle.len() > haystack.len() {
         return false;
     }
-    (0..=haystack.len() - needle.len()).any(|start| haystack[start..start + needle.len()] == needle[..])
+    (0..=haystack.len() - needle.len())
+        .any(|start| haystack[start..start + needle.len()] == needle[..])
 }
 
 /// 短语里第一段连续中文（≥2 字），用作功能关键词。
@@ -3391,7 +3695,9 @@ document.getElementById("go").onclick = () => { document.getElementById("out").t
     fn catches_generator_ignoring_data() {
         let issues = verify_page(STUB_PAGE, "");
         assert!(
-            issues.iter().any(|issue| issue.code == "GENERATOR_IGNORES_DATA"),
+            issues
+                .iter()
+                .any(|issue| issue.code == "GENERATOR_IGNORES_DATA"),
             "必须识别出生成函数没读数据数组：{issues:?}"
         );
         assert!(has_critical(&issues));
@@ -3461,7 +3767,10 @@ function revealConsequence() {
     #[test]
     fn dead_link_fix_rewrites_to_hash_route() {
         let fixed = fix_dead_links(LEGACY_PAGE).expect("应当有可修复的死链");
-        assert!(fixed.contains("href=\"#/daily\""), "绝对路径要改成 hash 路由");
+        assert!(
+            fixed.contains("href=\"#/daily\""),
+            "绝对路径要改成 hash 路由"
+        );
         assert!(!fixed.contains("href=\"/daily\""), "原绝对路径必须消失");
         assert!(dead_links(&fixed).is_empty(), "修完之后不应再报死链");
     }
@@ -3469,7 +3778,10 @@ function revealConsequence() {
     #[test]
     fn does_not_flag_hash_external_and_mail_links() {
         let page = r##"<a href="#/daily">今日</a><a href="https://example.com">外链</a><a href="mailto:x@y.z">邮件</a><a href="//cdn.example.com/a.js">协议相对</a>"##;
-        assert!(dead_links(page).is_empty(), "hash / 外链 / mailto 不应被误报");
+        assert!(
+            dead_links(page).is_empty(),
+            "hash / 外链 / mailto 不应被误报"
+        );
     }
 
     #[test]
@@ -3478,7 +3790,10 @@ function revealConsequence() {
 <script>function roll(){ return Math.floor(Math.random()*100); }
 document.getElementById("go").onclick = roll;</script></body></html>"#;
         let issues = verify_page(page, "");
-        assert!(issues.iter().any(|issue| issue.code == "NO_DATA_SOURCE"), "{issues:?}");
+        assert!(
+            issues.iter().any(|issue| issue.code == "NO_DATA_SOURCE"),
+            "{issues:?}"
+        );
     }
 
     #[test]
@@ -3486,7 +3801,10 @@ document.getElementById("go").onclick = roll;</script></body></html>"#;
         let page = r#"<html><body><button>生成</button><button>收藏</button>
 <script>const a = 1;</script></body></html>"#;
         let issues = verify_page(page, "");
-        assert!(issues.iter().any(|issue| issue.code == "BUTTON_NO_HANDLER"), "{issues:?}");
+        assert!(
+            issues.iter().any(|issue| issue.code == "BUTTON_NO_HANDLER"),
+            "{issues:?}"
+        );
     }
 
     #[test]
@@ -3563,7 +3881,9 @@ document.getElementById("go").onclick = copyImage;
 </script></body></html>"#;
         let issues = verify_page(page, "");
         assert!(
-            !issues.iter().any(|issue| issue.code == "UNDEFINED_REFERENCE"),
+            !issues
+                .iter()
+                .any(|issue| issue.code == "UNDEFINED_REFERENCE"),
             "浏览器内置构造器被当成悬空调用了：{issues:?}"
         );
     }
@@ -3581,7 +3901,9 @@ document.getElementById("go").onclick = roll;</script></body></html>"#;
         assert!(found[0].contains("chart.googleapis.com"), "{found:?}");
         let issues = verify_page(page, "");
         assert!(
-            issues.iter().any(|issue| issue.code == "EXTERNAL_DEPENDENCY"),
+            issues
+                .iter()
+                .any(|issue| issue.code == "EXTERNAL_DEPENDENCY"),
             "{issues:?}"
         );
     }
@@ -3598,7 +3920,9 @@ document.getElementById("go").onclick = roll;</script></body></html>"##;
         assert!(external_dependencies(page).is_empty());
         let issues = verify_page(page, "");
         assert!(
-            !issues.iter().any(|issue| issue.code == "EXTERNAL_DEPENDENCY"),
+            !issues
+                .iter()
+                .any(|issue| issue.code == "EXTERNAL_DEPENDENCY"),
             "{issues:?}"
         );
     }
@@ -3658,7 +3982,9 @@ document.getElementById("go").onclick = roll;</script></body></html>"##;
             "{issues:?}"
         );
         assert!(
-            !issues.iter().any(|issue| issue.code == "UNDEFINED_REFERENCE"),
+            !issues
+                .iter()
+                .any(|issue| issue.code == "UNDEFINED_REFERENCE"),
             "补的提示条实现不能被当成悬空调用：{issues:?}"
         );
     }
@@ -3684,7 +4010,9 @@ document.getElementById("go").onclick = roll;</script></body></html>"##;
         );
         let issues = verify_page(&page, "");
         assert!(
-            issues.iter().any(|issue| issue.code == "REGEX_PROPERTY_INVALID"),
+            issues
+                .iter()
+                .any(|issue| issue.code == "REGEX_PROPERTY_INVALID"),
             "{issues:?}"
         );
         assert!(has_critical(&issues));
@@ -3695,7 +4023,9 @@ document.getElementById("go").onclick = roll;</script></body></html>"##;
         let fixed_page = page.replace(script, &fixed_script);
         let after = verify_page(&fixed_page, "");
         assert!(
-            !after.iter().any(|issue| issue.code == "REGEX_PROPERTY_INVALID"),
+            !after
+                .iter()
+                .any(|issue| issue.code == "REGEX_PROPERTY_INVALID"),
             "{after:?}"
         );
     }
@@ -3824,13 +4154,22 @@ document.getElementById("go").onclick = function () {
 };
 </script></body></html>"#;
         let fixed = crate::webgen::strip_script_fences(page).expect("应当识别出围栏并修复");
-        assert!(!fixed.lines().any(|line| line.trim_start().starts_with("```")));
+        assert!(!fixed
+            .lines()
+            .any(|line| line.trim_start().starts_with("```")));
         assert!(fixed.contains("});"), "围栏后面粘着的代码要保留：{fixed}");
         assert!(fixed.contains("function generateOptions()"), "{fixed}");
-        assert!(fixed.contains("con\n"), "截断的半句要保持原样，不能凭空补全：{fixed}");
+        assert!(
+            fixed.contains("con\n"),
+            "截断的半句要保持原样，不能凭空补全：{fixed}"
+        );
 
         let script = crate::webgen::merged_script(&fixed);
-        assert_eq!(crate::webgen::dom::stray_backticks(&script) % 2, 0, "{script}");
+        assert_eq!(
+            crate::webgen::dom::stray_backticks(&script) % 2,
+            0,
+            "{script}"
+        );
         let issues = verify_page(&fixed, "");
         assert!(
             !issues
@@ -3885,7 +4224,10 @@ function roll() { return 1; }
 document.getElementById("go").onclick = roll;
 </script></body></html>"#;
         let issues = verify_page(page, "");
-        assert!(issues.iter().any(|issue| issue.code == "SCRIPT_FENCE"), "{issues:?}");
+        assert!(
+            issues.iter().any(|issue| issue.code == "SCRIPT_FENCE"),
+            "{issues:?}"
+        );
         assert!(has_critical(&issues));
     }
 
@@ -4051,9 +4393,7 @@ document.getElementById("go").onclick = roll;
 </script></body></html>"#;
         let issues = verify_page(page, "");
         assert!(
-            issues
-                .iter()
-                .any(|issue| issue.code == "SCRIPT_UNBALANCED"),
+            issues.iter().any(|issue| issue.code == "SCRIPT_UNBALANCED"),
             "必须识别出括号不配平：{issues:?}"
         );
         assert!(has_critical(&issues));
@@ -4072,9 +4412,7 @@ document.getElementById("go").onclick = roll;
 </script></body></html>"#;
         let issues = verify_page(page, "");
         assert!(
-            !issues
-                .iter()
-                .any(|issue| issue.code == "SCRIPT_UNBALANCED"),
+            !issues.iter().any(|issue| issue.code == "SCRIPT_UNBALANCED"),
             "正则里的引号不该误报：{issues:?}"
         );
     }
@@ -4084,7 +4422,10 @@ document.getElementById("go").onclick = roll;
         let spec = "## 功能需求\n1. [P0] 生成名字 —— 随机产生\n2. [P0] 收藏列表 —— 保存\n3. [P0] 关键词筛选 —— 过滤\n4. [P0] 主题切换 —— 深浅色\n5. [P0] 一键复制 —— 复制到剪贴板";
         let page = "<html><body><div>只有一个空页面</div></body></html>";
         let issues = verify_page(page, spec);
-        assert!(issues.iter().any(|issue| issue.code == "FEATURE_MISSING"), "{issues:?}");
+        assert!(
+            issues.iter().any(|issue| issue.code == "FEATURE_MISSING"),
+            "{issues:?}"
+        );
     }
 
     #[test]
@@ -4107,7 +4448,10 @@ document.getElementById("go").onclick = roll;
     #[test]
     fn extracts_top_level_arrays() {
         let script = "const a = [1]; let b = {x:1}; var c = [2]; const d = 'x';";
-        assert_eq!(top_level_arrays(script), vec!["a".to_string(), "c".to_string()]);
+        assert_eq!(
+            top_level_arrays(script),
+            vec!["a".to_string(), "c".to_string()]
+        );
     }
 
     #[test]
@@ -4121,7 +4465,8 @@ document.getElementById("go").onclick = roll;
     #[test]
     fn window_scan_is_multibyte_safe() {
         // 混合中文的脚本不能因为按字节切窗而 panic。
-        let script = "function f(){ const 名字 = Math.random(); return String.fromCharCode(名字); }";
+        let script =
+            "function f(){ const 名字 = Math.random(); return String.fromCharCode(名字); }";
         assert!(appears_nearby(script, "fromcharcode", "math.random", 400));
     }
 
@@ -4160,8 +4505,16 @@ document.getElementById("go").onclick = () => { generateSingleName(3, "古风");
             .unwrap_or_else(|| panic!("必须识别出悬空调用：{issues:?}"));
         assert_eq!(found.severity, Severity::Critical);
         // 三个悬空名字都要点到，且不能把已定义/内置的名字算进来。
-        assert!(found.detail.contains("generateGeneralName"), "{}", found.detail);
-        assert!(found.detail.contains("generateBaseName"), "{}", found.detail);
+        assert!(
+            found.detail.contains("generateGeneralName"),
+            "{}",
+            found.detail
+        );
+        assert!(
+            found.detail.contains("generateBaseName"),
+            "{}",
+            found.detail
+        );
         assert!(found.detail.contains("calculateRank"), "{}", found.detail);
         assert!(!found.detail.contains("pickOne"), "{}", found.detail);
         assert!(!found.detail.contains("Math"), "{}", found.detail);
@@ -4181,7 +4534,9 @@ document.getElementById("go").onclick = () => {
 </script></body></html>"#;
         let issues = verify_page(page, "");
         assert!(
-            !issues.iter().any(|issue| issue.code == "UNDEFINED_REFERENCE"),
+            !issues
+                .iter()
+                .any(|issue| issue.code == "UNDEFINED_REFERENCE"),
             "不该误报：{issues:?}"
         );
     }
@@ -4201,7 +4556,9 @@ document.getElementById("go").onclick = () => {
 </script></body></html>"#;
         let issues = verify_page(page, "");
         assert!(
-            !issues.iter().any(|issue| issue.code == "UNDEFINED_REFERENCE"),
+            !issues
+                .iter()
+                .any(|issue| issue.code == "UNDEFINED_REFERENCE"),
             "字符串/注释里的名字不该误报：{issues:?}"
         );
     }
@@ -4217,7 +4574,9 @@ document.getElementById("go").onclick = () => { document.getElementById("out").t
 </script></body></html>"#;
         let issues = verify_page(page, "");
         assert!(
-            !issues.iter().any(|issue| issue.code == "DUPLICATE_FUNCTION"),
+            !issues
+                .iter()
+                .any(|issue| issue.code == "DUPLICATE_FUNCTION"),
             "不同作用域的同名局部函数是合法的：{issues:?}"
         );
     }
@@ -4244,7 +4603,9 @@ function generateHalfBaked(length) {
     fn catches_two_generations_of_the_same_function() {
         let issues = verify_page(RESTARTED_PAGE, "");
         assert!(
-            issues.iter().any(|issue| issue.code == "DUPLICATE_FUNCTION"),
+            issues
+                .iter()
+                .any(|issue| issue.code == "DUPLICATE_FUNCTION"),
             "必须识别出重开一篇留下的同名函数：{issues:?}"
         );
     }
@@ -4255,11 +4616,17 @@ function generateHalfBaked(length) {
         // 退回去之后：后一代的残品连同它的悬空调用一起消失。
         assert!(!fixed.contains("generateHalfBaked"), "{fixed}");
         let script = crate::webgen::dom::merged_script(&fixed);
-        assert!(undefined_calls(&script).is_empty(), "{:?}", undefined_calls(&script));
+        assert!(
+            undefined_calls(&script).is_empty(),
+            "{:?}",
+            undefined_calls(&script)
+        );
         let issues = verify_page(&fixed, "");
         assert!(
-            !issues.iter().any(|issue| issue.code == "DUPLICATE_FUNCTION"
-                || issue.code == "UNDEFINED_REFERENCE"),
+            !issues
+                .iter()
+                .any(|issue| issue.code == "DUPLICATE_FUNCTION"
+                    || issue.code == "UNDEFINED_REFERENCE"),
             "退回后应当是自洽的：{issues:?}"
         );
         // 视觉部分一个字节都不该动。
@@ -4301,9 +4668,14 @@ function generateNames() { return generateBogus(3); }
         );
 
         // 已经兜过底的不动。
-        assert!(fix_null_storage_reads("const a = (localStorage.getItem('h') || '').split(',');").is_none());
+        assert!(
+            fix_null_storage_reads("const a = (localStorage.getItem('h') || '').split(',');")
+                .is_none()
+        );
         // `JSON.parse(null)` 不抛，不该误报。
-        assert!(fix_null_storage_reads("const a = JSON.parse(localStorage.getItem('h'));").is_none());
+        assert!(
+            fix_null_storage_reads("const a = JSON.parse(localStorage.getItem('h'));").is_none()
+        );
         // 只是赋值也不该报。
         assert!(fix_null_storage_reads("const a = localStorage.getItem('h');").is_none());
 
@@ -4408,7 +4780,9 @@ document.getElementById("go").onclick = () => {
 </script></body></html>"#;
         let issues = verify_page(missing_fn, "");
         assert!(
-            issues.iter().any(|issue| issue.code == "UNDEFINED_REFERENCE"),
+            issues
+                .iter()
+                .any(|issue| issue.code == "UNDEFINED_REFERENCE"),
             "{issues:?}"
         );
         assert_eq!(function_appendix_plan(&issues), Some(false));
@@ -4426,8 +4800,14 @@ function roll() { return pickOne(words); }
 </script></body></html>"#;
         let issues = verify_page(unbound, "");
         assert!(has_critical(&issues), "按钮全无绑定应当被拦下：{issues:?}");
-        assert!(has_functional_defect(&issues), "这属于功能性缺陷：{issues:?}");
-        assert!(functional_repair_worthwhile(&issues), "够格再跑一轮修复：{issues:?}");
+        assert!(
+            has_functional_defect(&issues),
+            "这属于功能性缺陷：{issues:?}"
+        );
+        assert!(
+            functional_repair_worthwhile(&issues),
+            "够格再跑一轮修复：{issues:?}"
+        );
         assert_eq!(function_appendix_plan(&issues), Some(true));
 
         // 脚本被截断这种得整段重写，就地补写救不了。
@@ -4437,7 +4817,8 @@ function roll() { return pickOne(words); }
     }
 
     #[test]
-    fn keeps_the_append_route_alive_when_a_pool_is_also_unused() {        // 实测原样（端到端第 4 轮）：同时报 `UNDEFINED_REFERENCE`（缺 7 个函数）与
+    fn keeps_the_append_route_alive_when_a_pool_is_also_unused() {
+        // 实测原样（端到端第 4 轮）：同时报 `UNDEFINED_REFERENCE`（缺 7 个函数）与
         // `UNUSED_DATA_POOL`（3 个数组没人读）。第二条严重问题一度把就地补写这条唯一可行
         // 的路线掐掉了，接着定点替换与整段重写都走不通，最后**交付了点了没反应的坏页面**。
         // 实际上缺的函数正是该去读那些数组的人，补写它们两个问题一起消失。
@@ -4454,13 +4835,13 @@ document.getElementById("go").onclick = start;
 </script></body></html>"#;
         let issues = verify_page(page, "");
         assert!(
-            issues.iter().any(|issue| issue.code == "UNDEFINED_REFERENCE"),
+            issues
+                .iter()
+                .any(|issue| issue.code == "UNDEFINED_REFERENCE"),
             "{issues:?}"
         );
         assert!(
-            issues
-                .iter()
-                .any(|issue| issue.code == "UNUSED_DATA_POOL"),
+            issues.iter().any(|issue| issue.code == "UNUSED_DATA_POOL"),
             "{issues:?}"
         );
         assert_eq!(
@@ -4557,8 +4938,10 @@ document.addEventListener("DOMContentLoaded", () => {
     };
 });
 </script></body></html>"#;
-        assert!(close_truncated_tail(&crate::webgen::dom::merged_script(healthy)).is_none()
-            || salvage_truncated_script(healthy).is_none());
+        assert!(
+            close_truncated_tail(&crate::webgen::dom::merged_script(healthy)).is_none()
+                || salvage_truncated_script(healthy).is_none()
+        );
         assert!(salvage_truncated_script(healthy).is_none());
     }
 
@@ -4627,15 +5010,14 @@ document.getElementById("go").onclick = () => { generateNames(); };
 </script></body></html>"#;
         let issues = verify_page(page, "");
         assert!(
-            issues
-                .iter()
-                .any(|issue| issue.code == "UNUSED_DATA_POOL" && issue.detail.contains("unusedPool")),
+            issues.iter().any(
+                |issue| issue.code == "UNUSED_DATA_POOL" && issue.detail.contains("unusedPool")
+            ),
             "必须报出从未被读取的词库：{issues:?}"
         );
         assert!(
-            !issues
-                .iter()
-                .any(|issue| issue.code == "UNUSED_DATA_POOL" && issue.detail.contains("ancientPrefixes")),
+            !issues.iter().any(|issue| issue.code == "UNUSED_DATA_POOL"
+                && issue.detail.contains("ancientPrefixes")),
             "真正被用到的词库不能误报：{issues:?}"
         );
     }
@@ -4670,7 +5052,11 @@ document.getElementById("go").onclick = () => { generateNames(); };
             .unwrap_or_else(|| panic!("必须报出没有分支的场景选项：{issues:?}"));
         assert!(issue.detail.contains("网名"), "{}", issue.detail);
         assert!(issue.detail.contains("游戏ID"), "{}", issue.detail);
-        assert!(!issue.detail.contains("店铺名"), "有分支的选项不能误报：{}", issue.detail);
+        assert!(
+            !issue.detail.contains("店铺名"),
+            "有分支的选项不能误报：{}",
+            issue.detail
+        );
     }
 
     #[test]
@@ -4827,7 +5213,10 @@ document.getElementById("go").onclick = () => { generateNames(); };
         // 模板串里的 `{` 不该把第二个函数的边界带偏。
         let (_, start, end) = spans[1].clone();
         let slice: String = chars[start..end].iter().collect();
-        assert!(slice.contains("模板"), "第二个函数应当完整包含模板串：{slice:?}");
+        assert!(
+            slice.contains("模板"),
+            "第二个函数应当完整包含模板串：{slice:?}"
+        );
     }
 
     #[test]
@@ -4880,7 +5269,10 @@ function toggleFav() { return null; }
             "三个按钮零绑定必须被抓到：{issues:?}"
         );
         assert!(has_critical(&issues), "必须拦住而不是放行：{issues:?}");
-        assert!(functional_repair_worthwhile(&issues), "必须值得再跑一轮修复");
+        assert!(
+            functional_repair_worthwhile(&issues),
+            "必须值得再跑一轮修复"
+        );
         // 走"就地补写"：把绑定补进脚本末尾，而不是重写整页。
         assert!(function_appendix_plan(&issues).is_some());
     }
@@ -4964,13 +5356,19 @@ function helperNeverUsed() { return 1; }
         // 模型只回了一个片段当整页 —— 正是实测那次：18918 → 3006 字，body/script 全丢。
         let fragment = format!("<html><head><style>{}</style>", "a".repeat(2900));
         let reason = looks_degraded(&original, &fragment).expect("必须判定为退化");
-        assert!(reason.contains("<body") || reason.contains("不足"), "{reason}");
+        assert!(
+            reason.contains("<body") || reason.contains("不足"),
+            "{reason}"
+        );
     }
 
     /// 结构丢失单独也要能判出来（哪怕体量没骤降）。
     #[test]
     fn catches_a_page_that_lost_its_script() {
-        let original = format!("<html><body><p>{}</p></body><script>init()</script></html>", "x".repeat(1000));
+        let original = format!(
+            "<html><body><p>{}</p></body><script>init()</script></html>",
+            "x".repeat(1000)
+        );
         let stripped = format!("<html><body><p>{}</p></body></html>", "x".repeat(1000));
         let reason = looks_degraded(&original, &stripped).expect("脚本被删必须判定为退化");
         assert!(reason.contains("<script"), "{reason}");
@@ -4979,7 +5377,10 @@ function helperNeverUsed() { return 1; }
     /// 正常的局部修改不能被误判 —— 少几个字、多几个字都该放行。
     #[test]
     fn stays_quiet_for_a_normal_edit() {
-        let original = format!("<html><body><button id=\"a\">生成</button>{}</body></html>", "x".repeat(1000));
+        let original = format!(
+            "<html><body><button id=\"a\">生成</button>{}</body></html>",
+            "x".repeat(1000)
+        );
         let edited = format!(
             "<html><body><button id=\"a\" style=\"color:red\">再摇一次</button>{}</body></html>",
             "x".repeat(1000)
@@ -4992,7 +5393,10 @@ function helperNeverUsed() { return 1; }
     fn allows_a_reasonable_shrink() {
         let original = format!("<html><body>{}</body></html>", "x".repeat(1000));
         let shrunk = format!("<html><body>{}</body></html>", "x".repeat(700));
-        assert!(looks_degraded(&original, &shrunk).is_none(), "缩减到 70% 该放行");
+        assert!(
+            looks_degraded(&original, &shrunk).is_none(),
+            "缩减到 70% 该放行"
+        );
     }
 
     /// 功能性缺陷的归类要准确：语法错不算"功能性"，缺函数/没绑定才算。

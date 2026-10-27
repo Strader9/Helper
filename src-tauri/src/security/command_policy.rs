@@ -3,7 +3,6 @@
 //! 对 execute_command 工具的命令进行安全校验，阻止危险操作。
 //! 采用黑名单 + 危险模式检测，后续可升级为白名单模式。
 
-
 /// 命令策略判定结果
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandPolicyResult {
@@ -82,7 +81,9 @@ impl CommandPolicy {
         }
 
         // 7. 权限篡改
-        if cmd_lower.contains("takeown") || cmd_lower.contains("icacls ") && cmd_lower.contains("/grant") {
+        if cmd_lower.contains("takeown")
+            || cmd_lower.contains("icacls ") && cmd_lower.contains("/grant")
+        {
             return deny(DENY_CMD_PERMISSION, "禁止篡改文件权限");
         }
 

@@ -1,4 +1,4 @@
 # 构建产物落到 E 盘，避免 C 盘（系统盘）被 target 目录吃满。
 # 相对路径基于仓库根目录，Cargo 会从当前工作目录向上查找 .cargo/config.toml。
 [build]
-target-dir = "E:/cargo-target/pc-guardian"
+target-dir = "E:/cargo-target/e-assisant"

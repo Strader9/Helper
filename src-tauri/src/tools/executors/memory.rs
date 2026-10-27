@@ -79,7 +79,8 @@ impl AgentTool for RememberTool {
             return Ok(ToolResult::err("rejected", &decision.reason));
         }
 
-        let id = MemoryEngine::add_memory(&conn, memory_type, content, importance, "user_explicit")?;
+        let id =
+            MemoryEngine::add_memory(&conn, memory_type, content, importance, "user_explicit")?;
 
         Ok(ToolResult::ok(json!({
             "success": true,
@@ -239,7 +240,10 @@ impl AgentTool for ForgetTool {
                     "message": "记忆已删除"
                 })))
             } else {
-                Ok(ToolResult::err("NOT_FOUND", &format!("未找到 ID 为 {} 的记忆", id)))
+                Ok(ToolResult::err(
+                    "NOT_FOUND",
+                    &format!("未找到 ID 为 {} 的记忆", id),
+                ))
             }
         } else if let Some(q) = query {
             let deleted = MemoryEngine::forget_by_query(&conn, q)?;

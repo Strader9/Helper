@@ -22,7 +22,7 @@ fn build_client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/125.0 Safari/537.36 pc-guardian/0.1",
+             (KHTML, like Gecko) Chrome/125.0 Safari/537.36 e-assisant/0.1",
         )
         .timeout(std::time::Duration::from_secs(30))
         .build()
@@ -245,7 +245,9 @@ fn decode_entities(text: &str) -> String {
                 "rsquo" => Some("\u{2019}".to_string()),
                 _ => {
                     if let Some(num) = entity.strip_prefix('#') {
-                        let code = if let Some(hex) = num.strip_prefix('x').or_else(|| num.strip_prefix('X')) {
+                        let code = if let Some(hex) =
+                            num.strip_prefix('x').or_else(|| num.strip_prefix('X'))
+                        {
                             u32::from_str_radix(hex, 16).ok()
                         } else {
                             num.parse::<u32>().ok()
@@ -530,12 +532,7 @@ impl AgentTool for UrlFetchTool {
 
         let resp = match build_client().get(&url).send().await {
             Ok(r) => r,
-            Err(e) => {
-                return Ok(ToolResult::err(
-                    "NETWORK_ERROR",
-                    &format!("请求失败：{e}"),
-                ))
-            }
+            Err(e) => return Ok(ToolResult::err("NETWORK_ERROR", &format!("请求失败：{e}"))),
         };
 
         let status = resp.status();
@@ -546,6 +543,13 @@ impl AgentTool for UrlFetchTool {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
+
+        if !status.is_success() {
+            return Ok(ToolResult::err(
+                "HTTP_ERROR",
+                &format!("网页返回 HTTP {status}：{final_url}"),
+            ));
+        }
 
         let bytes = match resp.bytes().await {
             Ok(b) => b,
@@ -631,6 +635,32 @@ fn extract_title(html: &str) -> String {
 mod tests {
     use super::*;
 
+    async fn serve_once(status: &str, content_type: &str, body: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let address = listener.local_addr().expect("test server address");
+        let status = status.to_string();
+        let content_type = content_type.to_string();
+        let body = body.to_string();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0u8; 2048];
+            let _ = socket.read(&mut request).await;
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+        });
+        format!("http://{address}/test")
+    }
+
     #[test]
     fn strips_tags_and_keeps_paragraphs() {
         let html = "<html><body><h1>标题</h1><p>第一段</p><p>第二段</p></body></html>";
@@ -714,6 +744,43 @@ mod tests {
     fn empty_page_yields_no_hits_instead_of_panicking() {
         assert!(extract_ddg_results("<html><body>no results</body></html>", 5).is_empty());
         assert!(extract_ddg_results("", 5).is_empty());
+    }
+
+    #[tokio::test]
+    async fn url_fetch_rejects_http_error_pages() {
+        let url = serve_once(
+            "404 Not Found",
+            "text/html; charset=utf-8",
+            "<h1>missing</h1>",
+        )
+        .await;
+        let out = UrlFetchTool
+            .execute(json!({"url": url}))
+            .await
+            .expect("fetch should return a structured tool result");
+        assert!(!out.success);
+        assert_eq!(out.error_code.as_deref(), Some("HTTP_ERROR"));
+        assert!(out.error.as_deref().unwrap_or("").contains("404"));
+    }
+
+    #[tokio::test]
+    async fn url_fetch_extracts_and_truncates_local_html() {
+        let body = format!(
+            "<html><head><title>测试页</title></head><body><script>secret</script><p>{}</p></body></html>",
+            "甲".repeat(500)
+        );
+        let url = serve_once("200 OK", "text/html; charset=utf-8", &body).await;
+        let out = UrlFetchTool
+            .execute(json!({"url": url, "max_chars": 200}))
+            .await
+            .expect("fetch local html");
+        assert!(out.success, "fetch failed: {:?}", out.error);
+        let data = out.data.expect("missing result data");
+        assert_eq!(data["status"].as_u64(), Some(200));
+        assert_eq!(data["title"].as_str(), Some("测试页"));
+        assert_eq!(data["chars"].as_u64(), Some(200));
+        assert_eq!(data["truncated"].as_bool(), Some(true));
+        assert!(!data["text"].as_str().unwrap_or("").contains("secret"));
     }
 
     /// 实机：真的搜一次，验证检索端点仍然返回可解析的结构。

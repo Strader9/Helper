@@ -13,7 +13,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
-const CLIENT_INFO = { name: 'pc-guardian-sidecar', version: '0.1.0' };
+const CLIENT_INFO = { name: 'e-assisant-sidecar', version: '0.1.0' };
 
 /**
  * 从环境变量加载 MCP server 配置。

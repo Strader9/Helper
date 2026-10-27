@@ -28,7 +28,10 @@ pub fn script_block(html: &str) -> Option<String> {
     let lower = html.to_ascii_lowercase();
     let start = lower.find("<script")?;
     let end = lower[start..].rfind("</script")? + start + "</script".len();
-    let end = lower[end..].find('>').map(|offset| end + offset + 1).unwrap_or(end);
+    let end = lower[end..]
+        .find('>')
+        .map(|offset| end + offset + 1)
+        .unwrap_or(end);
     Some(html[start..end].to_string())
 }
 
@@ -76,10 +79,13 @@ pub fn element_outline(html: &str) -> String {
         let mut from = 0usize;
         while let Some(relative) = html[from..].find(attr) {
             let start = from + relative + attr.len();
-            let Some(end_offset) = html[start..].find(quote) else { break };
+            let Some(end_offset) = html[start..].find(quote) else {
+                break;
+            };
             let value = &html[start..start + end_offset];
             let value = value.trim();
-            if !value.is_empty() && value.chars().count() <= 40 && !ids.iter().any(|id| id == value) {
+            if !value.is_empty() && value.chars().count() <= 40 && !ids.iter().any(|id| id == value)
+            {
                 ids.push(value.to_string());
             }
             from = start + end_offset;
@@ -93,9 +99,13 @@ pub fn element_outline(html: &str) -> String {
     let mut from = 0usize;
     while let Some(relative) = lower[from..].find("<button") {
         let open = from + relative;
-        let Some(gt) = lower[open..].find('>') else { break };
+        let Some(gt) = lower[open..].find('>') else {
+            break;
+        };
         let text_start = open + gt + 1;
-        let Some(close) = lower[text_start..].find("</button") else { break };
+        let Some(close) = lower[text_start..].find("</button") else {
+            break;
+        };
         let label = strip_tags(&html[text_start..text_start + close.min(80)]);
         let label = label.trim();
         if !label.is_empty() && !buttons.iter().any(|item| item == label) {
@@ -154,7 +164,8 @@ pub fn tidy_script_block(output: &str) -> Option<String> {
     }
 
     // 裸 JS：不能是整篇 HTML，且要有一定体量，否则大概率是模型没按要求输出。
-    let looks_like_page = lower.contains("<html") || lower.contains("<body") || lower.contains("<style");
+    let looks_like_page =
+        lower.contains("<html") || lower.contains("<body") || lower.contains("<style");
     if !looks_like_page && without_fence.chars().count() >= 200 {
         Some(format!("<script>\n{without_fence}\n</script>"))
     } else {
@@ -205,7 +216,10 @@ pub fn tidy_function_appendix(output: &str) -> Option<String> {
     }
     let body = match (lower.find("<script"), lower.rfind("</script")) {
         (Some(start), Some(close)) if close > start => {
-            let body_start = without_fence[start..].find('>').map(|o| start + o + 1).unwrap_or(start);
+            let body_start = without_fence[start..]
+                .find('>')
+                .map(|o| start + o + 1)
+                .unwrap_or(start);
             without_fence[body_start..close].trim()
         }
         _ => without_fence,
@@ -354,7 +368,9 @@ fn script_spans(html: &str) -> Vec<(usize, usize)> {
     let mut from = 0usize;
     while let Some(relative) = lower[from..].find("<script") {
         let open = from + relative;
-        let Some(gt) = lower[open..].find('>') else { break };
+        let Some(gt) = lower[open..].find('>') else {
+            break;
+        };
         let body_start = open + gt + 1;
         match lower[body_start..].find("</script") {
             Some(relative_end) => {
@@ -422,7 +438,16 @@ fn peel_fence(line: &str) -> Option<String> {
     let rest = trimmed[backticks..].trim();
     // ```` ```html ```` 这类语言标记也算纯围栏。
     let is_tag = [
-        "html", "HTML", "js", "javascript", "css", "json", "vue", "ts", "tsx", "jsx",
+        "html",
+        "HTML",
+        "js",
+        "javascript",
+        "css",
+        "json",
+        "vue",
+        "ts",
+        "tsx",
+        "jsx",
     ]
     .iter()
     .any(|tag| rest == *tag);
@@ -516,7 +541,10 @@ mod tests {
         let out = splice_script(html, "<script>const a = 2;</script>");
         assert!(out.contains("const a = 2;"));
         assert!(!out.contains("const a = 1;"));
-        assert!(out.contains("<button>生成</button>"), "HTML 部分必须原样保留");
+        assert!(
+            out.contains("<button>生成</button>"),
+            "HTML 部分必须原样保留"
+        );
     }
 
     #[test]
@@ -555,7 +583,8 @@ mod tests {
 
     #[test]
     fn tidies_fenced_and_bare_script_outputs() {
-        let fenced = tidy_script_block("```javascript\n<script>const a = 1;</script>\n```").unwrap();
+        let fenced =
+            tidy_script_block("```javascript\n<script>const a = 1;</script>\n```").unwrap();
         assert!(fenced.starts_with("<script"));
         assert!(!fenced.contains("```"));
 
@@ -586,11 +615,9 @@ mod tests {
 
     #[test]
     fn appends_definitions_inside_the_existing_script() {
-        let html = "<html><body><button>生成</button><script>\nconst a = 1;\n</script></body></html>";
-        let out = append_to_script(
-            html,
-            "function pinyin(name) {\n    return name;\n}",
-        );
+        let html =
+            "<html><body><button>生成</button><script>\nconst a = 1;\n</script></body></html>";
+        let out = append_to_script(html, "function pinyin(name) {\n    return name;\n}");
         assert_eq!(out.matches("<script").count(), 1, "不能新增脚本块");
         assert!(out.contains("const a = 1;"));
         assert!(out.contains("function pinyin(name)"));

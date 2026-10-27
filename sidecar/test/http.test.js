@@ -258,7 +258,7 @@ test('POST /mcp/servers 安装并返回发现的工具', async () => {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-PC-Guardian-Local': 'capability-manager-v1',
+      'X-E-Assisant-Local': 'capability-manager-v1',
     },
     body: JSON.stringify({ id: 'new-source', name: 'New Source', url: 'https://example.com/mcp' }),
   });
@@ -282,7 +282,7 @@ test('DELETE /mcp/servers/:id 移除工具源', async () => {
   await startServer(fakeRouter([]), fakeMcp());
   const resp = await fetch(`${base}/mcp/servers/s`, {
     method: 'DELETE',
-    headers: { 'X-PC-Guardian-Local': 'capability-manager-v1' },
+    headers: { 'X-E-Assisant-Local': 'capability-manager-v1' },
   });
   assert.equal(resp.status, 200);
   assert.deepEqual(await resp.json(), { removed: true, id: 's' });

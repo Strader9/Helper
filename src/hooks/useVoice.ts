@@ -10,7 +10,7 @@ export type VoiceStatus = 'idle' | 'listening' | 'thinking' | 'speaking';
 export interface UseVoiceOptions {
   /**
    * 实时对话模式下，每轮语音识别完成后的最终文本通过此回调交给调用方发送。
-   * hook 本身不直接调用任何 invoke / 聊天接口，由调用方（LumiChat）决定如何发送。
+   * hook 本身不直接调用任何 invoke / 聊天接口，由调用方（EAssistantChat）决定如何发送。
    */
   onSendMessage?: (text: string) => void;
 }

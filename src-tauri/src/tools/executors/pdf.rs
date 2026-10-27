@@ -61,10 +61,7 @@ fn load_pdf(path: &str) -> AppResult<lopdf::Document> {
         return Err(AppError::InvalidArgument(format!("文件不存在: {}", path)));
     }
     lopdf::Document::load(path).map_err(|e| {
-        AppError::ToolExecution(format!(
-            "无法解析 PDF（可能已加密或文件损坏）: {}",
-            e
-        ))
+        AppError::ToolExecution(format!("无法解析 PDF（可能已加密或文件损坏）: {}", e))
     })
 }
 
@@ -79,15 +76,16 @@ fn parse_pages(spec: &str, total: u32) -> AppResult<Vec<u32>> {
             continue;
         }
         if let Some((a, b)) = part.split_once('-') {
-            let start: u32 = a.trim().parse().map_err(|_| {
-                AppError::InvalidArgument(format!("页码格式不对: {}", part))
-            })?;
+            let start: u32 = a
+                .trim()
+                .parse()
+                .map_err(|_| AppError::InvalidArgument(format!("页码格式不对: {}", part)))?;
             let end: u32 = if b.trim().is_empty() {
                 total
             } else {
-                b.trim().parse().map_err(|_| {
-                    AppError::InvalidArgument(format!("页码格式不对: {}", part))
-                })?
+                b.trim()
+                    .parse()
+                    .map_err(|_| AppError::InvalidArgument(format!("页码格式不对: {}", part)))?
             };
             if start == 0 || end == 0 {
                 return Err(AppError::InvalidArgument(
@@ -100,9 +98,9 @@ fn parse_pages(spec: &str, total: u32) -> AppResult<Vec<u32>> {
                 }
             }
         } else {
-            let p: u32 = part.parse().map_err(|_| {
-                AppError::InvalidArgument(format!("页码格式不对: {}", part))
-            })?;
+            let p: u32 = part
+                .parse()
+                .map_err(|_| AppError::InvalidArgument(format!("页码格式不对: {}", part)))?;
             if p == 0 {
                 return Err(AppError::InvalidArgument(
                     "页码从 1 开始，不能是 0".to_string(),
@@ -144,10 +142,7 @@ fn page_size(doc: &lopdf::Document, page_id: lopdf::ObjectId) -> Option<(f32, f3
     if nums.len() < 4 {
         return None;
     }
-    Some((
-        (nums[2] - nums[0]).abs(),
-        (nums[3] - nums[1]).abs(),
-    ))
+    Some(((nums[2] - nums[0]).abs(), (nums[3] - nums[1]).abs()))
 }
 
 // ============================================================
@@ -576,12 +571,17 @@ impl AgentTool for SplitPdfTool {
         ensure_ext(input, "pdf")?;
         ensure_ext(output, "pdf")?;
         if Path::new(input) == Path::new(output) {
-            return Err(AppError::InvalidArgument("输出路径不能与输入文件相同".to_string()));
+            return Err(AppError::InvalidArgument(
+                "输出路径不能与输入文件相同".to_string(),
+            ));
         }
 
         let mut doc = load_pdf(input)?;
         if doc.is_encrypted() {
-            return Ok(ToolResult::err("PDF_ENCRYPTED", "源文件已加密，无法拆分。请先解除加密。"));
+            return Ok(ToolResult::err(
+                "PDF_ENCRYPTED",
+                "源文件已加密，无法拆分。请先解除加密。",
+            ));
         }
 
         // get_pages 返回的是 (ObjectId -> page ObjectId) 的映射，按 ObjectId 排序即为页序。
@@ -594,7 +594,10 @@ impl AgentTool for SplitPdfTool {
         if page_nums.is_empty() {
             return Ok(ToolResult::err("PDF_NO_PAGES", "页码范围没有匹配到任何页"));
         }
-        let selected: Vec<lopdf::ObjectId> = page_nums.iter().map(|p| all_pages[(*p - 1) as usize]).collect();
+        let selected: Vec<lopdf::ObjectId> = page_nums
+            .iter()
+            .map(|p| all_pages[(*p - 1) as usize])
+            .collect();
 
         // 手术式改 Pages 树：保留整个 objects（含字体/图片等共享资源），
         // 只把根 Pages 节点的 Kids / Count 替换成选中的页。
@@ -621,10 +624,14 @@ impl AgentTool for SplitPdfTool {
             .as_dict()
             .map_err(|_| AppError::ToolExecution("Pages 不是字典".into()))?
             .clone();
-        let kids: Vec<lopdf::Object> = selected.iter().map(|id| lopdf::Object::Reference(*id)).collect();
+        let kids: Vec<lopdf::Object> = selected
+            .iter()
+            .map(|id| lopdf::Object::Reference(*id))
+            .collect();
         pages_dict.set("Kids", lopdf::Object::Array(kids));
         pages_dict.set("Count", selected.len() as i64);
-        doc.objects.insert(pages_id, lopdf::Object::Dictionary(pages_dict));
+        doc.objects
+            .insert(pages_id, lopdf::Object::Dictionary(pages_dict));
 
         doc.compress();
         doc.save(output)
@@ -632,7 +639,10 @@ impl AgentTool for SplitPdfTool {
 
         let bytes = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
         if bytes == 0 {
-            return Ok(ToolResult::err("PDF_SPLIT_EMPTY", "拆分后文件为 0 字节，写入失败"));
+            return Ok(ToolResult::err(
+                "PDF_SPLIT_EMPTY",
+                "拆分后文件为 0 字节，写入失败",
+            ));
         }
 
         Ok(ToolResult::ok(json!({
@@ -669,8 +679,12 @@ fn find_browser() -> Option<PathBuf> {
         candidates.push(Path::new(root).join(r"Google\Chrome\Application\chrome.exe"));
     }
     // 只装在 32 位路径下的 Edge（少见但要兜住）
-    candidates.push(PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"));
-    candidates.push(PathBuf::from(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"));
+    candidates.push(PathBuf::from(
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    ));
+    candidates.push(PathBuf::from(
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ));
 
     candidates.into_iter().find(|p| p.is_file())
 }
@@ -742,7 +756,10 @@ fn html_to_pdf(browser: &Path, html: &str, output: &str, landscape: bool) -> App
     // 产物而误判成功；② 渲染失败时会把用户原有的文件删掉/写坏。
     let render_path = temp_dir.join("render.pdf");
     let print_flag = format!("--print-to-pdf={}", render_path.to_string_lossy());
-    let profile_flag = format!("--user-data-dir={}", temp_dir.join("profile").to_string_lossy());
+    let profile_flag = format!(
+        "--user-data-dir={}",
+        temp_dir.join("profile").to_string_lossy()
+    );
 
     let mut cmd = Command::new(browser);
     cmd.args([
@@ -1245,10 +1262,7 @@ fn inline_md(text: &str) -> String {
         if let Some(end_rel) = rest[start + 1..].find('`') {
             let end = start + 1 + end_rel;
             pieces.push(rest[..start].to_string());
-            pieces.push(format!(
-                "<code>{}</code>",
-                &rest[start + 1..end]
-            ));
+            pieces.push(format!("<code>{}</code>", &rest[start + 1..end]));
             rest = &rest[end + 1..];
         } else {
             break;
@@ -1280,10 +1294,7 @@ fn inline_md(text: &str) -> String {
         let label = result[open + 1..close].to_string();
         let url = result[close + 2..end].to_string();
         if url.starts_with("http://") || url.starts_with("https://") {
-            result.replace_range(
-                open..=end,
-                &format!("<a href=\"{}\">{}</a>", url, label),
-            );
+            result.replace_range(open..=end, &format!("<a href=\"{}\">{}</a>", url, label));
         } else {
             break;
         }
@@ -1539,7 +1550,11 @@ mod tests {
         assert!(r1.success, "create_pdf 失败: {:?}", r1.error);
         let d1 = r1.data.unwrap();
         assert!(d1["pages"].as_u64().unwrap_or(0) >= 1, "至少一页: {}", d1);
-        assert!(d1["size_bytes"].as_u64().unwrap_or(0) > 1000, "不能是空壳: {}", d1);
+        assert!(
+            d1["size_bytes"].as_u64().unwrap_or(0) > 1000,
+            "不能是空壳: {}",
+            d1
+        );
 
         // 2) 生成第二份
         let r2 = CreatePdfTool

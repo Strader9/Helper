@@ -26,7 +26,15 @@ use crate::tools::{AgentTool, RiskLevel, ToolResult};
 /// 助手读环境变量是为了回答"我的 PATH 里有什么""JAVA_HOME 指向哪"，
 /// 不是为了把用户的云密钥打印到聊天记录里。
 const SECRET_HINTS: &[&str] = &[
-    "KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "AUTH", "SESSION", "COOKIE",
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "AUTH",
+    "SESSION",
+    "COOKIE",
     "PRIVATE",
 ];
 
@@ -137,9 +145,8 @@ impl AgentTool for ReadClipboardTool {
 
     async fn execute(&self, args: serde_json::Value) -> AppResult<ToolResult> {
         let max_chars = args["max_chars"].as_u64().unwrap_or(4000).min(50000) as usize;
-        let (ok, stdout, stderr) = run_powershell_b64(
-            "$t = Get-Clipboard -Raw; if ($null -eq $t) { '' } else { $t }",
-        )?;
+        let (ok, stdout, stderr) =
+            run_powershell_b64("$t = Get-Clipboard -Raw; if ($null -eq $t) { '' } else { $t }")?;
         if !ok {
             return Ok(ToolResult::err("CLIPBOARD_READ_FAILED", stderr.trim()));
         }
@@ -195,9 +202,8 @@ impl AgentTool for WriteClipboardTool {
 
         // 写完立刻回读比对。`Set-Clipboard` 不返回是否生效，
         // 而剪贴板会同时被别的程序改写——只有读回来一致才算写成了。
-        let (read_ok, echo, _) = run_powershell_b64(
-            "$t = Get-Clipboard -Raw; if ($null -eq $t) { '' } else { $t }",
-        )?;
+        let (read_ok, echo, _) =
+            run_powershell_b64("$t = Get-Clipboard -Raw; if ($null -eq $t) { '' } else { $t }")?;
         let expected = normalize_newline(text);
         let actual = normalize_newline(echo.trim_end_matches(['\r', '\n']));
         let matched = read_ok && actual == expected;
@@ -285,7 +291,7 @@ $nodes = $xml.GetElementsByTagName('text')
 $nodes.Item(0).AppendChild($xml.CreateTextNode($title)) | Out-Null
 $nodes.Item(1).AppendChild($xml.CreateTextNode($body)) | Out-Null
 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('PC Guardian').Show($toast)
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('E-Assisant').Show($toast)
 'ok'"#,
         title = literal(title),
         body = literal(body)
@@ -334,9 +340,8 @@ $r | ConvertTo-Json -Depth 5 -Compress"#;
         if !ok {
             return Ok(ToolResult::err("NETWORK_QUERY_FAILED", stderr.trim()));
         }
-        let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|_| {
-            serde_json::json!({ "raw": stdout.trim() })
-        });
+        let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|_| serde_json::json!({ "raw": stdout.trim() }));
 
         // 「能不能上网」测的是 IP 连通，不是 DNS 通不通：
         // 用 IP 直连可以区分「网卡没连」和「DNS 挂了」这两种完全不同的故障。
@@ -402,7 +407,8 @@ impl AgentTool for GetDiskUsageTool {
         if !ok {
             return Ok(ToolResult::err("DISK_QUERY_FAILED", stderr.trim()));
         }
-        let raw: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or(serde_json::json!([]));
+        let raw: serde_json::Value =
+            serde_json::from_str(stdout.trim()).unwrap_or(serde_json::json!([]));
         // 只有一个盘时 ConvertTo-Json 返回对象而不是数组
         let list = match raw {
             serde_json::Value::Array(items) => items,
@@ -507,10 +513,7 @@ impl AgentTool for GetEnvironmentTool {
                         }))
                     }
                 }
-                Err(_) => ToolResult::err(
-                    "ENV_NOT_FOUND",
-                    &format!("环境变量不存在: {}", key),
-                ),
+                Err(_) => ToolResult::err("ENV_NOT_FOUND", &format!("环境变量不存在: {}", key)),
             });
         }
 
@@ -661,7 +664,7 @@ mod tests {
             .unwrap_or("")
             .to_string();
 
-        let marker = format!("pc-guardian 探针 {}", std::process::id());
+        let marker = format!("e-assisant 探针 {}", std::process::id());
         let written = WriteClipboardTool
             .execute(serde_json::json!({ "text": marker }))
             .await

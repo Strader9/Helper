@@ -373,6 +373,29 @@ pub fn quick_classify(user_content: &str) -> Option<IntentResult> {
     // 检查是否命中操作黑名单
     let mut action_hit = false;
     let mut detected_categories: Vec<ToolCategory> = Vec::new();
+    let local_file_search = is_local_file_search(&lower);
+    if local_file_search {
+        action_hit = true;
+        detected_categories.push(ToolCategory::File);
+    }
+
+    // URL、联网检索和“先上网学习”必须直接进入工具路径。它们不一定包含
+    // ACTION_KEYWORDS（例如用户只粘贴一个 URL 再说“总结”），不能依赖后续兜底。
+    if is_web_intent(&lower) {
+        action_hit = true;
+        detected_categories.push(ToolCategory::Web);
+    }
+    if is_browser_navigation_intent(&lower) {
+        action_hit = true;
+        detected_categories.push(ToolCategory::Browser);
+    }
+
+    // 组合请求要同时开放产物工具：例如“先上网学习，再做一个视频”既需要
+    // Web，也需要 Media。单一类别路由会让模型只能完成半条指令。
+    if is_media_intent(&lower) {
+        action_hit = true;
+        detected_categories.push(ToolCategory::Media);
+    }
     // 先用完整句子判断组合意图。只把命中的单个关键词交给分类器时，
     // 「每天 + 汇总」会被拆开，永远无法满足定时任务的组合条件。
     if let Some(category) = keyword_to_category(&lower) {
@@ -383,6 +406,11 @@ pub fn quick_classify(user_content: &str) -> Option<IntentResult> {
             action_hit = true;
             // 根据关键词推断类别
             if let Some(cat) = keyword_to_category(kw) {
+                // “搜索/查找”单独看默认属于互联网；但完整句子明确说本地文件时，
+                // 不额外注入 Web，避免把“搜索 C 盘文件”发到搜索引擎。
+                if cat == ToolCategory::Web && local_file_search {
+                    continue;
+                }
                 if !detected_categories.contains(&cat) {
                     detected_categories.push(cat);
                 }
@@ -404,11 +432,97 @@ pub fn quick_classify(user_content: &str) -> Option<IntentResult> {
             categories: detected_categories,
             layer: "layer1_action",
         }),
-        // 都命中（冲突）→ 自适应路径
-        (true, true) => None,
+        // 问候与动作同时出现时动作优先，例如“你好，帮我搜索一下天气”。
+        (true, true) => Some(IntentResult {
+            intent: IntentType::Action,
+            categories: detected_categories,
+            layer: "layer1_action_with_chat",
+        }),
         // 都没命中 → 自适应路径
         (false, false) => None,
     }
+}
+
+fn is_local_file_search(text: &str) -> bool {
+    let has_search = ["搜索", "查找", "search", "find"]
+        .iter()
+        .any(|word| contains_word(text, word));
+    let has_local_target = [
+        "本地",
+        "文件",
+        "文件夹",
+        "目录",
+        "磁盘",
+        "硬盘",
+        "桌面",
+        "路径",
+        "盘符",
+        "file",
+        "folder",
+        "directory",
+        "disk",
+        "path",
+        "c:\\",
+        "d:\\",
+        "e:\\",
+    ]
+    .iter()
+    .any(|word| contains_word(text, word));
+    has_search && has_local_target
+}
+
+fn is_web_intent(text: &str) -> bool {
+    if is_local_file_search(text) {
+        return false;
+    }
+
+    let has_url = text.contains("http://") || text.contains("https://");
+    let explicit_web = [
+        "联网",
+        "上网",
+        "互联网",
+        "网络搜索",
+        "网页搜索",
+        "搜索引擎",
+        "在线搜索",
+        "查资料",
+        "查一下资料",
+        "最新消息",
+        "最新信息",
+        "网址",
+        "链接",
+        "url",
+        "web search",
+        "online search",
+        "research",
+    ]
+    .iter()
+    .any(|word| contains_word(text, word));
+    let general_search = ["搜索", "查找", "搜一下", "搜一搜", "search"]
+        .iter()
+        .any(|word| contains_word(text, word));
+
+    has_url || explicit_web || general_search || text.contains("天气") || text.contains("weather")
+}
+
+fn is_media_intent(text: &str) -> bool {
+    [
+        "视频", "音频", "图片", "图像", "照片", "剪辑", "配音", "字幕", "video", "audio", "image",
+        "photo", "ffmpeg",
+    ]
+    .iter()
+    .any(|word| contains_word(text, word))
+}
+
+fn is_browser_navigation_intent(text: &str) -> bool {
+    let has_web_target = text.contains("http://")
+        || text.contains("https://")
+        || text.contains("链接")
+        || text.contains("网址");
+    let wants_navigation = ["打开", "访问", "进入", "跳转", "open", "navigate", "go to"]
+        .iter()
+        .any(|word| contains_word(text, word));
+    has_web_target && wants_navigation
 }
 
 /// 检查文本中是否包含某个词（简单子串匹配，忽略大小写）
@@ -452,10 +566,13 @@ fn contains_word(text: &str, word: &str) -> bool {
 fn keyword_to_category(keyword: &str) -> Option<ToolCategory> {
     let k = keyword.to_lowercase();
 
-    // 链接类先判。否则"打开这个链接"里的"打开"会先命中 Program 分支，
-    // 模型拿到的是应用管理工具，而用户要的是用浏览器打开网页。
+    // 联网信息检索和链接内容读取属于 Web；网页交互（点击、滚动）仍属于 Browser。
+    // 必须放在 File 的“搜索/查找”之前，否则日常搜索会被误送到本地文件工具。
     if k.contains("链接") || k.contains("网址") || k.contains("url") || k.contains("http") {
-        return Some(ToolCategory::System);
+        return Some(ToolCategory::Web);
+    }
+    if is_web_intent(&k) {
+        return Some(ToolCategory::Web);
     }
 
     // Office 文档同理：说"读一下这个 docx"时，"读"会先命中 File 分支，
@@ -644,8 +761,6 @@ fn keyword_to_category(keyword: &str) -> Option<ToolCategory> {
         || k.contains("新建")
         || k.contains("查看")
         || k.contains("列出")
-        || k.contains("搜索")
-        || k.contains("查找")
         || k.contains("导出")
         || k.contains("导入")
         || k.contains("备份")
@@ -804,6 +919,9 @@ pub fn fallback_categories() -> Vec<ToolCategory> {
         ToolCategory::System,
         ToolCategory::Memory,
         ToolCategory::Knowledge,
+        // 未知表达里也可能是“总结这个页面”或“了解最新信息”。Web 只有两个
+        // 只读工具，放入安全兜底不会引入浏览器控制等副作用。
+        ToolCategory::Web,
     ]
 }
 
@@ -825,7 +943,7 @@ pub fn fast_path_system_prompt(memory_context: &str) -> String {
     };
 
     format!(
-        r#"你是 PC Guardian AI，一个本地优先的 Windows 桌面 AI 助手。
+        r#"你是 E-Assisant，一个本地优先的 Windows 桌面 AI 助手。
 
 ## 当前模式：快速闲聊模式
 你正在以快速模式响应用户，此模式下你**没有工具调用能力**。
@@ -901,8 +1019,8 @@ mod tests {
         );
         assert_eq!(
             keyword_to_category("打开这个链接"),
-            Some(ToolCategory::System),
-            "「打开」会先命中 Program，URL 必须前置"
+            Some(ToolCategory::Web),
+            "「打开」会先命中 Program，链接必须前置"
         );
     }
 
@@ -940,6 +1058,61 @@ mod tests {
                 result.categories
             );
         }
+    }
+
+    #[test]
+    fn web_search_and_pasted_links_route_to_web_tools() {
+        for prompt in [
+            "搜索一下今天的 AI 新闻",
+            "帮我联网查一下 Rust 最新版本",
+            "总结这个链接 https://example.com/article",
+            "https://example.com/article",
+            "你好，帮我搜索上海天气",
+        ] {
+            let result = quick_classify(prompt).expect("应识别为联网动作");
+            assert_eq!(result.intent, IntentType::Action, "prompt={prompt}");
+            assert!(
+                result.categories.contains(&ToolCategory::Web),
+                "prompt={prompt}, categories={:?}",
+                result.categories
+            );
+        }
+    }
+
+    #[test]
+    fn local_file_search_does_not_leak_into_web_search() {
+        for prompt in [
+            "搜索 C:\\Users 里的报告.docx",
+            "查找本地文件",
+            "find file on disk",
+        ] {
+            let result = quick_classify(prompt).expect("应识别为本地搜索动作");
+            assert!(
+                result.categories.contains(&ToolCategory::File),
+                "prompt={prompt}"
+            );
+            assert!(
+                !result.categories.contains(&ToolCategory::Web),
+                "本地路径不应发到互联网，prompt={prompt}, categories={:?}",
+                result.categories
+            );
+        }
+    }
+
+    #[test]
+    fn research_before_video_gets_both_tool_domains() {
+        let result = quick_classify("先上网学习低空经济的资料，然后帮我做一个短视频")
+            .expect("组合请求应进入工具路径");
+        assert!(result.categories.contains(&ToolCategory::Web));
+        assert!(result.categories.contains(&ToolCategory::Media));
+    }
+
+    #[test]
+    fn opening_a_link_exposes_browser_and_web_tools() {
+        let result =
+            quick_classify("打开这个链接 https://example.com").expect("打开链接应进入工具路径");
+        assert!(result.categories.contains(&ToolCategory::Web));
+        assert!(result.categories.contains(&ToolCategory::Browser));
     }
 
     #[test]
