@@ -10,7 +10,7 @@
 //! - SkillTool: 将技能包装为 AgentTool，动态注册到 ToolRegistry
 //! - 3 个内置示例技能：天气查询、翻译、文件整理
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -570,18 +570,30 @@ fn builtin_skills() -> Vec<BuiltInSkill> {
             definition: SkillDefinition {
                 id: "file_organizer".to_string(),
                 name: "文件整理".to_string(),
-                description: "整理指定目录中的文件，按文件类型分类移动到子文件夹（图片、文档、视频、音频、压缩包、代码、其他）。".to_string(),
-                version: "1.0.0".to_string(),
+                description: "扫描指定目录，按文件类型给出分类整理建议。默认只返回计划、不移动任何文件（dry_run=true）；把清单给用户确认后，再以 dry_run=false 调用执行。自动跳过快捷方式(.lnk)、desktop.ini 与隐藏/系统文件。".to_string(),
+                version: "1.1.0".to_string(),
                 author: "E-Assisant".to_string(),
                 skill_type: SkillType::BuiltIn,
-                triggers: vec!["整理文件".to_string(), "文件整理".to_string(), "organize".to_string()],
+                triggers: vec![
+                    "整理文件".to_string(),
+                    "文件整理".to_string(),
+                    "整理桌面".to_string(),
+                    "organize".to_string(),
+                ],
                 parameters: vec![
                     SkillParameter {
                         name: "directory".to_string(),
-                        description: "要整理的目录路径".to_string(),
-                        required: true,
+                        description: "要整理的目录绝对路径。用户说「桌面」时可留空，留空即当前用户桌面（由系统 API 解析，兼容 OneDrive 重定向）。".to_string(),
+                        required: false,
                         param_type: "string".to_string(),
                         default: None,
+                    },
+                    SkillParameter {
+                        name: "dry_run".to_string(),
+                        description: "true=只生成计划不动文件（默认，必须先用它）；false=真正移动。只能在用户确认清单之后传 false。".to_string(),
+                        required: false,
+                        param_type: "boolean".to_string(),
+                        default: Some(serde_json::Value::Bool(true)),
                     },
                 ],
                 entry_point: String::new(),
@@ -761,18 +773,68 @@ fn translate_handler(
 }
 
 // --- 文件整理 ---
+/// Windows 上判断隐藏/系统文件：移走它们会破坏目录视图（典型是 desktop.ini）。
+#[cfg(windows)]
+fn is_hidden_or_system(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+    const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+    meta.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0
+}
+
+#[cfg(not(windows))]
+fn is_hidden_or_system(_meta: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// 目录是否可写：建一个唯一名的探针目录再删掉。
+///
+/// 公共桌面（`C:\Users\Public\Desktop`）对普通用户只有 ReadAndExecute，
+/// `create_dir_all` 会抛 os error 5。干跑阶段就测出来，比让用户确认完
+/// 再失败有用得多。
+fn probe_writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".e_assistant_probe_{}", std::process::id()));
+    match std::fs::create_dir(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_dir(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 fn file_organizer_handler(
     args: &serde_json::Value,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = AppResult<serde_json::Value>> + Send>> {
-    let directory = args
+    let raw_directory = args
         .get("directory")
         .and_then(|v| v.as_str())
+        .map(str::trim)
         .unwrap_or("")
         .to_string();
+    // 默认干跑：先出清单、用户确认后才允许真正移动。
+    let dry_run = args
+        .get("dry_run")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     Box::pin(async move {
-        if directory.is_empty() {
-            return Err(AppError::InvalidArgument("directory 参数必填".to_string()));
-        }
+        // 「桌面」是语义路径，不是字面目录。模型常把它猜成
+        // C:\Users\Public\Desktop（对当前用户只读的公共桌面）；交给系统 API
+        // 才能拿到被 OneDrive 重定向后的真实用户桌面。
+        let directory = if raw_directory.is_empty()
+            || matches!(raw_directory.as_str(), "桌面" | "desktop" | "Desktop")
+        {
+            dirs::desktop_dir()
+                .ok_or_else(|| {
+                    AppError::InvalidArgument(
+                        "无法解析当前用户桌面路径，请直接指定绝对目录".to_string(),
+                    )
+                })?
+                .display()
+                .to_string()
+        } else {
+            raw_directory.clone()
+        };
 
         let dir = Path::new(&directory);
         if !dir.exists() || !dir.is_dir() {
@@ -824,56 +886,152 @@ fn file_organizer_handler(
         .into_iter()
         .collect();
 
-        let mut moved: HashMap<String, Vec<String>> = HashMap::new();
-        let mut count = 0u32;
+        // 先扫描成一份计划，干跑与执行共用，避免"看到的"和"做的"不一致。
+        let mut plan: BTreeMap<&str, Vec<(String, u64)>> = BTreeMap::new();
+        let mut scanned = 0u32;
+        let mut skipped_shortcuts = 0u32;
+        let mut skipped_system = 0u32;
 
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_file() {
-                let ext = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
+            if !path.is_file() {
+                continue;
+            }
+            scanned += 1;
 
-                // 找到分类
-                let category = categories
-                    .iter()
-                    .find(|(_, exts)| exts.contains(&ext.as_str()))
-                    .map(|(cat, _)| *cat)
-                    .unwrap_or("其他");
+            let file_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
 
-                let target_dir = dir.join(category);
-                std::fs::create_dir_all(&target_dir)?;
+            // 快捷方式移走等于桌面图标集体消失；desktop.ini 决定桌面视图配置。
+            if ext == "lnk" {
+                skipped_shortcuts += 1;
+                continue;
+            }
+            if file_name.eq_ignore_ascii_case("desktop.ini") {
+                skipped_system += 1;
+                continue;
+            }
+            let size = match entry.metadata() {
+                Ok(meta) => {
+                    if is_hidden_or_system(&meta) {
+                        skipped_system += 1;
+                        continue;
+                    }
+                    meta.len()
+                }
+                Err(_) => 0,
+            };
 
-                let file_name = path.file_name().unwrap();
+            let category = categories
+                .iter()
+                .find(|(_, exts)| exts.contains(&ext.as_str()))
+                .map(|(cat, _)| *cat)
+                .unwrap_or("其他");
+
+            plan.entry(category).or_default().push((file_name, size));
+        }
+
+        let writable = probe_writable(dir);
+
+        if dry_run {
+            let items: Vec<serde_json::Value> = plan
+                .iter()
+                .map(|(category, files)| {
+                    serde_json::json!({
+                        "category": category,
+                        "count": files.len(),
+                        "bytes": files.iter().map(|(_, size)| *size).sum::<u64>(),
+                        "files": files.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            let total_to_move: usize = plan.values().map(Vec::len).sum();
+
+            return Ok(serde_json::json!({
+                "directory": directory,
+                "dry_run": true,
+                "writable": writable,
+                "scanned": scanned,
+                "skipped": {
+                    "shortcuts": skipped_shortcuts,
+                    "system_files": skipped_system,
+                },
+                "plan": items,
+                "total_to_move": total_to_move,
+                "message": format!(
+                    "只生成计划，未移动任何文件：扫描 {} 个，跳过 {} 个快捷方式、{} 个系统文件，计划整理 {} 个。把清单交给用户确认后，再以 dry_run=false 调用执行。",
+                    scanned, skipped_shortcuts, skipped_system, total_to_move
+                ),
+                "writable_hint": if writable {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::String(format!(
+                        "该目录当前用户不可写，执行会失败：{}",
+                        directory
+                    ))
+                },
+            }));
+        }
+
+        if !writable {
+            return Err(AppError::InvalidArgument(format!(
+                "目录不可写（可能需要管理员权限）: {}",
+                directory
+            )));
+        }
+
+        let mut moved: HashMap<String, Vec<String>> = HashMap::new();
+        let mut count = 0u32;
+
+        for (category, files) in &plan {
+            let target_dir = dir.join(category);
+            std::fs::create_dir_all(&target_dir)?;
+
+            for (file_name, _) in files {
+                let source = dir.join(file_name);
                 let target_path = target_dir.join(file_name);
 
                 // 处理重名
                 let final_target = if target_path.exists() {
-                    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("file");
-                    let new_name = format!("{}_copy.{}", stem, ext);
+                    let stem = source
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("file");
+                    let ext = source.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let new_name = if ext.is_empty() {
+                        format!("{}_copy", stem)
+                    } else {
+                        format!("{}_copy.{}", stem, ext)
+                    };
                     target_dir.join(new_name)
                 } else {
                     target_path
                 };
 
-                match std::fs::rename(&path, &final_target) {
+                match std::fs::rename(&source, &final_target) {
                     Ok(_) => {
                         moved
                             .entry(category.to_string())
                             .or_default()
-                            .push(file_name.to_string_lossy().to_string());
+                            .push(file_name.clone());
                         count += 1;
                     }
-                    Err(e) => eprintln!("[FileOrganizer] 移动 {:?} 失败: {}", path, e),
+                    Err(e) => eprintln!("[FileOrganizer] 移动 {:?} 失败: {}", source, e),
                 }
             }
         }
 
         Ok(serde_json::json!({
             "directory": directory,
+            "dry_run": false,
             "files_moved": count,
             "categories": moved,
             "message": format!("已整理 {} 个文件", count)
@@ -1193,4 +1351,70 @@ pub async fn init_global() -> &'static SkillManager {
 /// 获取全局技能管理器
 pub fn global() -> Option<&'static SkillManager> {
     SKILL_MANAGER.get()
+}
+
+#[cfg(test)]
+mod file_organizer_tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "e_assistant_org_{}_{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("建临时目录");
+        dir
+    }
+
+    #[tokio::test]
+    async fn dry_run_lists_plan_without_moving_anything() {
+        let dir = temp_dir("dry");
+        std::fs::write(dir.join("a.pdf"), b"x").expect("写 a.pdf");
+        std::fs::write(dir.join("b.rs"), b"fn main() {}").expect("写 b.rs");
+        std::fs::write(dir.join("tool.lnk"), b"x").expect("写 tool.lnk");
+        std::fs::write(dir.join("desktop.ini"), b"x").expect("写 desktop.ini");
+
+        let out = file_organizer_handler(&serde_json::json!({
+            "directory": dir.display().to_string()
+        }))
+        .await
+        .expect("干跑不应失败");
+
+        assert_eq!(out["dry_run"], true);
+        assert_eq!(out["scanned"], 4);
+        assert_eq!(out["skipped"]["shortcuts"], 1);
+        assert_eq!(out["skipped"]["system_files"], 1);
+        assert_eq!(out["total_to_move"], 2);
+
+        // 干跑的核心契约：不建目录、不移动任何文件
+        assert!(dir.join("a.pdf").exists(), "干跑动文件了");
+        assert!(dir.join("b.rs").exists(), "干跑动文件了");
+        assert!(!dir.join("文档").exists(), "干跑建目录了");
+        assert!(!dir.join("代码").exists(), "干跑建目录了");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn apply_moves_planned_files_and_keeps_shortcuts() {
+        let dir = temp_dir("apply");
+        std::fs::write(dir.join("a.pdf"), b"x").expect("写 a.pdf");
+        std::fs::write(dir.join("tool.lnk"), b"x").expect("写 tool.lnk");
+
+        let out = file_organizer_handler(&serde_json::json!({
+            "directory": dir.display().to_string(),
+            "dry_run": false
+        }))
+        .await
+        .expect("执行不应失败");
+
+        assert_eq!(out["dry_run"], false);
+        assert_eq!(out["files_moved"], 1);
+        assert!(dir.join("文档").join("a.pdf").exists(), "文档未归位");
+        assert!(dir.join("tool.lnk").exists(), "快捷方式被移动了");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
