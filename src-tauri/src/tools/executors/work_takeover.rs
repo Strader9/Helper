@@ -38,6 +38,29 @@ fn str_array(args: &Value, key: &str) -> Vec<String> {
     }
 }
 
+/// 接管任务查不到时的错误：先确认该 id 是否其实是定时任务。
+///
+/// 两个域都叫"任务"，模型很容易把「取消定时任务」映射成
+/// `work_takeover_task_update(status=cancelled)`。直接抛「任务不存在」它
+/// 无从纠正，只能反复猜；这里把正确工具和任务名指出来，下一轮即可自愈。
+/// 两边共用同一个连接（`memory::open_connection`），只是一次按主键的查询。
+fn missing_task_error(id: &str) -> AppError {
+    let job = crate::memory::open_connection()
+        .and_then(|conn| crate::scheduler::get_job(&conn, id).ok().flatten());
+
+    match job {
+        Some(job) => AppError::InvalidArgument(format!(
+            "任务不存在: {}。该 id 属于定时任务「{}」（{}），不归 work_takeover 管：\
+             取消请改用 cancel_scheduled_job(id_or_name=\"{}\")，只是暂停请用 set_job_enabled。",
+            id,
+            job.name,
+            crate::scheduler::describe_schedule(job.kind_enum(), &job.schedule),
+            job.name,
+        )),
+        None => AppError::InvalidArgument(format!("任务不存在: {}", id)),
+    }
+}
+
 fn task_json(t: &wt::WorkTakeoverTask) -> Value {
     json!({
         "id": t.id,
@@ -309,8 +332,10 @@ impl AgentTool for WorkTakeoverTaskUpdateTool {
             result: args["result"].as_str().map(|s| s.to_string()),
             note: args["note"].as_str().map(|s| s.to_string()),
         };
-        let task = wt::update_task(&id, patch)?
-            .ok_or_else(|| AppError::InvalidArgument(format!("任务不存在: {}", id)))?;
+        let task = match wt::update_task(&id, patch)? {
+            Some(task) => task,
+            None => return Err(missing_task_error(&id)),
+        };
         Ok(ToolResult::ok(json!({
             "ok": true,
             "status": "updated",

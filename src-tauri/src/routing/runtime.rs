@@ -104,6 +104,17 @@ impl InferenceRuntimeManager {
             ModelRole::System => return Err("系统安全内核不占用模型运行时".to_string()),
         };
         if snapshot.state != expected {
+            // 同一角色可能已被并发路径接管（例如恢复流程等待健康检查期间，
+            // 探测线程先一步 adopt_active 把它写成了 Active）。此时进程本就就绪，
+            // 拒绝这次标记只会让上层误判为恢复失败，故按幂等成功处理。
+            let already_active = snapshot.active_role == Some(role)
+                && matches!(
+                    snapshot.state,
+                    InferenceRuntimeState::JarvisActive | InferenceRuntimeState::OllamaActive
+                );
+            if already_active {
+                return Ok(());
+            }
             return Err(format!(
                 "不能从 {:?} 标记 {:?} 为活动",
                 snapshot.state, role

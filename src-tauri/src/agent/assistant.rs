@@ -22,7 +22,16 @@ use super::{extract_tool_calls, ChatEvent, RunCancellation};
 use crate::tools::ToolCategory;
 
 const MAX_ADAPTIVE_TURNS: usize = 6;
+/// 流内相邻分片之间的等待上限：卡住这么久说明推理器本身异常。
 const MODEL_CHUNK_TIMEOUT_SECS: u64 = 20;
+
+/// 首个分片的等待上限：必须覆盖「模型冷加载进显存 + 提示词预填充」。
+///
+/// Ollama 在模型未常驻时、或 Windows 上禁用 mmap（`reason=windows_cud`）时，
+/// 首 token 前要先从磁盘读数 GB 权重再建 llama-server；8GB 显存下 qwen3:8b
+/// 实测加载 4.8s，加上长提示词预填充经常超过 20s。用流内超时判定它，
+/// 会把「正在加载」误报成「模型无响应」，所以首分片单独放宽。
+const MODEL_FIRST_CHUNK_TIMEOUT_SECS: u64 = 120;
 const MAX_TOOL_ROUTING_TEMPERATURE: f32 = 0.2;
 
 /// 对话路径的上下文窗口默认值。
@@ -261,23 +270,36 @@ pub(crate) async fn run(context: AssistantContext<'_>, mut task: Task) -> AppRes
 
         let mut assistant_text = String::new();
         let mut tool_calls = Vec::<ToolCall>::new();
+        // 首个分片等的是冷加载 + 预填充，之后等的才是"流是否卡住"。
+        let mut first_chunk = true;
 
         loop {
+            let wait_secs = if first_chunk {
+                MODEL_FIRST_CHUNK_TIMEOUT_SECS
+            } else {
+                MODEL_CHUNK_TIMEOUT_SECS
+            };
             let next_chunk = tokio::select! {
                 _ = context.cancellation.cancelled() => return Ok(()),
-                chunk = timeout(Duration::from_secs(MODEL_CHUNK_TIMEOUT_SECS), stream.next()) => chunk,
+                chunk = timeout(Duration::from_secs(wait_secs), stream.next()) => chunk,
             };
             let chunk = match next_chunk {
                 Ok(chunk) => chunk,
                 Err(_) => {
-                    return fail_task(&mut task, context.db, context.tx, "模型响应超时（20秒）")
-                        .await;
+                    let message = format!("模型响应超时（{}秒）", wait_secs);
+                    return fail_task(&mut task, context.db, context.tx, &message).await;
                 }
             };
 
             match chunk {
-                Some(ChatChunk::Text(text)) => assistant_text.push_str(&text),
-                Some(ChatChunk::ToolCall(call)) => tool_calls.push(call),
+                Some(ChatChunk::Text(text)) => {
+                    first_chunk = false;
+                    assistant_text.push_str(&text);
+                }
+                Some(ChatChunk::ToolCall(call)) => {
+                    first_chunk = false;
+                    tool_calls.push(call);
+                }
                 Some(ChatChunk::Done(_, _)) | None => break,
                 Some(ChatChunk::Error(error)) => {
                     return fail_task(&mut task, context.db, context.tx, &error).await;
