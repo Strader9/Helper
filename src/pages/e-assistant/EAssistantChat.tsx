@@ -490,7 +490,7 @@ export default function EAssistantChat() {
               content: `⚠️ 无法启动只读任务：${detail}`,
             }));
             finishStream();
-            setHandoffState({ state: 'jarvis_restore_failed', error: detail });
+            setHandoffState(null);
           }
           return;
         }
@@ -568,7 +568,7 @@ export default function EAssistantChat() {
         content: `⚠️ 无法启动 Ollama 交接：${detail}`,
       }));
       finishStream();
-      setHandoffState({ state: 'jarvis_restore_failed', error: detail });
+      setHandoffState(null);
     }
   }, [finishStream, pendingHandoff, updateStreamingMessage]);
 

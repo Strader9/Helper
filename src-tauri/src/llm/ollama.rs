@@ -342,7 +342,13 @@ impl OllamaClient {
             Endpoint::Ollama => format!("{}/api/tags", self.base_url),
             Endpoint::OpenAiCompat { .. } => format!("{}/models", self.base_url),
         };
-        self.client.get(&url).send().await.is_ok()
+        self.client
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+            .map(|response| response.status().is_success())
+            .unwrap_or(false)
     }
 
     /// 获取模型列表

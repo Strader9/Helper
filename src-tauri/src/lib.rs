@@ -248,6 +248,12 @@ pub struct AppState {
     pub handoff_restore_runs: Arc<Mutex<HashSet<String>>>,
     /// 仅由 Jarvis 规划命令写入的一次性交接包，阻止前端伪造模型间切换。
     pub pending_handoffs: Arc<Mutex<HashMap<String, crate::routing::HandoffPacket>>>,
+    /// 由健康检查"认领"的 Jarvis 进程 PID。
+    ///
+    /// `jarvis_start` 发现端口上已有后端时会走 `alreadyRunning` 分支，那条路径
+    /// 拿不到 `Child` 句柄。不把 PID 记下来，之后切 Ollama 就会把自己的进程
+    /// 当成"外部进程"而拒绝交接。
+    pub adopted_jarvis_pids: Arc<Mutex<Vec<u32>>>,
     /// V21: 关闭按钮最小化到托盘（同步原子变量，供窗口事件回调读取）
     pub minimize_to_tray: Arc<AtomicBool>,
 }
@@ -492,6 +498,7 @@ impl AppState {
             inference_runtime: Arc::new(InferenceRuntimeManager::new()),
             handoff_restore_runs: Arc::new(Mutex::new(HashSet::new())),
             pending_handoffs: Arc::new(Mutex::new(HashMap::new())),
+            adopted_jarvis_pids: Arc::new(Mutex::new(Vec::new())),
             minimize_to_tray,
         })
     }
@@ -745,8 +752,27 @@ pub mod commands {
             return Err("该能力不应交给 Ollama 执行".to_string());
         }
 
-        let stopped = stop_managed_jarvis(&state).await?;
-        if !stopped["stopped"].as_bool().unwrap_or(false) && jarvis_health().await.is_ok() {
+        // 在释放前台助手之前确认目标服务可用，避免失败交接触发无谓的恢复。
+        if !state.ollama.is_available().await {
+            return Err("无法连接模型服务。请启动 Ollama（ollama serve），或检查设置中的模型服务地址后重试。".to_string());
+        }
+        let stop_result = stop_managed_jarvis(&state).await?;
+        let mut managed_stopped = stop_result["stopped"].as_bool().unwrap_or(false);
+
+        // 句柄为空但后端仍在响应：多半是上一个应用实例留下的 Jarvis。
+        // 按端口找回 PID，确认命令行属于本项目后再结束 —— PID 会被复用，
+        // 不确认归属就杀掉，等于把用户自己起的助手一起干掉。
+        if !managed_stopped && jarvis_health().await.is_ok() {
+            if let Some(pid) = jarvis_listen_pid() {
+                if jarvis_pid_is_ours(pid) {
+                    jarvis_kill_tree(pid);
+                    state.inference_runtime.force_idle().await;
+                    managed_stopped = true;
+                }
+            }
+        }
+
+        if !managed_stopped && jarvis_health().await.is_ok() {
             return Err(
                 "检测到未由 E-Assisant 托管的助手进程；为避免结束外部任务，已拒绝切换到 Ollama"
                     .to_string(),
@@ -761,7 +787,7 @@ pub mod commands {
         if jarvis_health().await.is_ok() {
             return Err("Jarvis 控制面尚未停止，不能安全加载 Ollama".to_string());
         }
-        if !stopped["stopped"].as_bool().unwrap_or(false) {
+        if !managed_stopped {
             // 外部 Jarvis 已经自行退出时，可能还残留上一轮的“已接管”状态；
             // 健康检查已确认没有进程，才允许清除该陈旧状态并开始本次串行任务。
             state.inference_runtime.force_idle().await;
@@ -4728,6 +4754,10 @@ pub mod commands {
     /// 路由前缀是 `/api/v1`（不带前缀会 404 —— 实测踩过）。
     const JARVIS_BASE_URL: &str = "http://127.0.0.1:8000/api/v1";
 
+    /// 监听端口，与 `JARVIS_BASE_URL` 保持一致。找回"句柄已丢失但进程还在"的
+    /// Jarvis 时按这个端口查 PID。
+    const JARVIS_PORT: u16 = 8000;
+
     /// 由本进程拉起的 Jarvis 子进程。用 OnceLock 而不是放进 AppState，
     /// 是因为它可能不存在（用户自己开终端跑的），生命周期与本进程绑定即可。
     static JARVIS_CHILD: std::sync::OnceLock<std::sync::Mutex<Option<std::process::Child>>> =
@@ -4786,13 +4816,92 @@ pub mod commands {
     /// 连带子进程一起结束。uvicorn 会派生 worker 线程/子进程，只杀父进程会留孤儿。
     #[cfg(windows)]
     fn jarvis_kill_tree(pid: u32) {
+        use std::os::windows::process::CommandExt;
+        // venv 的 python.exe 是启动器；它退出后 taskkill /T 无法再找到父 PID。
+        // 先按父子关系收集后代，再逐一结束，不能按端口或进程名批量结束。
+        let script = format!(
+            "$all = @(Get-CimInstance Win32_Process); function Stop-Descendants([uint32]$parent) {{ foreach ($entry in $all) {{ if ($entry.ParentProcessId -eq $parent -and $entry.ProcessId -ne $parent) {{ Stop-Descendants $entry.ProcessId; Stop-Process -Id $entry.ProcessId -Force -ErrorAction SilentlyContinue }} }} }}; Stop-Descendants {pid}"
+        );
+        let _ = std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(0x0800_0000)
+            .output();
         let _ = std::process::Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
+            .creation_flags(0x0800_0000)
             .output();
     }
 
     #[cfg(not(windows))]
     fn jarvis_kill_tree(_pid: u32) {}
+
+    /// 查监听 Jarvis 端口的进程 PID。
+    ///
+    /// 应用重启、dev 热重载或上一轮 kill 残留之后，Jarvis 进程会活着但
+    /// `JARVIS_CHILD` 里的句柄已随旧实例消失。此时只能靠端口把它找回来。
+    /// 用 `netstat` 而不是 PowerShell：后者启动就要几百毫秒，前者几乎瞬时。
+    #[cfg(windows)]
+    fn jarvis_listen_pid() -> Option<u32> {
+        use std::os::windows::process::CommandExt;
+        let output = std::process::Command::new("netstat")
+            .args(["-ano", "-p", "TCP"])
+            .creation_flags(0x0800_0000)
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let port_text = JARVIS_PORT.to_string();
+        for line in text.lines() {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            // 形如：TCP  127.0.0.1:8000  0.0.0.0:0  LISTENING  1234
+            if cols.len() < 5 {
+                continue;
+            }
+            // 按冒号后最后一段比端口，不能用 ends_with(":8000")：
+            // 那样 127.0.0.1:18000 也会被当成 8000。
+            if cols[1].rsplit_once(':').map(|(_, port)| port) != Some(port_text.as_str()) {
+                continue;
+            }
+            if !cols[3].eq_ignore_ascii_case("LISTENING") {
+                continue;
+            }
+            if let Ok(pid) = cols[4].parse::<u32>() {
+                return Some(pid);
+            }
+        }
+        None
+    }
+
+    #[cfg(not(windows))]
+    fn jarvis_listen_pid() -> Option<u32> {
+        None
+    }
+
+    /// 判断该 PID 是否属于本应用部署的 Jarvis，而不是用户手动起的助手。
+    ///
+    /// 这条判据只服务于"能不能结束它"：PID 会被复用，光看端口或父进程都不够，
+    /// 必须看命令行是否落在本项目的 jarvis 目录、或带 `jarvis_backend.app`。
+    #[cfg(windows)]
+    fn jarvis_pid_is_ours(pid: u32) -> bool {
+        use std::os::windows::process::CommandExt;
+        let script = format!(
+            "try {{ (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine }} catch {{ '' }}"
+        );
+        let output = match std::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .creation_flags(0x0800_0000)
+            .output()
+        {
+            Ok(output) => output,
+            Err(_) => return false,
+        };
+        let text = String::from_utf8_lossy(&output.stdout).to_lowercase();
+        text.contains("jarvis_backend.app") || text.contains("pc-guardian\\src-tauri\\jarvis")
+    }
+
+    #[cfg(not(windows))]
+    fn jarvis_pid_is_ours(_pid: u32) -> bool {
+        false
+    }
 
     /// Jarvis 侧推理可能排队几十秒，超时必须给足，否则界面会误判成"挂了"。
     fn jarvis_http() -> Result<reqwest::Client, String> {
@@ -4823,6 +4932,7 @@ pub mod commands {
     pub async fn jarvis_health() -> Result<serde_json::Value, String> {
         let resp = jarvis_http()?
             .get(format!("{JARVIS_BASE_URL}/health"))
+            .timeout(std::time::Duration::from_secs(2))
             .send()
             .await
             .map_err(|e| format!("Jarvis 后端未运行（{e}）"))?;
@@ -4841,11 +4951,27 @@ pub mod commands {
     ) -> Result<serde_json::Value, String> {
         // 已在运行就不重复拉起：重复启动只会撞端口，然后抛一堆无关错误。
         if jarvis_health().await.is_ok() {
+            // 这条分支拿不到 Child 句柄（进程可能是上一个应用实例留下的），
+            // 但必须把 PID 记下来，否则之后切 Ollama 时会把它判成"外部进程"。
+            // 只登记确认属于本项目的进程，用户自己起的助手仍然不许动。
+            let existing_pid = jarvis_listen_pid();
+            if let Some(pid) = existing_pid {
+                if jarvis_pid_is_ours(pid) {
+                    let mut guard = state.adopted_jarvis_pids.lock().await;
+                    if !guard.contains(&pid) {
+                        guard.push(pid);
+                    }
+                }
+            }
             state
                 .inference_runtime
                 .adopt_active(crate::routing::ModelRole::Jarvis)
                 .await?;
-            return Ok(serde_json::json!({ "started": false, "alreadyRunning": true }));
+            return Ok(serde_json::json!({
+                "started": false,
+                "alreadyRunning": true,
+                "pid": existing_pid,
+            }));
         }
 
         let (py, wd, worker_exe, model_root, pipe_name, config_path) = {
@@ -5105,6 +5231,10 @@ pub mod commands {
             .mark_active(crate::routing::ModelRole::Jarvis)
             .await?;
 
+        // 本次是自己 spawn 的，句柄已在 JARVIS_CHILD 里，旧的认领记录作废，
+        // 免得把陈旧 PID 留到下一次停止时误杀。
+        state.adopted_jarvis_pids.lock().await.clear();
+
         Ok(serde_json::json!({
             "started": true,
             "pid": pid,
@@ -5127,6 +5257,7 @@ pub mod commands {
                 let pid = child.id();
                 jarvis_kill_tree(pid);
                 let _ = child.kill();
+                let _ = child.wait();
                 pid
             })
         };
@@ -5137,11 +5268,27 @@ pub mod commands {
                 let pid = child.id();
                 jarvis_kill_tree(pid);
                 let _ = child.kill();
+                let _ = child.wait();
                 pid
             })
         };
 
-        let stopped = backend_pid.is_some() || worker_pid.is_some();
+        // 认领来的进程没有 Child 句柄，只能按登记的 PID 结束。结束前再确认一次
+        // 归属：PID 会被复用，登记时是我们的，之后可能已经指向别的程序。
+        let adopted_pids: Vec<u32> = {
+            let mut guard = state.adopted_jarvis_pids.lock().await;
+            std::mem::take(&mut *guard)
+        };
+        let mut killed_adopted = Vec::new();
+        for pid in adopted_pids {
+            if jarvis_pid_is_ours(pid) {
+                jarvis_kill_tree(pid);
+                killed_adopted.push(pid);
+            }
+        }
+
+        let stopped =
+            backend_pid.is_some() || worker_pid.is_some() || !killed_adopted.is_empty();
         if stopped {
             state.inference_runtime.force_idle().await;
         }
@@ -5149,6 +5296,7 @@ pub mod commands {
             "stopped": stopped,
             "pid": backend_pid,
             "workerPid": worker_pid,
+            "adoptedPids": killed_adopted,
             "reason": if stopped { "" } else { "not_managed" },
         }))
     }
@@ -5185,7 +5333,13 @@ pub mod commands {
             serde_json::json!({ "state": "jarvis_starting" }),
         );
         let state = app_handle.state::<AppState>();
-        match jarvis_start(state, None, None).await {
+        let restored = tokio::time::timeout(
+            std::time::Duration::from_secs(180),
+            jarvis_start(state, None, None),
+        )
+        .await
+        .unwrap_or_else(|_| Err("E-Assisant 恢复超过 180 秒，请检查运行时日志后重新启动助手".to_string()));
+        match restored {
             Ok(_) => {
                 let _ = app_handle.emit(
                     "handoff:state",
