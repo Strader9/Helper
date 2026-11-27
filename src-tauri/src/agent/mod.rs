@@ -15,9 +15,7 @@ use crate::db::conversation::{ConversationManager, ConversationMessage};
 use crate::db::Database;
 use crate::error::AppResult;
 use crate::llm::{ChatChunk, OllamaClient, OllamaMessage, ToolCall};
-use crate::security::PermissionManager;
-use crate::tools::executor::{PendingPermission, ToolCallRequest, ToolExecutor};
-use crate::tools::ToolRegistry;
+use crate::tools::executor::{ToolCallRequest, ToolExecutor};
 pub mod assistant;
 pub mod context;
 pub mod history;
@@ -66,6 +64,7 @@ pub enum ChatEvent {
 pub struct AgentRun {
     pub run_id: String,
     pub events: tokio::sync::mpsc::Receiver<ChatEvent>,
+    pub(crate) cancellation: Arc<RunCancellation>,
 }
 
 pub(crate) struct RunCancellation {
@@ -74,7 +73,7 @@ pub(crate) struct RunCancellation {
 }
 
 impl RunCancellation {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             cancelled: AtomicBool::new(false),
             notify: tokio::sync::Notify::new(),
@@ -136,9 +135,6 @@ fn resolve_run_params(
 
 pub struct AgentRuntime {
     ollama: Arc<OllamaClient>,
-    tool_registry: Arc<ToolRegistry>,
-    #[allow(dead_code)]
-    permission_manager: Arc<Mutex<PermissionManager>>,
     executor: Arc<ToolExecutor>,
     model: String,
     temperature: f32,
@@ -149,39 +145,19 @@ pub struct AgentRuntime {
 impl AgentRuntime {
     pub fn new(
         ollama: Arc<OllamaClient>,
-        tool_registry: Arc<ToolRegistry>,
-        permission_manager: Arc<Mutex<PermissionManager>>,
-        db: Arc<Mutex<Database>>,
+        executor: Arc<ToolExecutor>,
         model: String,
         temperature: f32,
         max_iterations: usize,
     ) -> Self {
-        let executor = Arc::new(ToolExecutor::new(
-            permission_manager.clone(),
-            tool_registry.clone(),
-            db,
-        ));
-
         Self {
             ollama,
-            tool_registry,
-            permission_manager,
             executor,
             model,
             temperature,
             max_iterations,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-
-    /// 设置权限确认事件发射器（用于权限确认弹窗）
-    pub fn set_permission_emitter(&self, emitter: crate::tools::executor::PermissionEmitter) {
-        self.executor.set_permission_emitter(emitter);
-    }
-
-    /// 设置待处理权限请求映射
-    pub fn set_pending_permissions(&self, pending: Arc<Mutex<HashMap<String, PendingPermission>>>) {
-        self.executor.set_pending_permissions(pending);
     }
 
     /// 发送消息并驱动 Agent（确定性直达 + 本地路由 + 单次自适应工具调用）
@@ -234,7 +210,6 @@ impl AgentRuntime {
         let db = db.clone();
         let ollama = self.ollama.clone();
         let executor = self.executor.clone();
-        let tool_registry = self.tool_registry.clone();
         let model = model_override
             .filter(|model| !model.trim().is_empty())
             .unwrap_or(&self.model)
@@ -262,8 +237,6 @@ impl AgentRuntime {
                 if task_cancellation.is_cancelled() {
                     return Ok(());
                 }
-                let _ = tx.send(ChatEvent::Thinking).await;
-
                 // 高频、单义指令直接执行，省掉意图分类 + 工具选择两次模型调用。
                 // 工具仍统一经过 ToolExecutor，因此权限确认与审计不会被绕过。
                 if let Some((tool_name, arguments)) = quick_direct_tool_call(&user_content) {
@@ -305,7 +278,7 @@ impl AgentRuntime {
                     if !needs_tool {
                         return Ok(());
                     }
-                    eprintln!("[Agent] 闲聊模型请求工具，自动切换 Jarvis 路径");
+                    eprintln!("[Agent] 闲聊模型请求工具，进入工具规划");
                 }
 
                 // 明确动作使用本地推断的窄工具集；闲聊回退时保留全部类别
@@ -329,14 +302,15 @@ impl AgentRuntime {
                     .send(ChatEvent::TaskUpdate(TaskUpdateEvent::from_task(&task)))
                     .await;
 
-                assistant::run(
+                let task_id = task.id.clone();
+                let result = assistant::run(
                     assistant::AssistantContext {
                         session_id: &session_id,
                         user_content: &user_content,
                         db: &db,
                         ollama: &ollama,
                         executor: &executor,
-                        tool_registry: &tool_registry,
+                        tool_registry: executor.tool_registry(),
                         model: &model,
                         temperature,
                         max_iterations,
@@ -347,11 +321,33 @@ impl AgentRuntime {
                     },
                     task,
                 )
-                .await?;
-                Ok(())
+                .await;
+                if task_cancellation.is_cancelled() {
+                    let updated = {
+                        let db_guard = db.lock().await;
+                        let tasks = TaskManager::new(db_guard.connection());
+                        match tasks.get(&task_id)? {
+                            Some(mut task) if !task.status.is_terminal() => {
+                                task.set_status(task::TaskStatus::Cancelled);
+                                tasks.update(&task)?;
+                                Some(TaskUpdateEvent::from_task(&task))
+                            }
+                            _ => None,
+                        }
+                    };
+                    if let Some(event) = updated {
+                        let _ = tx.send(ChatEvent::TaskUpdate(event)).await;
+                    }
+                }
+                result
             }
             .await;
 
+            if task_cancellation.is_cancelled() {
+                executor
+                    .cancel_pending_for_run(&session_id, &execution_run_id)
+                    .await;
+            }
             if let Err(e) = result {
                 if !task_cancellation.is_cancelled() {
                     let _ = tx.send(ChatEvent::Error(e.to_string())).await;
@@ -381,7 +377,11 @@ impl AgentRuntime {
             }
         });
 
-        Ok(AgentRun { run_id, events: rx })
+        Ok(AgentRun {
+            run_id,
+            events: rx,
+            cancellation,
+        })
     }
 
     pub async fn cancel_session(&self, session_id: &str) -> bool {
@@ -569,6 +569,7 @@ async fn execute_direct_tool(
         .await;
 
     let execution = tokio::select! {
+        biased;
         _ = context.cancellation.cancelled() => return Ok(()),
         result = context.executor.execute(ToolCallRequest {
             tool_name: tool_name.clone(),
@@ -652,8 +653,6 @@ struct ChatFastContext<'a> {
 }
 
 async fn run_chat_fast(context: ChatFastContext<'_>) -> AppResult<bool> {
-    let _ = context.tx.send(ChatEvent::Thinking).await;
-
     // 构建快速路径 System Prompt
     let memory_context = build_memory_context(context.user_content);
     let system_prompt = intent::fast_path_system_prompt(&memory_context);
@@ -680,10 +679,12 @@ async fn run_chat_fast(context: ChatFastContext<'_>) -> AppResult<bool> {
     messages.extend(history);
 
     // 单次 LLM 流式调用（无工具）
-    let mut stream = context
-        .ollama
-        .chat_stream(context.model, messages, None, context.temperature)
-        .await?;
+    let _ = context.tx.send(ChatEvent::Thinking).await;
+    let mut stream = tokio::select! {
+        biased;
+        _ = context.cancellation.cancelled() => return Ok(false),
+        result = context.ollama.chat_stream(context.model, messages, None, context.temperature) => result?,
+    };
 
     let mut full_response = String::new();
     let mut response_forwarded = false;

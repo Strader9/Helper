@@ -21,28 +21,35 @@ pub use registry::{AgentTool, RiskLevel, ToolCategory, ToolRegistry, ToolResult}
 // 当前执行上下文
 // ============================================================
 
-use std::sync::{Mutex, OnceLock};
-
-fn session_slot() -> &'static Mutex<Option<String>> {
-    static SLOT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-    SLOT.get_or_init(|| Mutex::new(None))
-}
-
-/// 执行工具前由 executor 注入当前会话 ID。
-///
-/// 工具的 `execute` 只收 args，拿不到会话——但任务编排类工具必须知道
-/// 这条指令属于哪个会话，否则会把不同对话的任务混到同一个列表里。
-pub fn set_current_session(session_id: &str) {
-    if let Ok(mut slot) = session_slot().lock() {
-        *slot = Some(session_id.to_string());
-    }
+tokio::task_local! {
+    pub(crate) static TOOL_SESSION_ID: String;
 }
 
 /// 读当前会话 ID；没有执行上下文时返回 `unknown`。
 pub fn current_session() -> String {
-    session_slot()
-        .lock()
-        .ok()
-        .and_then(|slot| slot.clone())
-        .unwrap_or_else(|| "unknown".to_string())
+    TOOL_SESSION_ID
+        .try_with(String::clone)
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn concurrent_and_nested_tools_keep_their_session() {
+        let first = TOOL_SESSION_ID.scope("first".into(), async {
+            tokio::task::yield_now().await;
+            assert_eq!(current_session(), "first");
+            let nested = TOOL_SESSION_ID.scope("nested".into(), async { current_session() });
+            assert_eq!(nested.await, "nested");
+            assert_eq!(current_session(), "first");
+        });
+        let second = TOOL_SESSION_ID.scope("second".into(), async {
+            tokio::task::yield_now().await;
+            assert_eq!(current_session(), "second");
+        });
+        tokio::join!(first, second);
+        assert_eq!(current_session(), "unknown");
+    }
 }

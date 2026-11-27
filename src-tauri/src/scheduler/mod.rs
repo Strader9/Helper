@@ -1058,7 +1058,9 @@ async fn run_job(app_handle: &AppHandle, job: &ScheduledJob) -> Result<(), Strin
     };
 
     let outcome = match run {
-        Ok(agent_run) => drain_agent_run(agent_run.events, timeout_secs).await,
+        Ok(agent_run) => {
+            drain_agent_run(agent_run.events, timeout_secs, Some(&agent_run.cancellation)).await
+        }
         Err(e) => RunOutcome {
             status: "failed".to_string(),
             summary: None,
@@ -1129,6 +1131,7 @@ fn notify_failure(app_handle: &AppHandle, job: &ScheduledJob, outcome: &RunOutco
 pub(crate) async fn drain_agent_run(
     mut events: tokio::sync::mpsc::Receiver<ChatEvent>,
     timeout_secs: u64,
+    cancellation: Option<&crate::agent::RunCancellation>,
 ) -> RunOutcome {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
     let mut text = String::new();
@@ -1153,12 +1156,18 @@ pub(crate) async fn drain_agent_run(
             Ok(Some(_)) => {}
             Ok(None) => break,
             Err(_) => {
-                error = Some(format!("执行超过 {} 秒，已中止", timeout_secs));
+                if let Some(cancellation) = cancellation {
+                    cancellation.cancel();
+                }
+                error = Some(format!("执行超过 {} 秒，已请求取消", timeout_secs));
                 break;
             }
         }
     }
 
+    if error.is_none() && cancellation.is_some_and(crate::agent::RunCancellation::is_cancelled) {
+        error = Some("执行已取消".to_string());
+    }
     let status = if error.is_some() {
         "failed"
     } else if done {
@@ -1406,7 +1415,7 @@ mod tests {
         tx.send(ChatEvent::Done).await.unwrap();
         drop(tx);
 
-        let outcome = drain_agent_run(rx, 5).await;
+        let outcome = drain_agent_run(rx, 5, None).await;
         assert_eq!(outcome.status, "ok");
         assert_eq!(outcome.summary.as_deref(), Some("磁盘还剩 12GB"));
         assert_eq!(outcome.steps, 1);
@@ -1422,9 +1431,21 @@ mod tests {
             .unwrap();
         drop(tx);
 
-        let outcome = drain_agent_run(rx, 5).await;
+        let outcome = drain_agent_run(rx, 5, None).await;
         assert_eq!(outcome.status, "failed");
         assert_eq!(outcome.error.as_deref(), Some("模型不可用"));
+    }
+
+    #[tokio::test]
+    async fn drain_does_not_report_a_cancelled_run_as_success() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let cancellation = crate::agent::RunCancellation::new();
+        cancellation.cancel();
+        tx.send(ChatEvent::Done).await.unwrap();
+
+        let outcome = drain_agent_run(rx, 5, Some(&cancellation)).await;
+        assert_eq!(outcome.status, "failed");
+        assert_eq!(outcome.error.as_deref(), Some("执行已取消"));
     }
 
     #[tokio::test]
@@ -1433,7 +1454,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel::<ChatEvent>(1);
         drop(tx);
 
-        let outcome = drain_agent_run(rx, 5).await;
+        let outcome = drain_agent_run(rx, 5, None).await;
         assert_eq!(outcome.status, "failed");
         assert!(outcome.error.is_some(), "必须说明异常收尾的原因");
     }
@@ -1442,7 +1463,9 @@ mod tests {
     async fn drain_times_out_instead_of_hanging_forever() {
         let (tx, rx) = tokio::sync::mpsc::channel::<ChatEvent>(1);
         // 一个永不发送的通道 + 0 秒超时：必须立刻返回失败而不是卡住
-        let outcome = drain_agent_run(rx, 0).await;
+        let cancellation = crate::agent::RunCancellation::new();
+        let outcome = drain_agent_run(rx, 0, Some(&cancellation)).await;
+        assert!(cancellation.is_cancelled());
         assert_eq!(outcome.status, "failed");
         assert!(
             outcome.error.as_deref().unwrap_or("").contains("超"),

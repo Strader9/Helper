@@ -46,6 +46,18 @@ pub enum RouteDecision {
 pub struct RoutingPolicy;
 
 impl RoutingPolicy {
+    pub fn routes_to_ollama(&self, capability: Capability) -> bool {
+        matches!(
+            self.decide(capability),
+            RouteDecision::Direct {
+                owner: ModelRole::Ollama
+            } | RouteDecision::Handoff {
+                worker: ModelRole::Ollama,
+                ..
+            }
+        )
+    }
+
     pub fn decide(&self, capability: Capability) -> RouteDecision {
         use Capability::*;
         use ModelRole::*;
@@ -125,5 +137,14 @@ mod tests {
     #[test]
     fn policy_declares_every_capability_once() {
         assert_eq!(RoutingPolicy::all().len(), 18);
+    }
+
+    #[test]
+    fn ollama_accepts_its_direct_and_delegated_capabilities() {
+        let policy = RoutingPolicy;
+        assert!(policy.routes_to_ollama(Capability::FileWork));
+        assert!(policy.routes_to_ollama(Capability::BrowserWork));
+        assert!(!policy.routes_to_ollama(Capability::Conversation));
+        assert!(!policy.routes_to_ollama(Capability::SafetyExecution));
     }
 }

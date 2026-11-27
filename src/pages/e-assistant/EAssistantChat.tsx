@@ -51,8 +51,9 @@ interface ChatMessage {
   content: string;
   timestamp: string;
   toolCalls?: ToolCall[];
-  /** AI 是否正在思考（尚未产出内容） */
+  /** 等待首条文本或工具事件 */
   thinking?: boolean;
+  waitingForModel?: boolean;
 }
 
 /* ── Tauri 流式事件 payload（payload 为 JSON 字符串，需 parse） ── */
@@ -77,6 +78,7 @@ interface ToolResultEventData {
 interface HandoffPacket {
   handoffId: string;
   taskId: string;
+  conversationId: string;
   capability: string;
   userGoal: string;
   conversationSummary: string;
@@ -97,13 +99,11 @@ interface HandoffRecommendation {
 interface HandoffPlan {
   recommendation: HandoffRecommendation;
   packet: HandoffPacket | null;
-  executionStarted: boolean;
 }
 
 interface PendingHandoff {
   packet: HandoffPacket;
   recommendation: HandoffRecommendation;
-  originalMessage: string;
 }
 
 interface HandoffStatePayload {
@@ -273,6 +273,7 @@ export default function EAssistantChat() {
   /* ── 流式会话追踪 refs（事件监听器只注册一次，用 ref 避免闭包陷阱） ── */
   const activeConvIdRef = useRef<string | null>(null);
   const currentRunIdRef = useRef<string | null>(null);
+  const planningRequestRef = useRef<symbol | null>(null);
   const streamingMsgIdRef = useRef<string | null>(null);
   const isSendingRef = useRef(false);
   const streamingTextRef = useRef('');
@@ -355,6 +356,7 @@ export default function EAssistantChat() {
   }, []);
 
   const selectConversation = useCallback((convId: string) => {
+    if (activeConvIdRef.current !== convId) setPendingHandoff(null);
     activeConvIdRef.current = convId;
     setActiveConvId(convId);
     setMessages([]);
@@ -364,6 +366,7 @@ export default function EAssistantChat() {
 
   /* ── 新建会话 ── */
   const handleNewConversation = useCallback(() => {
+    setPendingHandoff(null);
     activeConvIdRef.current = null;
     setActiveConvId(null);
     setMessages([]);
@@ -381,6 +384,7 @@ export default function EAssistantChat() {
     }
     setConversations(prev => prev.filter(c => c.id !== convId));
     if (activeConvId === convId) {
+      setPendingHandoff(null);
       activeConvIdRef.current = null;
       setActiveConvId(null);
       setMessages([]);
@@ -401,10 +405,11 @@ export default function EAssistantChat() {
     isSendingRef.current = false;
     streamingMsgIdRef.current = null;
     currentRunIdRef.current = null;
+    planningRequestRef.current = null;
   }, []);
 
-  /** 创建空 AI 气泡并发起 send_message，事件流负责填充内容 */
-  const runAssistant = useCallback(async (text: string) => {
+  /** 直接聊天和已签发交接共用气泡与流式状态。 */
+  const runAssistant = useCallback(async (text: string, packet?: HandoffPacket) => {
     const convId = activeConvIdRef.current;
     if (!convId) return;
 
@@ -421,23 +426,34 @@ export default function EAssistantChat() {
       },
     ]);
     streamingMsgIdRef.current = aiMsgId;
+    currentRunIdRef.current = aiMsgId;
     streamingTextRef.current = '';
     setIsSending(true);
     isSendingRef.current = true;
 
+    if (packet) setHandoffState({ state: 'ollama_starting' });
+
     try {
-      // 主对话由 EAssistant 负责语言、视觉与感知呈现；返回 run_id，内容仍由
-      // 同一套 Tauri Event 流填充。工具型任务将在串行交接器中转给 Ollama。
-      const runId = await invoke<string>('send_jarvis_message', {
-        conversationId: convId,
-        content: text,
-        requestId: null,
-      });
-      currentRunIdRef.current = runId;
-    } catch {
-      const errText = '抱歉，请求发送失败，请检查连接后重试。';
+      if (packet) {
+        await invoke<string>('execute_ollama_handoff', {
+          packet,
+          conversationId: convId,
+          requestId: aiMsgId,
+        });
+      } else {
+        await invoke<string>('send_jarvis_message', {
+          conversationId: convId,
+          content: text,
+          requestId: aiMsgId,
+        });
+      }
+    } catch (error) {
+      if (currentRunIdRef.current !== aiMsgId) return;
+      const detail = error instanceof Error ? error.message : String(error);
+      const errText = (packet ? '无法启动交接任务：' : '请求发送失败：') + detail;
       updateStreamingMessage(m => ({ ...m, thinking: false, content: errText }));
       finishStream();
+      if (packet) setHandoffState(null);
       loadConversations();
       // 实时对话模式下也要把错误读出来，否则状态机会卡住
       if (voiceModeRef.current) voiceApiRef.current.speak(errText);
@@ -448,6 +464,8 @@ export default function EAssistantChat() {
   const planAndRunAssistant = useCallback(async (text: string) => {
     const convId = activeConvIdRef.current;
     if (!convId) return;
+    const planningRequest = Symbol();
+    planningRequestRef.current = planningRequest;
     setIsSending(true);
     isSendingRef.current = true;
     setHandoffState(null);
@@ -455,49 +473,23 @@ export default function EAssistantChat() {
     try {
       const plan = await invoke<HandoffPlan>('jarvis_recommend_handoff', {
         message: text,
+        conversationId: convId,
         observationSummary: null,
         taskId: null,
       });
+      if (planningRequestRef.current !== planningRequest) return;
+      if (activeConvIdRef.current !== convId) {
+        finishStream();
+        return;
+      }
       if (plan.packet) {
         if (!plan.recommendation.requires_confirmation_for_write) {
-          const aiMsgId = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-          setMessages(prev => [
-            ...prev,
-            {
-              id: aiMsgId,
-              role: 'assistant',
-              content: '',
-              timestamp: new Date().toISOString(),
-              toolCalls: [],
-              thinking: true,
-            },
-          ]);
-          streamingMsgIdRef.current = aiMsgId;
-          streamingTextRef.current = '';
-          setHandoffState({ state: 'ollama_starting' });
-          try {
-            const runId = await invoke<string>('execute_ollama_handoff', {
-              packet: plan.packet,
-              conversationId: convId,
-              requestId: null,
-            });
-            currentRunIdRef.current = runId;
-          } catch (error) {
-            const detail = error instanceof Error ? error.message : String(error);
-            updateStreamingMessage(message => ({
-              ...message,
-              thinking: false,
-              content: `⚠️ 无法启动只读任务：${detail}`,
-            }));
-            finishStream();
-            setHandoffState(null);
-          }
+          await runAssistant(text, plan.packet);
           return;
         }
         setPendingHandoff({
           packet: plan.packet,
           recommendation: plan.recommendation,
-          originalMessage: text,
         });
         setMessages(prev => [
           ...prev,
@@ -515,6 +507,11 @@ export default function EAssistantChat() {
       }
       await runAssistant(text);
     } catch (error) {
+      if (planningRequestRef.current !== planningRequest) return;
+      if (activeConvIdRef.current !== convId) {
+        finishStream();
+        return;
+      }
       const detail = error instanceof Error ? error.message : String(error);
       setMessages(prev => [
         ...prev,
@@ -527,50 +524,15 @@ export default function EAssistantChat() {
       ]);
       finishStream();
     }
-  }, [finishStream, runAssistant, updateStreamingMessage]);
+  }, [finishStream, runAssistant]);
 
   const confirmHandoff = useCallback(async () => {
     const pending = pendingHandoff;
     const convId = activeConvIdRef.current;
-    if (!pending || !convId || isSendingRef.current) return;
-
-    const aiMsgId = `ai-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    setMessages(prev => [
-      ...prev,
-      {
-        id: aiMsgId,
-        role: 'assistant',
-        content: '',
-        timestamp: new Date().toISOString(),
-        toolCalls: [],
-        thinking: true,
-      },
-    ]);
-    streamingMsgIdRef.current = aiMsgId;
-    streamingTextRef.current = '';
-    setIsSending(true);
-    isSendingRef.current = true;
-    setHandoffState({ state: 'ollama_starting' });
+    if (!pending || pending.packet.conversationId !== convId || isSendingRef.current) return;
     setPendingHandoff(null);
-
-    try {
-      const runId = await invoke<string>('execute_ollama_handoff', {
-        packet: pending.packet,
-        conversationId: convId,
-        requestId: null,
-      });
-      currentRunIdRef.current = runId;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      updateStreamingMessage(m => ({
-        ...m,
-        thinking: false,
-        content: `⚠️ 无法启动 Ollama 交接：${detail}`,
-      }));
-      finishStream();
-      setHandoffState(null);
-    }
-  }, [finishStream, pendingHandoff, updateStreamingMessage]);
+    await runAssistant(pending.packet.userGoal, pending.packet);
+  }, [pendingHandoff, runAssistant]);
 
   /* ── 发送消息 ── */
   const handleSend = useCallback(async (textOverride?: string) => {
@@ -607,6 +569,7 @@ export default function EAssistantChat() {
 
   /* ── 中断生成 ── */
   const handleCancel = useCallback(async () => {
+    planningRequestRef.current = null;
     if (pendingHandoff) {
       setPendingHandoff(null);
       setIsSending(false);
@@ -725,10 +688,10 @@ export default function EAssistantChat() {
      ────────────────────────────────────────────── */
   useEffect(() => {
     const handlers: Array<[string, (p: ChatStreamPayload) => void]> = [
-      // AI 开始思考
+      // 后端进入实际模型请求阶段
       ['chat:thinking', (p) => {
         if (!currentRunIdRef.current && p.run_id) currentRunIdRef.current = p.run_id;
-        updateStreamingMessage(m => ({ ...m, thinking: true }));
+        updateStreamingMessage(m => ({ ...m, thinking: true, waitingForModel: true }));
       }],
       // 流式文本片段：追加到当前 AI 消息
       ['chat:text', (p) => {
@@ -1159,7 +1122,9 @@ export default function EAssistantChat() {
                             {msg.thinking && !msg.content && (
                               <div className="flex items-center gap-2 py-1">
                                 <Loader2 size={13} className="animate-spin text-celestial-saturn" />
-                                <span className="text-xs text-white/50">正在思考…</span>
+                                <span className="text-xs text-white/50">
+                                  {msg.waitingForModel ? '等待模型响应…' : '正在处理请求…'}
+                                </span>
                                 <div className="flex gap-1">
                                   <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-celestial-saturn/60" style={{ animationDelay: '0ms' }} />
                                   <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-celestial-saturn/60" style={{ animationDelay: '150ms' }} />

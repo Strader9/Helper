@@ -7,6 +7,6 @@ mod handoff;
 mod policy;
 mod runtime;
 
-pub use handoff::{HandoffPacket, HandoffResult, ResourceRef};
+pub use handoff::{HandoffPacket, ResourceRef};
 pub use policy::{Capability, ModelRole, RouteDecision, RoutingPolicy};
 pub use runtime::{InferenceRuntimeManager, InferenceRuntimeState, RuntimeSnapshot};

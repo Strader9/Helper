@@ -648,9 +648,6 @@ async fn execute_step(step: &Step, args: Value, session_id: &str, run_id: &str) 
                 };
             };
 
-            // 记住调用方的会话，执行完还原：executor 会把会话写进全局槽，
-            // 不还原的话外层工具后续拿到的 session 会变成工作流的。
-            let outer_session = crate::tools::current_session();
             let request = crate::tools::ToolCallRequest {
                 tool_name: tool.clone(),
                 arguments: args,
@@ -662,7 +659,6 @@ async fn execute_step(step: &Step, args: Value, session_id: &str, run_id: &str) 
                 executor.execute(request),
             )
             .await;
-            crate::tools::set_current_session(&outer_session);
 
             match result {
                 Err(_) => StepOutcome {

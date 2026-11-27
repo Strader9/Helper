@@ -723,6 +723,12 @@ mod tests {
     /// 拆成多个测试会互相抢那个槽位。
     #[tokio::test]
     async fn task_lifecycle_persists_verifies_and_resumes() {
+        crate::tools::TOOL_SESSION_ID
+            .scope("sess-lifecycle".into(), task_lifecycle())
+            .await;
+    }
+
+    async fn task_lifecycle() {
         let dir = std::env::temp_dir().join(format!("pcg-tasks-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("建临时目录");
@@ -733,7 +739,6 @@ mod tests {
         drop(db);
 
         crate::memory::set_db_path(db_path);
-        crate::tools::set_current_session("sess-lifecycle");
 
         // --- 1. 建计划 ---
         let created = CreateTaskPlanTool

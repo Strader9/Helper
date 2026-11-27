@@ -666,7 +666,12 @@ async fn dispatch(app_handle: &AppHandle, request: &HttpRequest) -> (u16, Value)
                     .unwrap_or(180)
             };
 
-            let outcome = crate::scheduler::drain_agent_run(agent_run.events, timeout_secs).await;
+            let outcome = crate::scheduler::drain_agent_run(
+                agent_run.events,
+                timeout_secs,
+                Some(&agent_run.cancellation),
+            )
+            .await;
 
             let status = if outcome.status == "ok" { 200 } else { 500 };
             (

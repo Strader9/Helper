@@ -454,24 +454,18 @@ impl AppState {
                     .map_err(|e| e.to_string())
             })
         };
-        tool_executor.set_permission_emitter(permission_emitter.clone());
+        tool_executor.set_permission_emitter(permission_emitter);
         tool_executor.set_pending_permissions(pending_permissions.clone());
         // 工作流引擎的步骤要走同一条闸门，需要拿到执行器
         crate::tools::executor::publish_global_executor(tool_executor.clone());
 
         let agent = AgentRuntime::new(
             ollama.clone(),
-            tool_registry.clone(),
-            permission_manager.clone(),
-            db_arc.clone(),
+            tool_executor.clone(),
             ollama_model.clone(),
             temperature,
             max_iterations,
         );
-
-        // Phase 4: 设置 agent 的权限发射器和 pending_permissions
-        agent.set_permission_emitter(permission_emitter.clone());
-        agent.set_pending_permissions(pending_permissions.clone());
 
         // V18: 创建 Proactive Engine（在 main.rs setup 中启动）
         let proactive_engine = Arc::new(ProactiveEngine::new(app.handle().clone()));
@@ -518,7 +512,7 @@ pub mod commands {
     use crate::db::{AllowedDirectory, TrustedTool};
     use crate::llm::{ChatChunk, OllamaClient, OllamaMessage, OllamaModel};
     use crate::routing::{
-        Capability, HandoffPacket, InferenceRuntimeManager, ModelRole, ResourceRef, RouteDecision,
+        Capability, HandoffPacket, InferenceRuntimeManager, ModelRole, ResourceRef,
         RoutingPolicy, RuntimeSnapshot,
     };
     use crate::security::{AccessType, PathPolicyResult, PermissionDecision, PermissionResponse};
@@ -728,33 +722,27 @@ pub mod commands {
         conversation_id: String,
         request_id: Option<String>,
     ) -> Result<String, String> {
-        packet.validate()?;
-        let issued_packet = state
-            .pending_handoffs
-            .lock()
-            .await
-            .remove(&packet.handoff_id)
-            .ok_or_else(|| "交接包不存在、已执行，或不是由当前 Jarvis 会话生成".to_string())?;
-        if issued_packet != packet {
-            return Err("交接包内容与 Jarvis 已签发版本不一致".to_string());
-        }
+        packet.validate_for_conversation(&conversation_id)?;
         if packet.from != ModelRole::Jarvis || packet.to != ModelRole::Ollama {
             return Err("执行器只接受 Jarvis 到 Ollama 的交接包".to_string());
         }
-        if !packet.degraded_fallback
-            && !matches!(
-                RoutingPolicy::default().decide(packet.capability),
-                RouteDecision::Direct {
-                    owner: ModelRole::Ollama
-                } | RouteDecision::Handoff { .. }
-            )
-        {
+        if !packet.degraded_fallback && !RoutingPolicy.routes_to_ollama(packet.capability) {
             return Err("该能力不应交给 Ollama 执行".to_string());
         }
 
         // 在释放前台助手之前确认目标服务可用，避免失败交接触发无谓的恢复。
         if !state.ollama.is_available().await {
             return Err("无法连接模型服务。请启动 Ollama（ollama serve），或检查设置中的模型服务地址后重试。".to_string());
+        }
+        {
+            let mut pending = state.pending_handoffs.lock().await;
+            match pending.get(&packet.handoff_id) {
+                Some(issued) if issued == &packet => {
+                    pending.remove(&packet.handoff_id);
+                }
+                Some(_) => return Err("交接包内容与已签发版本不一致".to_string()),
+                None => return Err("交接包不存在或已执行".to_string()),
+            }
         }
         let stop_result = stop_managed_jarvis(&state).await?;
         let mut managed_stopped = stop_result["stopped"].as_bool().unwrap_or(false);
@@ -870,6 +858,8 @@ pub mod commands {
         } else if contains_any(&["文件", "文件夹", "桌面", "目录", "移动", "重命名", "删除"])
         {
             Capability::FileWork
+        } else if contains_any(&["网页设计", "生成网页", "落地页", "web studio"]) {
+            Capability::WebStudio
         } else if contains_any(&["浏览器", "网页", "搜索", "网站", "网址", "链接"]) {
             Capability::BrowserWork
         } else if contains_any(&["文档", "pdf", "word", "表格", "excel", "幻灯片", "ppt"]) {
@@ -879,8 +869,6 @@ pub mod commands {
         } else if contains_any(&["自动化", "定时", "提醒", "每天", "每周", "工作流"])
         {
             Capability::WorkflowAutomation
-        } else if contains_any(&["网页设计", "生成网页", "落地页", "web studio"]) {
-            Capability::WebStudio
         } else {
             Capability::Conversation
         }
@@ -953,6 +941,14 @@ pub mod commands {
                 Capability::BrowserWork
             );
             assert_eq!(
+                fallback_handoff_capability("帮我生成网页"),
+                Capability::WebStudio
+            );
+            assert_eq!(
+                fallback_handoff_capability("打开网页"),
+                Capability::BrowserWork
+            );
+            assert_eq!(
                 fallback_handoff_capability("明天上午九点提醒我开会"),
                 Capability::WorkflowAutomation
             );
@@ -1015,8 +1011,6 @@ pub mod commands {
                 let _ = app_handle.emit(event_name, payload.to_string());
             };
 
-            emit("chat:thinking", crate::agent::ChatEvent::Thinking);
-
             if let Err(error) = async {
                 {
                     let guard = db.lock().await;
@@ -1030,6 +1024,7 @@ pub mod commands {
                     .adopt_active(crate::routing::ModelRole::Jarvis)
                     .await?;
 
+                emit("chat:thinking", crate::agent::ChatEvent::Thinking);
                 let response = jarvis_chat(user_content.clone()).await?;
                 let reply = response
                     .get("reply")
@@ -1069,17 +1064,18 @@ pub mod commands {
     pub async fn jarvis_recommend_handoff(
         state: State<'_, AppState>,
         message: String,
+        conversation_id: String,
         observation_summary: Option<String>,
         task_id: Option<String>,
     ) -> Result<serde_json::Value, String> {
-        if message.trim().is_empty() {
-            return Err("交接请求不能为空".to_string());
+        if message.trim().is_empty() || conversation_id.trim().is_empty() {
+            return Err("交接请求需要用户消息和会话编号".to_string());
         }
         let observation_summary = observation_summary.unwrap_or_default();
         let fast_capability = fallback_handoff_capability(&message);
-        // 明确的工具意图不需要先花几十秒让模型重复做一次分类。Rust 只决定职责域，
+        // 明确的 Ollama 工具意图可直接复用 Rust 职责矩阵。Rust 只决定职责域，
         // 真正的规划与工具执行仍由 Ollama Agent 和权限闸门完成。
-        let (recommendation, degraded_fallback) = if fast_capability != Capability::Conversation {
+        let (mut recommendation, degraded_fallback) = if RoutingPolicy.routes_to_ollama(fast_capability) {
             (
                 serde_json::json!({
                     "capability": fast_capability,
@@ -1134,25 +1130,14 @@ pub mod commands {
             .get("handoff_to_ollama")
             .and_then(serde_json::Value::as_bool)
             .ok_or_else(|| "Jarvis 交接建议缺少 handoff_to_ollama".to_string())?;
-        let expected_handoff = degraded_fallback
-            || matches!(
-                RoutingPolicy::default().decide(capability),
-                RouteDecision::Direct {
-                    owner: ModelRole::Ollama
-                } | RouteDecision::Handoff { .. }
-            );
+        let expected_handoff = degraded_fallback || RoutingPolicy.routes_to_ollama(capability);
         if handoff_to_ollama != expected_handoff {
             return Err("Jarvis 交接建议与已确认的职责矩阵不一致".to_string());
         }
 
         let packet = if handoff_to_ollama {
-            let user_goal = recommendation
-                .get("user_goal")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| "Jarvis 交接建议缺少用户目标".to_string())?
-                .to_string();
+            let user_goal = message.trim().to_string();
+            recommendation["user_goal"] = serde_json::json!(&user_goal);
             let conversation_summary = recommendation
                 .get("context_summary")
                 .and_then(serde_json::Value::as_str)
@@ -1171,6 +1156,7 @@ pub mod commands {
             }
             let packet = HandoffPacket {
                 handoff_id: format!("handoff-{}", uuid::Uuid::new_v4()),
+                conversation_id,
                 task_id: task_id
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| format!("task-{}", uuid::Uuid::new_v4())),

@@ -242,7 +242,7 @@ pub(crate) async fn run(context: AssistantContext<'_>, mut task: Task) -> AppRes
         }
 
         let _ = context.tx.send(ChatEvent::Thinking).await;
-        let mut stream = match context
+        let request = context
             .ollama
             .chat_stream_with_tools_and_options(
                 context.model,
@@ -253,9 +253,13 @@ pub(crate) async fn run(context: AssistantContext<'_>, mut task: Task) -> AppRes
                     "num_ctx": num_ctx,
                     "num_predict": num_predict,
                 }),
-            )
-            .await
-        {
+            );
+        let response = tokio::select! {
+            biased;
+            _ = context.cancellation.cancelled() => return Ok(()),
+            result = request => result,
+        };
+        let mut stream = match response {
             Ok(stream) => stream,
             Err(error) => {
                 return fail_task(
@@ -358,6 +362,7 @@ pub(crate) async fn run(context: AssistantContext<'_>, mut task: Task) -> AppRes
             .await;
 
             let execution_result = tokio::select! {
+                biased;
                 _ = context.cancellation.cancelled() => return Ok(()),
                 result = context.executor.execute(ToolCallRequest {
                     tool_name: tool_name.clone(),

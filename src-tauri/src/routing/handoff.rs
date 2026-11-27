@@ -17,6 +17,7 @@ pub enum ResourceRef {
 pub struct HandoffPacket {
     pub handoff_id: String,
     pub task_id: String,
+    pub conversation_id: String,
     pub from: ModelRole,
     pub to: ModelRole,
     pub capability: Capability,
@@ -37,22 +38,21 @@ impl HandoffPacket {
         }
         if self.task_id.trim().is_empty()
             || self.handoff_id.trim().is_empty()
+            || self.conversation_id.trim().is_empty()
             || self.user_goal.trim().is_empty()
         {
-            return Err("交接包缺少任务、交接编号或用户目标".to_string());
+            return Err("交接包缺少会话、任务、交接编号或用户目标".to_string());
         }
         Ok(())
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HandoffResult {
-    pub task_id: String,
-    pub status: String,
-    pub summary: String,
-    pub warnings: Vec<String>,
-    pub receipt_ids: Vec<String>,
+    pub fn validate_for_conversation(&self, conversation_id: &str) -> Result<(), String> {
+        self.validate()?;
+        if self.conversation_id != conversation_id {
+            return Err("交接包属于另一个会话".to_string());
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -64,6 +64,7 @@ mod tests {
         let packet = HandoffPacket {
             handoff_id: "handoff-1".into(),
             task_id: "task-1".into(),
+            conversation_id: "chat-1".into(),
             from: ModelRole::Jarvis,
             to: ModelRole::Ollama,
             capability: Capability::DocumentWork,
@@ -73,6 +74,7 @@ mod tests {
             requires_confirmation_for_write: true,
             degraded_fallback: false,
         };
-        assert!(packet.validate().is_ok());
+        assert!(packet.validate_for_conversation("chat-1").is_ok());
+        assert!(packet.validate_for_conversation("chat-2").is_err());
     }
 }

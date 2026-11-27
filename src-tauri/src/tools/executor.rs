@@ -102,10 +102,22 @@ impl ToolExecutor {
 
     /// 取消某个会话仍在等待的权限请求。移除 sender 会立即唤醒对应执行流并安全拒绝。
     pub async fn cancel_pending_for_session(&self, session_id: &str) {
+        self.remove_pending_permissions(|request| request.session_id == session_id)
+            .await;
+    }
+
+    pub(crate) async fn cancel_pending_for_run(&self, session_id: &str, run_id: &str) {
+        self.remove_pending_permissions(|request| {
+            request.session_id == session_id && request.run_id.as_deref() == Some(run_id)
+        })
+        .await;
+    }
+
+    async fn remove_pending_permissions(&self, matches: impl Fn(&PendingPermission) -> bool) {
         let pending = self.pending_permissions.lock().unwrap().clone();
         if let Some(pending) = pending {
             let mut map = pending.lock().await;
-            map.retain(|_, request| request.session_id != session_id);
+            map.retain(|_, request| !matches(request));
         }
     }
 
@@ -135,10 +147,6 @@ impl ToolExecutor {
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
         let run_id = request.run_id.clone();
-
-        // 工具只能拿到 args，拿不到会话。任务编排类工具必须知道当前指令
-        // 属于哪个会话，否则不同对话的计划会挤进同一个列表。
-        crate::tools::set_current_session(&session_id);
 
         // 1. 查找工具
         let tool = self.tool_registry.get(&request.tool_name).ok_or_else(|| {
@@ -347,7 +355,9 @@ impl ToolExecutor {
         // 回执要留一份结构化参数算摘要与幂等键，同样在 move 之前取
         let args_for_receipt = request.arguments.clone();
 
-        let result = match timeout(tool_timeout, tool.execute(request.arguments)).await {
+        let tool_run =
+            crate::tools::TOOL_SESSION_ID.scope(session_id.clone(), tool.execute(request.arguments));
+        let result = match timeout(tool_timeout, tool_run).await {
             Ok(Ok(result)) => result,
             Ok(Err(e)) => ToolResult::err("EXECUTION_ERROR", &e.to_string()),
             Err(_) => ToolResult::err("TIMEOUT", "Tool execution timed out"),
