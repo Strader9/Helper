@@ -147,7 +147,7 @@ function CommandCenter() {
   // 首页话筒是 EAssistant 的语音入口，识别完成后直接转入 EAssistant 对话。
   useEffect(() => {
     if (transcript && transcript.trim()) {
-      navigate('/live', { state: { voiceText: transcript } });
+      navigate('/chat', { state: { voiceText: transcript.trim() } });
     }
   }, [transcript, navigate]);
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 use super::ModelRole;
 
@@ -40,6 +40,7 @@ impl Default for RuntimeSnapshot {
 #[derive(Clone, Default)]
 pub struct InferenceRuntimeManager {
     snapshot: Arc<Mutex<RuntimeSnapshot>>,
+    model_access: Arc<RwLock<()>>,
 }
 
 impl InferenceRuntimeManager {
@@ -49,6 +50,28 @@ impl InferenceRuntimeManager {
 
     pub async fn snapshot(&self) -> RuntimeSnapshot {
         self.snapshot.lock().await.clone()
+    }
+
+    pub async fn acquire_agent_access(&self) -> Result<OwnedRwLockReadGuard<()>, String> {
+        let access = self.model_access.clone().try_read_owned().map_err(|_| {
+            "Jarvis 正在切换感知运行时，请稍后重试".to_string()
+        })?;
+        if matches!(
+            self.snapshot().await.state,
+            InferenceRuntimeState::JarvisStarting
+                | InferenceRuntimeState::JarvisActive
+                | InferenceRuntimeState::JarvisStopping
+                | InferenceRuntimeState::OllamaUnloading
+        ) {
+            return Err("感知运行时占用中，请停止实时感知后重试".to_string());
+        }
+        Ok(access)
+    }
+
+    pub fn acquire_perception_access(&self) -> Result<OwnedRwLockWriteGuard<()>, String> {
+        self.model_access.clone().try_write_owned().map_err(|_| {
+            "助手正在处理模型任务，请等待任务结束后再启动实时感知".to_string()
+        })
     }
 
     pub async fn begin_start(&self, role: ModelRole) -> Result<(), String> {
@@ -172,6 +195,22 @@ impl InferenceRuntimeManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn agent_and_perception_admission_are_mutually_exclusive() {
+        let manager = InferenceRuntimeManager::new();
+        let agent = manager.acquire_agent_access().await.unwrap();
+        assert!(manager.acquire_agent_access().await.is_ok());
+        assert!(manager.acquire_perception_access().is_err());
+        drop(agent);
+
+        let perception = manager.acquire_perception_access().unwrap();
+        assert!(manager.acquire_agent_access().await.is_err());
+        manager.begin_start(ModelRole::Jarvis).await.unwrap();
+        manager.mark_active(ModelRole::Jarvis).await.unwrap();
+        drop(perception);
+        assert!(manager.acquire_agent_access().await.is_err());
+    }
 
     #[tokio::test]
     async fn models_are_mutually_exclusive() {

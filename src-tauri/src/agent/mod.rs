@@ -13,8 +13,9 @@ use tokio_stream::StreamExt;
 
 use crate::db::conversation::{ConversationManager, ConversationMessage};
 use crate::db::Database;
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 use crate::llm::{ChatChunk, OllamaClient, OllamaMessage, ToolCall};
+use crate::routing::InferenceRuntimeManager;
 use crate::tools::executor::{ToolCallRequest, ToolExecutor};
 pub mod assistant;
 pub mod context;
@@ -135,6 +136,7 @@ fn resolve_run_params(
 
 pub struct AgentRuntime {
     ollama: Arc<OllamaClient>,
+    inference_runtime: Arc<InferenceRuntimeManager>,
     executor: Arc<ToolExecutor>,
     model: String,
     temperature: f32,
@@ -145,6 +147,7 @@ pub struct AgentRuntime {
 impl AgentRuntime {
     pub fn new(
         ollama: Arc<OllamaClient>,
+        inference_runtime: Arc<InferenceRuntimeManager>,
         executor: Arc<ToolExecutor>,
         model: String,
         temperature: f32,
@@ -152,6 +155,7 @@ impl AgentRuntime {
     ) -> Self {
         Self {
             ollama,
+            inference_runtime,
             executor,
             model,
             temperature,
@@ -169,6 +173,9 @@ impl AgentRuntime {
         requested_run_id: Option<&str>,
         db: &Arc<Mutex<Database>>,
     ) -> AppResult<AgentRun> {
+        if session_id.trim().is_empty() || user_content.trim().is_empty() {
+            return Err(AppError::InvalidArgument("任务需要会话编号和消息内容".into()));
+        }
         let (tx, rx) = tokio::sync::mpsc::channel::<ChatEvent>(256);
 
         let run_id = requested_run_id
@@ -209,6 +216,7 @@ impl AgentRuntime {
         let user_content = user_content.to_string();
         let db = db.clone();
         let ollama = self.ollama.clone();
+        let inference_runtime = self.inference_runtime.clone();
         let executor = self.executor.clone();
         let model = model_override
             .filter(|model| !model.trim().is_empty())
@@ -255,6 +263,20 @@ impl AgentRuntime {
                     )
                     .await?;
                     return Ok(());
+                }
+
+                let _model_access = inference_runtime
+                    .acquire_agent_access()
+                    .await
+                    .map_err(AppError::Ollama)?;
+                // An external Jarvis may already hold the GPU without this app starting it.
+                let perception_online = tokio::select! {
+                    biased;
+                    _ = task_cancellation.cancelled() => return Ok(()),
+                    health = crate::commands::jarvis_health() => health.is_ok(),
+                };
+                if perception_online {
+                    return Err(AppError::Ollama("检测到 Jarvis 正在运行，请停止实时感知后重试".into()));
                 }
 
                 let local_intent = intent::quick_classify(&user_content);
@@ -842,7 +864,88 @@ fn convert_messages(db_messages: &[ConversationMessage]) -> Vec<OllamaMessage> {
 
 #[cfg(test)]
 mod fast_path_tests {
-    use super::{quick_direct_tool_call, RunCancellation};
+    use super::*;
+    use crate::security::PermissionManager;
+    use crate::tools::{AgentTool, RiskLevel, ToolRegistry, ToolResult};
+    use serde_json::{json, Value};
+
+    struct TestSystemContext;
+
+    #[async_trait::async_trait]
+    impl AgentTool for TestSystemContext {
+        fn name(&self) -> &'static str {
+            "get_system_context"
+        }
+
+        fn description(&self) -> &'static str {
+            "Return a fixed system state for the test"
+        }
+
+        fn parameters(&self) -> Value {
+            json!({"type": "object"})
+        }
+
+        fn risk_level(&self) -> RiskLevel {
+            RiskLevel::Safe
+        }
+
+        async fn execute(&self, _args: Value) -> AppResult<ToolResult> {
+            Ok(ToolResult::ok(json!({"summary": "测试系统状态"})))
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_entry_only_checks_model_access_for_model_work() {
+        let database = Database::new(std::path::Path::new(":memory:")).unwrap();
+        database.init_schema().unwrap();
+        let conversation = ConversationManager::new(database.connection()).create(None).unwrap();
+        let db = Arc::new(Mutex::new(database));
+        let mut registry = ToolRegistry::new(db.clone(), std::env::temp_dir());
+        registry.register(Arc::new(TestSystemContext));
+        let executor = Arc::new(ToolExecutor::new(
+            Arc::new(Mutex::new(PermissionManager::new())),
+            Arc::new(registry),
+            db.clone(),
+        ));
+        let runtime = Arc::new(InferenceRuntimeManager::new());
+        let _perception = runtime.acquire_perception_access().unwrap();
+        let agent = AgentRuntime::new(
+            Arc::new(OllamaClient::new("http://127.0.0.1:1".into(), 100)),
+            runtime,
+            executor,
+            "unused-in-this-test".into(),
+            0.0,
+            1,
+        );
+
+        let mut direct = agent
+            .send_message(&conversation.id, "系统状态", None, Some("direct-test"), &db)
+            .await
+            .unwrap();
+        let mut executed = false;
+        while let Some(event) = direct.events.recv().await {
+            match event {
+                ChatEvent::ToolResult { name, success, .. } => {
+                    assert_eq!(name, "get_system_context");
+                    assert!(success);
+                    executed = true;
+                }
+                ChatEvent::Done => break,
+                ChatEvent::Thinking | ChatEvent::Error(_) => panic!("unexpected event: {event:?}"),
+                _ => {}
+            }
+        }
+        assert!(executed);
+
+        let mut model = agent
+            .send_message(&conversation.id, "解释为什么天空是蓝色的", None, None, &db)
+            .await
+            .unwrap();
+        assert!(matches!(
+            model.events.recv().await,
+            Some(ChatEvent::Error(message)) if message.contains("感知运行时")
+        ));
+    }
 
     #[test]
     fn recognizes_unambiguous_program_commands() {

@@ -459,8 +459,10 @@ impl AppState {
         // 工作流引擎的步骤要走同一条闸门，需要拿到执行器
         crate::tools::executor::publish_global_executor(tool_executor.clone());
 
+        let inference_runtime = Arc::new(InferenceRuntimeManager::new());
         let agent = AgentRuntime::new(
             ollama.clone(),
+            inference_runtime.clone(),
             tool_executor.clone(),
             ollama_model.clone(),
             temperature,
@@ -489,7 +491,7 @@ impl AppState {
             proactive_engine,
             scheduler,
             gateway,
-            inference_runtime: Arc::new(InferenceRuntimeManager::new()),
+            inference_runtime,
             handoff_restore_runs: Arc::new(Mutex::new(HashSet::new())),
             pending_handoffs: Arc::new(Mutex::new(HashMap::new())),
             adopted_jarvis_pids: Arc::new(Mutex::new(Vec::new())),
@@ -581,26 +583,6 @@ pub mod commands {
         model: Option<String>,
         request_id: Option<String>,
     ) -> Result<String, String> {
-        // 当前阶段仍保留 Ollama 作为旧对话路径，但 Jarvis 已占用 GPU 时绝不能
-        // 让它重新加载 qwen3:8b。模型切换将在后续交接执行器中显式完成。
-        let runtime = state.inference_runtime.snapshot().await;
-        if matches!(
-            runtime.state,
-            crate::routing::InferenceRuntimeState::JarvisStarting
-                | crate::routing::InferenceRuntimeState::JarvisActive
-                | crate::routing::InferenceRuntimeState::JarvisStopping
-        ) {
-            return Err("Jarvis 正在使用显存。请先停止 Jarvis，或等待后续任务交接功能完成后由系统自动切换。".to_string());
-        }
-        // Jarvis 也可能在本应用启动前由外部进程拉起；尚未读取运行时状态时，
-        // 仍要在真正请求 Ollama 前阻止两套模型抢同一张 8 GiB 显卡。
-        if jarvis_health().await.is_ok() {
-            state
-                .inference_runtime
-                .adopt_active(crate::routing::ModelRole::Jarvis)
-                .await?;
-            return Err("检测到 Jarvis 正在使用显存。请先停止 Jarvis，或等待后续任务交接功能完成后由系统自动切换。".to_string());
-        }
         let app_handle = window.app_handle().clone();
         let agent = state.agent.lock().await;
         let run = agent
@@ -4935,6 +4917,7 @@ pub mod commands {
         python_path: Option<String>,
         work_dir: Option<String>,
     ) -> Result<serde_json::Value, String> {
+        let _model_access = state.inference_runtime.acquire_perception_access()?;
         // 已在运行就不重复拉起：重复启动只会撞端口，然后抛一堆无关错误。
         if jarvis_health().await.is_ok() {
             // 这条分支拿不到 Child 句柄（进程可能是上一个应用实例留下的），
@@ -5289,7 +5272,15 @@ pub mod commands {
 
     #[tauri::command]
     pub async fn jarvis_stop(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-        stop_managed_jarvis(&state).await
+        let _model_access = state.inference_runtime.acquire_perception_access()?;
+        let stopped = stop_managed_jarvis(&state).await?;
+        if stopped["stopped"].as_bool() != Some(true) {
+            if jarvis_health().await.is_ok() {
+                return Err("请在启动 Jarvis 的程序中停止感知运行时".to_string());
+            }
+            state.inference_runtime.force_idle().await;
+        }
+        Ok(stopped)
     }
 
     async fn restore_jarvis_after_handoff(

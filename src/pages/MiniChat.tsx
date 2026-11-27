@@ -278,17 +278,14 @@ function MiniChat() {
         const cid = currentConversationIdRef.current;
         try {
           const parsed = parseEventEnvelope(payloadStr);
-          if (cid && (!parsed.session_id || parsed.session_id !== cid)) {
+          if (!parsed.session_id || parsed.session_id !== cid) {
             return;
           }
-          if (eventName === "chat:thinking" && parsed.run_id) {
-            activeRunIdRef.current = parsed.run_id;
-          }
-          if (parsed.run_id && parsed.run_id !== activeRunIdRef.current) {
+          if (!parsed.run_id || parsed.run_id !== activeRunIdRef.current) {
             return;
           }
         } catch {
-          if (cid) return;
+          return;
         }
         handler(payloadStr);
       }))

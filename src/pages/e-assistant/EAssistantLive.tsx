@@ -1,31 +1,18 @@
-// AI EAssistant —— 外部感知进程控制台
-//
-// 和其余页面不同，这页操作的是"另一个进程"：一个带 DXGI 屏幕采集 +
-// WASAPI 系统音频 + MiniCPM-o 的 Python 服务。它只产出文字，不出声，
-// 所以这里承担两件它做不到的事：
-//   1. 把它的回复念出来（speechSynthesis）
-//   2. 把用户说的话转成文字喂给它（SpeechRecognition）
-import { useCallback, useEffect, useRef, useState } from 'react';
+// 按需启动实时感知，任务对话统一在主聊天页。
+import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'motion/react';
-import { useLocation } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   Activity,
-  Cpu,
   Ear,
   EarOff,
   Loader2,
-  Mic,
-  MicOff,
   Play,
-  Send,
   Square,
-  Volume2,
-  VolumeX,
 } from 'lucide-react';
 import { Badge, GlassCard, SectionTitle } from '../../components/e-assistant/EAssistantShared';
 import { EAssistantPageShell } from '../../components/e-assistant/EAssistantPageShell';
-import { useVoice } from '../../hooks/useVoice';
 import { cn } from '../../lib/cn';
 
 interface EAssistantHealth {
@@ -53,81 +40,26 @@ interface DuplexState {
   instruction?: string;
 }
 
-interface ChatMsg {
-  role: 'user' | 'jarvis';
-  text: string;
-  at: number;
-}
-
 interface RuntimeSnapshot {
   state: string;
   activeRole?: 'jarvis' | 'ollama' | 'system' | null;
   detail?: string | null;
 }
 
-type RouteDecision =
-  | { mode: 'direct'; owner: 'jarvis' | 'ollama' | 'system' }
-  | { mode: 'handoff'; front: 'jarvis'; worker: 'ollama' };
-
-type RoutingEntry = [string, RouteDecision];
-
-const CAPABILITY_LABELS: Record<string, string> = {
-  conversation: '对话',
-  screen_understanding: '屏幕理解',
-  proactive_monitoring: '持续监控',
-  voice_interaction: '语音交互',
-  desktop_gui: '桌面操作',
-  memory_knowledge: '记忆知识库',
-  messaging_calendar: '消息与日程',
-  media_work: '媒体工作',
-  cad_industry: 'CAD / 行业工作',
-  mcp_external_ai: '外部 AI / MCP',
-  file_work: '文件工作',
-  web_studio: '网页工坊',
-  code_git: '代码与 Git',
-  browser_work: '浏览器任务',
-  document_work: '文档与 OCR',
-  workflow_automation: '工作流与定时',
-  system_operations: '系统操作',
-  safety_execution: '安全执行',
-};
-
 const INPUT_CLASS =
   'w-full rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-white/85 outline-none transition-colors placeholder:text-white/25 hover:border-white/20 focus:border-celestial-saturn/50';
 
-function fmtClock(at: number) {
-  const d = new Date(at);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
 export default function EAssistantLive() {
-  const location = useLocation();
-  const incomingVoiceText = (location.state as { voiceText?: string } | null)?.voiceText;
   const [health, setHealth] = useState<EAssistantHealth | null>(null);
   const [vram, setVram] = useState<EAssistantVramStatus | null>(null);
   const [online, setOnline] = useState<boolean | null>(null);
   const [busyStart, setBusyStart] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<RuntimeSnapshot>({ state: 'idle' });
-  const [routing, setRouting] = useState<RoutingEntry[]>([]);
 
   const [duplex, setDuplex] = useState<DuplexState>({ active: false });
   const [instruction, setInstruction] = useState('盯着屏幕，发现报错或异常就简短提醒我');
   const [busyDuplex, setBusyDuplex] = useState(false);
-
-  const [messages, setMessages] = useState<ChatMsg[]>([]);
-  const [input, setInput] = useState('');
-  const [sending, setSending] = useState(false);
-  const [autoSpeak, setAutoSpeak] = useState(true);
-
-  const { isListening, supported, startListening, stopListening, transcript, clearTranscript, speak, stopSpeaking, isSpeaking } =
-    useVoice();
-
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  // 语音识别结果是"稳定后才回调"的，用 ref 记住已消费的那一条，
-  // 否则 StrictMode 双挂载或重渲染会把同一句话发两次。
-  const consumedTranscript = useRef('');
-  const consumedIncomingVoice = useRef('');
 
   /* ── 健康检查：3s 一轮，未运行不当作错误，只是状态未知 ── */
   const probe = useCallback(async () => {
@@ -148,12 +80,7 @@ export default function EAssistantLive() {
 
   const refreshRuntime = useCallback(async () => {
     try {
-      const [snapshot, decisions] = await Promise.all([
-        invoke<RuntimeSnapshot>('get_inference_runtime'),
-        invoke<RoutingEntry[]>('get_model_routing'),
-      ]);
-      setRuntime(snapshot);
-      setRouting(decisions);
+      setRuntime(await invoke<RuntimeSnapshot>('get_inference_runtime'));
     } catch {
       // 调度信息只是辅助诊断；不能让它影响 EAssistant 本身的健康检测。
     }
@@ -201,10 +128,11 @@ export default function EAssistantLive() {
   };
 
   const handleStop = async () => {
+    setStartError(null);
     try {
       await invoke('jarvis_stop');
-    } catch {
-      /* 非本进程拉起的实例停不掉，忽略即可 */
+    } catch (error) {
+      setStartError(String(error));
     }
     void probe();
     void refreshRuntime();
@@ -226,56 +154,6 @@ export default function EAssistantLive() {
     }
   };
 
-  const send = useCallback(
-    async (raw?: string) => {
-      const text = (raw ?? input).trim();
-      if (!text || sending) return;
-      setInput('');
-      setMessages((prev) => [...prev, { role: 'user', text, at: Date.now() }]);
-      setSending(true);
-      try {
-        const r = await invoke<{ reply?: string }>('jarvis_chat', { message: text });
-        const reply = (r?.reply ?? '').trim() || '（没有返回内容）';
-        setMessages((prev) => [...prev, { role: 'jarvis', text: reply, at: Date.now() }]);
-        if (autoSpeak) speak(reply);
-      } catch (e) {
-        const raw = String(e);
-        // 503 是"后端在、模型没就绪"，和"后端挂了"是两回事，不能混成一句报错。
-        const friendly =
-          raw.includes('503') || raw.includes('模型')
-            ? '模型还没就绪：贾维斯的本地推理需要 native worker 与 6.32 GiB 权重。当前只能验证链路。'
-            : `调用失败：${raw}`;
-        setMessages((prev) => [...prev, { role: 'jarvis', text: friendly, at: Date.now() }]);
-      } finally {
-        setSending(false);
-      }
-    },
-    [autoSpeak, input, sending, speak]
-  );
-
-  // 首页话筒识别完成后将文本随路由带到这里；只发送一次，避免 StrictMode
-  // 或状态回放让同一句话重复进入 EAssistant。
-  useEffect(() => {
-    const text = (incomingVoiceText || '').trim();
-    if (!text || text === consumedIncomingVoice.current) return;
-    consumedIncomingVoice.current = text;
-    void send(text);
-  }, [incomingVoiceText, send]);
-
-  /* ── 语音识别完成 → 直接发送 ── */
-  useEffect(() => {
-    const t = (transcript || '').trim();
-    if (!t || t === consumedTranscript.current) return;
-    consumedTranscript.current = t;
-    void send(t);
-    clearTranscript();
-  }, [transcript, send, clearTranscript]);
-
-  /* ── 新消息滚到底 ── */
-  useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages.length]);
-
   const statusBadge = () => {
     if (online === null) return <Badge variant="neutral">检测中</Badge>;
     if (!online) return <Badge variant="danger">未运行</Badge>;
@@ -291,14 +169,12 @@ export default function EAssistantLive() {
 
   const runtimeLabel =
     runtime.state === 'jarvis_active'
-      ? 'E-Assisant 前台'
-      : runtime.state === 'ollama_active'
-        ? 'Ollama 后台'
-        : runtime.state === 'idle'
-          ? '空闲'
-          : runtime.state === 'error'
-            ? '需要处理'
-            : '切换中';
+      ? '感知运行中'
+      : runtime.state === 'idle'
+        ? '未启用'
+        : runtime.state === 'error'
+          ? '需要处理'
+          : '切换中';
 
   const runtimeVariant =
     runtime.state === 'jarvis_active'
@@ -328,22 +204,12 @@ export default function EAssistantLive() {
       ? Math.min(100, Math.max(0, (vram.usedMb / vram.totalMb) * 100))
       : 0;
 
-  const jarvisDirect = routing
-    .filter(([, decision]) => decision.mode === 'direct' && decision.owner === 'jarvis')
-    .map(([capability]) => CAPABILITY_LABELS[capability] ?? capability);
-  const ollamaDirect = routing
-    .filter(([, decision]) => decision.mode === 'direct' && decision.owner === 'ollama')
-    .map(([capability]) => CAPABILITY_LABELS[capability] ?? capability);
-  const handoff = routing
-    .filter(([, decision]) => decision.mode === 'handoff')
-    .map(([capability]) => CAPABILITY_LABELS[capability] ?? capability);
-
   return (
     <EAssistantPageShell
       icon={<Ear size={18} />}
       iconBg="bg-cyan-500/15"
       title="AI 贾维斯"
-      subtitle="屏幕与系统音频感知 · 全双工对话"
+      subtitle="按需启用屏幕与系统音频感知"
     >
       <div className="mx-auto max-w-5xl space-y-5">
         {/* 状态 */}
@@ -382,7 +248,7 @@ export default function EAssistantLive() {
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              {!online ? (
+              {!online && !runtime.state.startsWith('jarvis_') ? (
                 <button
                   onClick={handleStart}
                   disabled={busyStart}
@@ -394,6 +260,7 @@ export default function EAssistantLive() {
               ) : (
                 <button
                   onClick={handleStop}
+                  disabled={busyStart}
                   className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3.5 py-2 text-xs font-bold text-white/60 transition-colors hover:bg-white/[0.08] hover:text-white/85"
                 >
                   <Square size={13} />
@@ -465,37 +332,6 @@ export default function EAssistantLive() {
           </GlassCard>
         </div>
 
-        {/* 模型职责 */}
-        <div>
-          <SectionTitle label="模型调度" color="bg-sky-400" />
-          <GlassCard hoverEffect={false}>
-            <p className="text-[11px] leading-relaxed text-white/35">
-              同一时刻只允许一个本地推理模型占用显存。需要后台能力时，贾维斯先整理上下文，再将任务串行交给 Ollama；完成后释放模型并恢复贾维斯。
-            </p>
-            <div className="mt-3 grid gap-3 md:grid-cols-3">
-              <div className="rounded-xl border border-cyan-400/15 bg-cyan-400/[0.04] px-3.5 py-3">
-                <p className="text-xs font-bold text-cyan-200">E-Assisant · 前台感知</p>
-                <p className="mt-1.5 text-[11px] leading-relaxed text-white/45">
-                  {jarvisDirect.length ? jarvisDirect.join('、') : '正在读取职责表…'}
-                </p>
-              </div>
-              <div className="rounded-xl border border-violet-400/15 bg-violet-400/[0.04] px-3.5 py-3">
-                <p className="text-xs font-bold text-violet-200">Ollama · 后台专长</p>
-                <p className="mt-1.5 text-[11px] leading-relaxed text-white/45">
-                  {ollamaDirect.length ? ollamaDirect.join('、') : '正在读取职责表…'}
-                </p>
-              </div>
-              <div className="rounded-xl border border-amber-400/15 bg-amber-400/[0.04] px-3.5 py-3">
-                <p className="text-xs font-bold text-amber-200">串行交接 · E-Assisant → Ollama</p>
-                <p className="mt-1.5 text-[11px] leading-relaxed text-white/45">
-                  {handoff.length ? handoff.join('、') : '正在读取职责表…'}
-                </p>
-              </div>
-            </div>
-            {runtime.detail && <p className="mt-3 text-[10px] text-white/25">调度状态：{runtime.detail}</p>}
-          </GlassCard>
-        </div>
-
         {/* 全双工感知 */}
         <div>
           <SectionTitle label="持续感知" color="bg-violet-400" />
@@ -544,109 +380,12 @@ export default function EAssistantLive() {
           </GlassCard>
         </div>
 
-        {/* 对话 */}
-        <div>
-          <SectionTitle label="对话" color="bg-emerald-400" />
-          <GlassCard hoverEffect={false} className="flex flex-col">
-            <div ref={scrollRef} className="max-h-[340px] min-h-[180px] space-y-3 overflow-y-auto pr-1">
-              {messages.length === 0 ? (
-                <div className="flex h-[180px] flex-col items-center justify-center gap-2 text-center">
-                  <Cpu size={22} className="text-white/15" />
-                  <p className="text-xs text-white/30">
-                    问它屏幕上正在发生什么，或者直接下指令
-                    <br />
-                    语音输入会直接发送，回复会自动朗读
-                  </p>
-                </div>
-              ) : (
-                messages.map((m, i) => (
-                  <motion.div
-                    key={`${m.at}-${i}`}
-                    initial={{ opacity: 0, y: 6 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}
-                  >
-                    <div
-                      className={cn(
-                        'max-w-[82%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed',
-                        m.role === 'user'
-                          ? 'bg-white/[0.08] text-white/85'
-                          : 'border border-white/[0.07] bg-cyan-400/[0.06] text-white/80'
-                      )}
-                    >
-                      <p className="whitespace-pre-wrap">{m.text}</p>
-                      <p className="mt-1 text-[10px] text-white/25">{fmtClock(m.at)}</p>
-                    </div>
-                  </motion.div>
-                ))
-              )}
-              {sending && (
-                <div className="flex items-center gap-2 text-[11px] text-white/35">
-                  <Loader2 size={12} className="animate-spin" />
-                  贾维斯正在思考…
-                </div>
-              )}
-            </div>
-
-            <div className="mt-3 flex items-center gap-2 border-t border-white/[0.06] pt-3">
-              <button
-                onClick={() => (isListening ? stopListening() : startListening())}
-                disabled={!online || !supported}
-                title={supported ? '语音输入' : '当前环境不支持语音识别'}
-                className={cn(
-                  'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border transition-colors disabled:opacity-30',
-                  isListening
-                    ? 'border-red-400/40 bg-red-400/15 text-red-300'
-                    : 'border-white/10 bg-white/[0.04] text-white/45 hover:text-white/80'
-                )}
-              >
-                {isListening ? <MicOff size={15} /> : <Mic size={15} />}
-              </button>
-
-              <input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    void send();
-                  }
-                }}
-                placeholder={online ? '说点什么…' : '先启动贾维斯'}
-                disabled={!online || sending}
-                className={INPUT_CLASS}
-              />
-
-              <button
-                onClick={() => (isSpeaking ? stopSpeaking() : setAutoSpeak((v) => !v))}
-                title={isSpeaking ? '停止朗读' : autoSpeak ? '自动朗读：开' : '自动朗读：关'}
-                className={cn(
-                  'flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border transition-colors',
-                  autoSpeak
-                    ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-300'
-                    : 'border-white/10 bg-white/[0.04] text-white/35'
-                )}
-              >
-                {isSpeaking ? <VolumeX size={15} /> : <Volume2 size={15} />}
-              </button>
-
-              <button
-                onClick={() => void send()}
-                disabled={!online || sending || !input.trim()}
-                className="flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-celestial-saturn/30 bg-celestial-saturn/10 px-3.5 text-xs font-bold text-celestial-saturn transition-colors hover:bg-celestial-saturn/20 disabled:opacity-35"
-              >
-                <Send size={13} />
-                发送
-              </button>
-            </div>
-
-            {!supported && (
-              <p className="mt-2 text-[10px] leading-relaxed text-amber-300/50">
-                当前 WebView 不支持语音识别（webkitSpeechRecognition），语音输入不可用；文字与朗读不受影响。
-              </p>
-            )}
-          </GlassCard>
-        </div>
+        <GlassCard hoverEffect={false}>
+          <Link to="/chat" className="text-sm font-medium text-celestial-saturn hover:underline">
+            在统一对话中发送文字或语音
+          </Link>
+          <p className="mt-2 text-xs text-white/45">实时感知开启时，助手仍可执行明确的本地指令。使用模型处理对话前，请停止感知运行时。</p>
+        </GlassCard>
       </div>
     </EAssistantPageShell>
   );

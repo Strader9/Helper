@@ -87,20 +87,6 @@ fn main() {
             let state = AppState::new(app)?;
             app.manage(state);
 
-            // Jarvis 是主界面的常驻前台：应用启动时优先拉起它的 native worker
-            // 与控制面。Ollama 只在 Jarvis 签发串行交接后按需加载，不能在这里
-            // 预热，否则 8 GiB 显存会被两个模型争抢。
-            let jarvis_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                // 启动失败不阻塞桌面窗口；首页与 Jarvis 设置页会显示未运行状态，
-                // 用户仍可在修复模型/显存条件后手动重试。
-                let state = jarvis_handle.state::<AppState>();
-                match e_assisant_lib::commands::jarvis_start(state, None, None).await {
-                    Ok(_) => eprintln!("[Jarvis] 应用启动时已进入前台"),
-                    Err(error) => eprintln!("[Jarvis] 应用启动自动拉起失败: {error}"),
-                }
-            });
-
             // V18: 启动 Proactive Engine（后台监控）
             {
                 let state = app.state::<AppState>();
@@ -211,9 +197,6 @@ fn main() {
             e_assisant_lib::commands::get_messages,
             e_assisant_lib::commands::delete_conversation,
             e_assisant_lib::commands::send_message,
-            e_assisant_lib::commands::send_jarvis_message,
-            e_assisant_lib::commands::jarvis_recommend_handoff,
-            e_assisant_lib::commands::execute_ollama_handoff,
             // Phase 4: 权限确认
             e_assisant_lib::commands::respond_permission,
             // Phase 4: 可信目录管理
@@ -230,7 +213,6 @@ fn main() {
             e_assisant_lib::commands::check_ollama,
             e_assisant_lib::commands::get_ollama_models,
             // 模型职责路由与排他推理运行时
-            e_assisant_lib::commands::get_model_routing,
             e_assisant_lib::commands::get_inference_runtime,
             e_assisant_lib::commands::start_webpage_generation,
             e_assisant_lib::commands::publish_webpage,
@@ -312,10 +294,8 @@ fn main() {
             e_assisant_lib::commands::run_ui_tool,
             // AI Jarvis：外部感知进程的托管与桥接
             e_assisant_lib::commands::jarvis_health,
-            e_assisant_lib::commands::jarvis_handoff,
             e_assisant_lib::commands::jarvis_start,
             e_assisant_lib::commands::jarvis_stop,
-            e_assisant_lib::commands::jarvis_chat,
             e_assisant_lib::commands::jarvis_duplex,
             // Phase 1 命令
             e_assisant_lib::commands::ping,
