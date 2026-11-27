@@ -1399,6 +1399,8 @@ mod tests {
             name: "disk_info".to_string(),
             success: true,
             content: "ok".to_string(),
+            verification_status: crate::tools::VerificationStatus::Verified,
+            receipt_id: "test-receipt".to_string(),
         })
         .await
         .unwrap();

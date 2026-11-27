@@ -142,6 +142,14 @@ impl ToolExecutor {
     /// 6. 记录审计日志
     /// 7. 返回结果
     pub async fn execute(&self, request: ToolCallRequest) -> AppResult<ToolExecutionResult> {
+        self.execute_with_start(request, || {}).await
+    }
+
+    pub(crate) async fn execute_with_start(
+        &self,
+        request: ToolCallRequest,
+        on_start: impl FnOnce() + Send,
+    ) -> AppResult<ToolExecutionResult> {
         let session_id = request
             .session_id
             .clone()
@@ -357,6 +365,7 @@ impl ToolExecutor {
 
         let tool_run =
             crate::tools::TOOL_SESSION_ID.scope(session_id.clone(), tool.execute(request.arguments));
+        on_start();
         let result = match timeout(tool_timeout, tool_run).await {
             Ok(Ok(result)) => result,
             Ok(Err(e)) => ToolResult::err("EXECUTION_ERROR", &e.to_string()),

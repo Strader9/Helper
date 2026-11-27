@@ -23,6 +23,7 @@ pub mod history;
 pub mod intent;
 pub mod observation;
 pub mod recovery;
+mod screen;
 pub mod task;
 pub mod verification;
 use recovery::RecoveryEvent;
@@ -39,6 +40,7 @@ pub enum ChatEvent {
     Text(String),
     /// LLM 开始思考
     Thinking,
+    Phase(AssistPhase),
     /// 工具调用
     ToolCall {
         name: String,
@@ -49,6 +51,8 @@ pub enum ChatEvent {
         name: String,
         success: bool,
         content: String,
+        verification_status: crate::tools::VerificationStatus,
+        receipt_id: String,
     },
     /// 任务状态更新
     TaskUpdate(TaskUpdateEvent),
@@ -60,6 +64,16 @@ pub enum ChatEvent {
     Done,
     /// 错误
     Error(String),
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "stage", rename_all = "snake_case")]
+pub enum AssistPhase {
+    LocalIntentMatched,
+    CapturingScreen,
+    ScreenCaptured { captured_at: String },
+    JarvisObservationLoaded { observed_at: String },
+    ToolStarted { name: String },
 }
 
 pub struct AgentRun {
@@ -248,6 +262,7 @@ impl AgentRuntime {
                 // 高频、单义指令直接执行，省掉意图分类 + 工具选择两次模型调用。
                 // 工具仍统一经过 ToolExecutor，因此权限确认与审计不会被绕过。
                 if let Some((tool_name, arguments)) = quick_direct_tool_call(&user_content) {
+                    let _ = tx.send(ChatEvent::Phase(AssistPhase::LocalIntentMatched)).await;
                     eprintln!("[Agent] 命中零模型快速通道: {}", tool_name);
                     execute_direct_tool(
                         DirectToolContext {
@@ -279,8 +294,45 @@ impl AgentRuntime {
                     return Err(AppError::Ollama("检测到 Jarvis 正在运行，请停止实时感知后重试".into()));
                 }
 
+                let screen_observation = if screen::requests_screen_observation(&user_content) {
+                    if !ollama.accepts_local_screen_image() {
+                        return Err(AppError::Ollama("请配置支持图像的本机 Ollama 模型后再看屏幕".into()));
+                    }
+                    let _ = tx.send(ChatEvent::Phase(AssistPhase::CapturingScreen)).await;
+                    let request = ToolCallRequest {
+                        tool_name: "take_screenshot".into(),
+                        arguments: serde_json::json!({}),
+                        session_id: Some(session_id.clone()),
+                        run_id: Some(execution_run_id.clone()),
+                    };
+                    let observation = tokio::select! {
+                        biased;
+                        _ = task_cancellation.cancelled() => return Ok(()),
+                        result = async {
+                            screen::ScreenObservation::from_capture(executor.execute(request).await?).await
+                        } => result?,
+                    };
+                    let _ = tx.send(ChatEvent::Phase(AssistPhase::ScreenCaptured {
+                        captured_at: observation.captured_at.clone(),
+                    })).await;
+                    Some(observation)
+                } else {
+                    None
+                };
+                let jarvis_observation = if user_content.contains("上一次感知观察")
+                    || user_content.contains("最近一次感知观察")
+                {
+                    let observation = inference_runtime.latest_perception().await
+                        .ok_or_else(|| AppError::InvalidArgument("当前没有已保存的 Jarvis 感知观察".into()))?;
+                    let _ = tx.send(ChatEvent::Phase(AssistPhase::JarvisObservationLoaded {
+                        observed_at: observation.observed_at.to_rfc3339(),
+                    })).await;
+                    Some(observation)
+                } else {
+                    None
+                };
                 let local_intent = intent::quick_classify(&user_content);
-                let explicit_chat = matches!(
+                let explicit_chat = screen_observation.is_none() && jarvis_observation.is_none() && matches!(
                     local_intent.as_ref().map(|result| &result.intent),
                     Some(intent::IntentType::Chat)
                 );
@@ -307,13 +359,16 @@ impl AgentRuntime {
                 // （模型已经判断过需要工具，不再二次收窄，避免该有的工具被砍掉）；
                 // 完全判断不出意图时用安全子集，而不是开放全部 —— 后者会把 33 个工具的
                 // schema 全塞进上下文，吃掉半个窗口。
-                let categories = if explicit_chat {
+                let mut categories = if explicit_chat {
                     all_tool_categories()
                 } else {
                     local_intent
                         .map(|result| result.categories)
                         .unwrap_or_else(intent::fallback_categories)
                 };
+                if screen_observation.is_some() && !categories.contains(&intent::ToolCategory::File) {
+                    categories.push(intent::ToolCategory::File);
+                }
                 eprintln!("[Agent] 走 E-Assisant 自适应路径: {}", user_content);
                 let task = {
                     let db_guard = db.lock().await;
@@ -340,6 +395,8 @@ impl AgentRuntime {
                         categories: &categories,
                         run_id: &execution_run_id,
                         cancellation: &task_cancellation,
+                        screen_observation,
+                        jarvis_observation,
                     },
                     task,
                 )
@@ -593,11 +650,15 @@ async fn execute_direct_tool(
     let execution = tokio::select! {
         biased;
         _ = context.cancellation.cancelled() => return Ok(()),
-        result = context.executor.execute(ToolCallRequest {
+        result = context.executor.execute_with_start(ToolCallRequest {
             tool_name: tool_name.clone(),
             arguments,
             session_id: Some(context.session_id.to_string()),
             run_id: Some(context.run_id.to_string()),
+        }, || {
+            let _ = context.tx.try_send(ChatEvent::Phase(AssistPhase::ToolStarted {
+                name: tool_name.clone(),
+            }));
         }) => result?,
     };
     if context.cancellation.is_cancelled() {
@@ -610,6 +671,8 @@ async fn execute_direct_tool(
             name: tool_name,
             success: execution.success,
             content: tool_content,
+            verification_status: execution.verification.status,
+            receipt_id: execution.receipt_id.clone(),
         })
         .await;
 

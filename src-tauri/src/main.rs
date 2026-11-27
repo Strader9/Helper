@@ -297,6 +297,7 @@ fn main() {
             e_assisant_lib::commands::jarvis_start,
             e_assisant_lib::commands::jarvis_stop,
             e_assisant_lib::commands::jarvis_duplex,
+            e_assisant_lib::commands::get_jarvis_observation,
             // Phase 1 命令
             e_assisant_lib::commands::ping,
             e_assisant_lib::commands::get_settings,

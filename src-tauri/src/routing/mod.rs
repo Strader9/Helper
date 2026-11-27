@@ -1,12 +1,7 @@
-//! 模型职责路由与显存运行时协调。
-//!
-//! 这里不执行模型推理，也不直接操作 GPU。它只保存经过确认的职责分工，并把
-//! Jarvis 与 Ollama 的排他状态转换集中起来；实际进程启停由后续交接执行器完成。
+//! 协调主模型任务与按需启动的 Jarvis 感知运行时。
 
-mod handoff;
-mod policy;
 mod runtime;
 
-pub use handoff::{HandoffPacket, ResourceRef};
-pub use policy::{Capability, ModelRole, RouteDecision, RoutingPolicy};
-pub use runtime::{InferenceRuntimeManager, InferenceRuntimeState, RuntimeSnapshot};
+pub use runtime::{
+    InferenceRuntimeManager, InferenceRuntimeState, PerceptionObservation, RuntimeSnapshot,
+};

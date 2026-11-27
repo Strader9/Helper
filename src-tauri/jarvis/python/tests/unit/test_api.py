@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from jarvis_backend.app import create_app
 from jarvis_backend.native import InProcessNativeClient
+from jarvis_backend.orchestrator.events import Event
 from jarvis_backend.settings import Settings
 
 
@@ -56,62 +57,30 @@ def test_pet_chat_uses_local_model_and_keeps_recent_context() -> None:
     assert '"assistant": "第一条回复"' in prompts[1]
 
 
-def test_handoff_route_is_structured_and_does_not_execute_tools() -> None:
+def test_backend_does_not_expose_model_handoff() -> None:
     app = create_app(Settings(), InProcessNativeClient())
-    prompts: list[str] = []
-
-    async def answer(method, payload):
-        assert method == "ask"
-        prompts.append(payload["text"])
-        return {
-            "text": (
-                "```json\n"
-                '{"capability":"browser_work","handoff_to_ollama":true,'
-                '"user_goal":"查询天气","context_summary":"用户想查看北京天气",'
-                '"requires_confirmation_for_write":false}\n```'
-            )
-        }
-
-    app.state.orchestrator.native_client.request = answer
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/assistant/handoff",
-            json={
-                "message": "帮我查一下北京天气",
-                "observation_summary": "浏览器尚未打开。",
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "capability": "browser_work",
-        "owner": "ollama",
-        "handoff_to_ollama": True,
-        "user_goal": "查询天气",
-        "context_summary": "用户想查看北京天气",
-        "requires_confirmation_for_write": False,
-    }
-    assert "不能执行任何操作" in prompts[0]
-    assert "浏览器尚未打开。" in prompts[0]
-
-
-def test_handoff_rejects_inconsistent_model_route() -> None:
-    app = create_app(Settings(), InProcessNativeClient())
-
-    async def answer(_method, _payload):
-        return {
-            "text": (
-                '{"capability":"file_work","handoff_to_ollama":false,'
-                '"user_goal":"整理文件","context_summary":"",'
-                '"requires_confirmation_for_write":true}'
-            )
-        }
-
-    app.state.orchestrator.native_client.request = answer
     with TestClient(app) as client:
         response = client.post("/api/v1/assistant/handoff", json={"message": "整理文件"})
 
-    assert response.status_code == 503
+    assert response.status_code == 404
+
+
+def test_latest_perception_projects_an_existing_observation() -> None:
+    app = create_app(Settings(), InProcessNativeClient())
+    with TestClient(app) as client:
+        assert client.get("/api/v1/perception/latest").json() is None
+        assert client.portal is not None
+        events = app.state.orchestrator.events
+        client.portal.call(
+            events.publish,
+            Event("perception.completed", {"observation": "  文档窗口  ", "internal": "unused"}),
+        )
+        client.portal.call(events.publish, Event("perception.completed", {"observation": ""}))
+        result = client.get("/api/v1/perception/latest")
+
+    assert result.status_code == 200
+    assert set(result.json()) == {"id", "observed_at", "description"}
+    assert result.json()["description"] == "文档窗口"
 
 
 def test_backend_exposes_no_browser_ui() -> None:

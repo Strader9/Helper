@@ -20,8 +20,6 @@ from .schemas import (
     DuplexStatusResponse,
     EventMessage,
     HealthResponse,
-    HandoffRequest,
-    HandoffResponse,
     MemoryClearRequest,
     MemoryClearResponse,
     MemoryDayResponse,
@@ -30,6 +28,7 @@ from .schemas import (
     MemoryImageResponse,
     MemoryStatusResponse,
     MemorySummaryResponse,
+    PerceptionObservation,
     PetChatRequest,
     PetChatResponse,
     SceneObservation,
@@ -82,25 +81,20 @@ async def pet_chat(body: PetChatRequest, request: Request) -> PetChatResponse:
     return PetChatResponse(reply=reply)
 
 
-@router.post("/assistant/handoff", response_model=HandoffResponse)
-async def assistant_handoff(body: HandoffRequest, request: Request) -> HandoffResponse:
-    try:
-        result = await service(request).recommend_handoff(
-            body.message, body.observation_summary
-        )
-    except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
-    except (RuntimeError, TimeoutError) as exc:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "本地模型暂时无法生成交接建议，请稍后重试",
-        ) from exc
-    return HandoffResponse.model_validate(result)
-
-
 @router.get("/duplex", response_model=DuplexStatusResponse)
 async def duplex_status(request: Request) -> DuplexStatusResponse:
     return DuplexStatusResponse(**service(request).duplex_status())
+
+
+@router.get("/perception/latest", response_model=PerceptionObservation | None)
+async def latest_perception(request: Request) -> PerceptionObservation | None:
+    for event in reversed(service(request).events.history("perception.completed")):
+        description = str(event.payload.get("observation") or "").strip()
+        if event.occurred_at is not None and description:
+            return PerceptionObservation(
+                id=event.id, observed_at=event.occurred_at, description=description[:300]
+            )
+    return None
 
 
 @router.post("/duplex", response_model=DuplexStatusResponse)

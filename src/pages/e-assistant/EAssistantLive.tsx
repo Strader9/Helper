@@ -42,8 +42,13 @@ interface DuplexState {
 
 interface RuntimeSnapshot {
   state: string;
-  activeRole?: 'jarvis' | 'ollama' | 'system' | null;
   detail?: string | null;
+}
+
+interface PerceptionObservation {
+  id: string;
+  observed_at: string;
+  description: string;
 }
 
 const INPUT_CLASS =
@@ -56,6 +61,7 @@ export default function EAssistantLive() {
   const [busyStart, setBusyStart] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [runtime, setRuntime] = useState<RuntimeSnapshot>({ state: 'idle' });
+  const [observation, setObservation] = useState<PerceptionObservation | null>(null);
 
   const [duplex, setDuplex] = useState<DuplexState>({ active: false });
   const [instruction, setInstruction] = useState('盯着屏幕，发现报错或异常就简短提醒我');
@@ -81,6 +87,7 @@ export default function EAssistantLive() {
   const refreshRuntime = useCallback(async () => {
     try {
       setRuntime(await invoke<RuntimeSnapshot>('get_inference_runtime'));
+      setObservation(await invoke<PerceptionObservation | null>('get_jarvis_observation'));
     } catch {
       // 调度信息只是辅助诊断；不能让它影响 EAssistant 本身的健康检测。
     }
@@ -381,6 +388,21 @@ export default function EAssistantLive() {
         </div>
 
         <GlassCard hoverEffect={false}>
+          {observation && (
+            <div className="mb-3">
+              <p className="text-[11px] text-white/45">{new Date(observation.observed_at).toLocaleString()}</p>
+              <p className="mt-1 text-sm text-white/80">{observation.description}</p>
+              {!online && (
+                <Link
+                  to="/chat"
+                  state={{ voiceText: '请根据上一次感知观察，总结看到了什么。' }}
+                  className="mt-2 inline-block text-sm text-celestial-saturn hover:underline"
+                >
+                  在对话中使用这次观察
+                </Link>
+              )}
+            </div>
+          )}
           <Link to="/chat" className="text-sm font-medium text-celestial-saturn hover:underline">
             在统一对话中发送文字或语音
           </Link>

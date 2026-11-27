@@ -28,6 +28,8 @@ pub struct OllamaMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 impl OllamaMessage {
@@ -37,6 +39,7 @@ impl OllamaMessage {
             content: content.to_string(),
             tool_calls: None,
             name: None,
+            images: Vec::new(),
         }
     }
 
@@ -46,6 +49,7 @@ impl OllamaMessage {
             content: content.to_string(),
             tool_calls: None,
             name: None,
+            images: Vec::new(),
         }
     }
 
@@ -55,6 +59,7 @@ impl OllamaMessage {
             content: content.to_string(),
             tool_calls: None,
             name: None,
+            images: Vec::new(),
         }
     }
 
@@ -64,6 +69,7 @@ impl OllamaMessage {
             content: content.to_string(),
             tool_calls: Some(tool_calls),
             name: None,
+            images: Vec::new(),
         }
     }
 
@@ -73,6 +79,7 @@ impl OllamaMessage {
             content: content.to_string(),
             tool_calls: None,
             name: Some(name.to_string()),
+            images: Vec::new(),
         }
     }
 }
@@ -282,6 +289,20 @@ pub struct OllamaClient {
 }
 
 impl OllamaClient {
+    pub(crate) fn accepts_local_screen_image(&self) -> bool {
+        matches!(self.endpoint, Endpoint::Ollama)
+            && reqwest::Url::parse(&self.base_url)
+                .ok()
+                .filter(|url| matches!(url.scheme(), "http" | "https"))
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .is_some_and(|host| {
+                    host.eq_ignore_ascii_case("localhost")
+                        || host
+                            .trim_matches(['[', ']'])
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|ip| ip.is_loopback())
+                })
+    }
     /// 创建 Ollama 客户端
     pub fn new(base_url: String, timeout_ms: u64) -> Self {
         Self {
@@ -556,6 +577,10 @@ impl OllamaClient {
         timeout_ms: Option<u64>,
         extra_options: Option<serde_json::Value>,
     ) -> AppResult<Pin<Box<dyn Stream<Item = ChatChunk> + Send>>> {
+        let includes_image = messages.iter().any(|message| !message.images.is_empty());
+        if includes_image && !self.accepts_local_screen_image() {
+            return Err(AppError::Ollama("屏幕图像仅可发送给本机 Ollama".into()));
+        }
         if let Endpoint::OpenAiCompat { api_key } = &self.endpoint {
             return self
                 .chat_stream_openai(
@@ -573,7 +598,12 @@ impl OllamaClient {
         let (tx, rx) = mpsc::channel::<ChatChunk>(128);
 
         let url = format!("{}/api/chat", self.base_url);
-        let client = if timeout_ms.is_some() {
+        let client = if includes_image {
+            reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?
+        } else if timeout_ms.is_some() {
             self.client.clone()
         } else {
             self.unlimited_client.clone()
@@ -652,9 +682,12 @@ impl OllamaClient {
                 }
 
                 Ok(())
-            }
-            .await;
-
+            };
+            let result = tokio::select! {
+                biased;
+                _ = tx.closed() => return,
+                result = result => result,
+            };
             if let Err(e) = result {
                 let _ = tx.send(ChatChunk::Error(format!("{e:#}"))).await;
             }
@@ -757,9 +790,12 @@ impl OllamaClient {
                 }
 
                 Ok(())
-            }
-            .await;
-
+            };
+            let result = tokio::select! {
+                biased;
+                _ = tx.closed() => return,
+                result = result => result,
+            };
             if let Err(e) = result {
                 let _ = tx.send(ChatChunk::Error(format!("{e:#}"))).await;
             }
@@ -895,6 +931,15 @@ async fn process_chat_response_line(json_str: &str, tx: &mpsc::Sender<ChatChunk>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_images_require_native_loopback_ollama() {
+        assert!(OllamaClient::new("http://127.0.0.1:11434".into(), 100).accepts_local_screen_image());
+        assert!(!OllamaClient::new("https://example.com".into(), 100).accepts_local_screen_image());
+        assert!(!OllamaClient::openai_compat(
+            "http://localhost:3000/v1".into(), None, 100
+        ).accepts_local_screen_image());
+    }
 
     /// Ollama 真正的最后一个分片长这样 —— 用量字段只在这里出现。
     #[test]

@@ -40,7 +40,8 @@ interface ToolCall {
   id: string;
   name: string;
   arguments?: Record<string, unknown>;
-  status: 'running' | 'done' | 'error';
+  status: 'requested' | 'running' | 'done' | 'error';
+  verificationLabel?: string;
   result?: string;
   error?: string;
 }
@@ -54,6 +55,10 @@ interface ChatMessage {
   /** 等待首条文本或工具事件 */
   thinking?: boolean;
   waitingForModel?: boolean;
+  assistStatus?: string;
+  localIntent?: boolean;
+  screenCaptured?: boolean;
+  observationTime?: string;
 }
 
 /* ── Tauri 流式事件 payload（payload 为 JSON 字符串，需 parse） ── */
@@ -73,7 +78,16 @@ interface ToolResultEventData {
   name?: string;
   success?: boolean;
   content?: string;
+  verification_status?: 'VERIFIED' | 'UNVERIFIED' | 'FAILED' | 'NOT_REQUIRED' | 'CONTRADICTED';
+  receipt_id?: string;
 }
+
+type AssistPhase =
+  | { stage: 'local_intent_matched' }
+  | { stage: 'capturing_screen' }
+  | { stage: 'screen_captured'; captured_at: string }
+  | { stage: 'jarvis_observation_loaded'; observed_at: string }
+  | { stage: 'tool_started'; name: string };
 
 /* ──────────────────────────────────────────────
    工具函数
@@ -581,6 +595,32 @@ export default function EAssistantChat() {
       ['chat:thinking', () => {
         updateStreamingMessage(m => ({ ...m, thinking: true, waitingForModel: true }));
       }],
+      ['chat:phase', (p) => {
+        const phase = p.data as AssistPhase | undefined;
+        if (!phase) return;
+        updateStreamingMessage(m => {
+          switch (phase.stage) {
+            case 'local_intent_matched':
+              return { ...m, localIntent: true, assistStatus: '已匹配本地指令' };
+            case 'capturing_screen':
+              return { ...m, assistStatus: '正在获取当前屏幕' };
+            case 'screen_captured':
+              return { ...m, screenCaptured: true, assistStatus: '已获取屏幕观察' };
+            case 'jarvis_observation_loaded':
+              return { ...m, observationTime: phase.observed_at, assistStatus: '已读取此前的感知观察' };
+            case 'tool_started':
+              return {
+                ...m,
+                toolCalls: m.toolCalls?.map(tool =>
+                  tool.name === phase.name && tool.status === 'requested'
+                    ? { ...tool, status: 'running' }
+                    : tool
+                ),
+              };
+          }
+          return m;
+        });
+      }],
       // 流式文本片段：追加到当前 AI 消息
       ['chat:text', (p) => {
         const chunk = typeof p.data === 'string' ? p.data : '';
@@ -588,7 +628,7 @@ export default function EAssistantChat() {
         streamingTextRef.current += chunk;
         updateStreamingMessage(m => ({ ...m, thinking: false, content: m.content + chunk }));
       }],
-      // 工具调用开始：追加一个 running 状态的 toolCall
+      // 工具请求已创建，执行器仍可能等待权限。
       ['chat:tool_call', (p) => {
         const d = (p.data ?? {}) as ToolCallEventData;
         if (!d.name) return;
@@ -596,7 +636,7 @@ export default function EAssistantChat() {
           id: `tc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           name: d.name,
           arguments: d.arguments || {},
-          status: 'running',
+          status: 'requested',
         };
         updateStreamingMessage(m => ({
           ...m,
@@ -604,19 +644,28 @@ export default function EAssistantChat() {
           toolCalls: [...(m.toolCalls || []), tc],
         }));
       }],
-      // 工具执行结果：反向匹配最近一次同名 running 调用，更新为 done/error
+      // 回执记录了权限与核验结果，和工具自报成功分开。
       ['chat:tool_result', (p) => {
         const d = (p.data ?? {}) as ToolResultEventData;
         if (!d.name) return;
         updateStreamingMessage(m => {
           const tcs = m.toolCalls ? [...m.toolCalls] : [];
           for (let i = tcs.length - 1; i >= 0; i--) {
-            if (tcs[i].name === d.name && tcs[i].status === 'running') {
+            if (tcs[i].name === d.name && ['requested', 'running'].includes(tcs[i].status)) {
+              const failed = !d.success || d.verification_status === 'CONTRADICTED';
+              const verificationLabel = d.verification_status === 'CONTRADICTED'
+                ? '核验未通过'
+                : d.verification_status === 'VERIFIED' && d.receipt_id
+                  ? '已核验'
+                  : d.verification_status === 'NOT_REQUIRED'
+                    ? '执行已返回'
+                    : d.success ? '待核验' : undefined;
               tcs[i] = {
                 ...tcs[i],
-                status: d.success ? 'done' : 'error',
-                result: d.success ? d.content : undefined,
-                error: d.success ? undefined : d.content,
+                status: failed ? 'error' : 'done',
+                verificationLabel,
+                result: failed ? undefined : d.content,
+                error: failed ? d.content : undefined,
               };
               break;
             }
@@ -842,7 +891,7 @@ export default function EAssistantChat() {
             <div className="mx-auto max-w-3xl space-y-4">
               <AnimatePresence initial={false}>
                 {messages.map(msg => {
-                  const toolsRunning = !!msg.toolCalls?.some(tc => tc.status === 'running');
+                  const toolsRunning = !!msg.toolCalls?.some(tc => tc.status === 'running' || tc.status === 'requested');
                   const toolsOpen = expandedTools[msg.id] ?? toolsRunning;
                   const isLastAssistant = msg.role === 'assistant' && msg.id === lastAssistantId;
 
@@ -951,14 +1000,14 @@ export default function EAssistantChat() {
                                           key={tc.id}
                                           className={cn(
                                             'flex items-start gap-2 rounded-lg border px-2.5 py-1.5',
-                                            tc.status === 'running' && 'border-cyan-500/25 bg-cyan-500/[0.05]',
+                                            ['running', 'requested'].includes(tc.status) && 'border-cyan-500/25 bg-cyan-500/[0.05]',
                                             tc.status === 'error' && 'border-red-500/25 bg-red-500/[0.05]',
                                             tc.status === 'done' && 'border-white/[0.07] bg-white/[0.03]'
                                           )}
                                         >
                                           {/* 状态圆点 */}
                                           <div className="mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full">
-                                            {tc.status === 'running' ? (
+                                            {tc.status === 'running' || tc.status === 'requested' ? (
                                               <Loader2 size={11} className="animate-spin text-cyan-400" />
                                             ) : tc.status === 'error' ? (
                                               <XCircle size={11} className="text-red-400" />
@@ -971,6 +1020,9 @@ export default function EAssistantChat() {
                                               <span className="text-cyan-400/80">{getToolIcon(tc.name)}</span>
                                               <span className="font-mono text-[11px] uppercase tracking-wide text-white/75">
                                                 {tc.name.replace(/_/g, ' ')}
+                                              </span>
+                                              <span className="text-[10px] text-white/50">
+                                                {tc.status === 'requested' ? '等待执行' : tc.status === 'running' ? '正在执行' : tc.verificationLabel}
                                               </span>
                                             </div>
                                             {formatArgs(tc.arguments) && (
@@ -998,11 +1050,18 @@ export default function EAssistantChat() {
                             )}
 
                             {/* 思考指示器 */}
+                            {(msg.localIntent || msg.screenCaptured || msg.observationTime) && (
+                              <p className="mb-1 text-[11px] text-white/50">
+                                {msg.localIntent ? '本地指令 · 未调用模型'
+                                  : msg.screenCaptured ? '已获取屏幕观察'
+                                    : msg.observationTime && ('感知观察时间：' + new Date(msg.observationTime).toLocaleString())}
+                              </p>
+                            )}
                             {msg.thinking && !msg.content && (
                               <div className="flex items-center gap-2 py-1">
                                 <Loader2 size={13} className="animate-spin text-celestial-saturn" />
                                 <span className="text-xs text-white/50">
-                                  {msg.waitingForModel ? '等待模型响应…' : '正在处理请求…'}
+                                  {msg.waitingForModel ? '等待模型响应…' : (msg.assistStatus ?? '正在处理请求…')}
                                 </span>
                                 <div className="flex gap-1">
                                   <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-celestial-saturn/60" style={{ animationDelay: '0ms' }} />

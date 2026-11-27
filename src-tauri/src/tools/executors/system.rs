@@ -167,7 +167,7 @@ impl AgentTool for TakeScreenshotTool {
     async fn execute(&self, _args: serde_json::Value) -> AppResult<ToolResult> {
         let temp_dir = std::env::temp_dir();
         let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-        let filename = format!("screenshot_{}.png", timestamp);
+        let filename = format!("screenshot_{}_{}.png", timestamp, uuid::Uuid::new_v4());
         let path = temp_dir.join(&filename);
 
         #[cfg(target_os = "windows")]

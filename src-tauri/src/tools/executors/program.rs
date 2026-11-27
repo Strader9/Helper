@@ -432,20 +432,29 @@ fn resolve_process_name(name: &str) -> String {
 
 /// 查找单个程序路径（从所有结果中选择最佳匹配）
 fn find_program_path(name: &str) -> AppResult<Option<String>> {
-    let mut paths = find_all_program_paths(name)?;
-    if paths.is_empty() {
+    select_program_path(find_all_program_paths(name)?, name)
+}
+
+fn select_program_path(paths: Vec<String>, name: &str) -> AppResult<Option<String>> {
+    let query = name.to_lowercase();
+    let mut matches: Vec<_> = paths.into_iter().map(|path| {
+        (score_program_path(&path, &query), path)
+    }).collect();
+    matches.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let Some((best_score, best_path)) = matches.first() else {
         return Ok(None);
+    };
+    let tied: Vec<_> = matches.iter()
+        .take_while(|(score, _)| score == best_score)
+        .map(|(_, path)| path.as_str())
+        .collect();
+    if tied.len() > 1 {
+        return Err(AppError::InvalidArgument(format!(
+            "“{name}”匹配到多个同优先级的程序，请指定完整路径：{}",
+            tied.into_iter().take(5).collect::<Vec<_>>().join("；")
+        )));
     }
-
-    // 按优先级排序：分数高的排前面
-    let name_lower = name.to_lowercase();
-    paths.sort_by(|a, b| {
-        let score_a = score_program_path(a, &name_lower);
-        let score_b = score_program_path(b, &name_lower);
-        score_b.cmp(&score_a)
-    });
-
-    Ok(paths.into_iter().next())
+    Ok(Some(best_path.clone()))
 }
 
 /// 给程序路径打分，分数越高越可能是用户想要的主程序
@@ -947,6 +956,18 @@ fn contains_shell_metachars(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asks_for_a_path_when_top_program_candidates_tie() {
+        let paths = vec![
+            r"C:\First\editor.exe".to_string(),
+            r"C:\Second\editor.exe".to_string(),
+        ];
+        let error = select_program_path(paths, "editor").unwrap_err().to_string();
+        assert!(error.contains("请指定完整路径"));
+        assert!(error.contains(r"C:\First\editor.exe"));
+        assert!(error.contains(r"C:\Second\editor.exe"));
+    }
 
     #[test]
     fn qq_main_process_scores_above_extension_process() {
